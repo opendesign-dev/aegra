@@ -1,6 +1,6 @@
 """MCP server exposing this deployment's graphs as tools over Streamable HTTP.
 
-Mounted at ``/mcp`` by ``main.create_app`` when ``MCP_ENABLED``. Mirrors the
+Served at ``/mcp`` by ``main.create_app`` when ``MCP_ENABLED``. Mirrors the
 LangGraph Platform MCP endpoint: **each graph is exposed as its own tool** whose
 name is the graph id and whose input schema is the graph's input schema, rather
 than a pair of generic ``list_assistants``/``run_assistant`` tools. Tools run
@@ -25,6 +25,7 @@ from fastapi import HTTPException
 from langchain_core.runnables import RunnableConfig
 from mcp import types
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import StreamableHTTPASGIApp
 
 from aegra_api.core.auth_deps import require_auth
 from aegra_api.core.auth_handlers import build_auth_context, handle_event, merge_auth_filters
@@ -132,6 +133,7 @@ async def _call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCon
     return [types.TextContent(type="text", text=json.dumps(payload, default=str))]
 
 
-# Built at import so the session manager is initialized before create_app mounts
-# it; main's lifespan runs ``mcp.session_manager.run()``.
-mcp_app = mcp.streamable_http_app()
+# Called for its side effect: creates the session manager that main's lifespan
+# runs and the ASGI handler below wraps.
+mcp.streamable_http_app()
+mcp_asgi = StreamableHTTPASGIApp(mcp.session_manager)

@@ -343,7 +343,7 @@ class WorkerExecutor(BaseExecutor):
                 await asyncio.gather(job_task, heartbeat_task, return_exceptions=True)
             # Single authoritative timeout write, after job_task has settled.
             if timed_out:
-                await _finalize_timeout(run_id)
+                await _finalize_timeout(run_id, loaded.job.execution.webhook)
             await _release_lease(run_id, worker_name)
 
             elapsed = (datetime.now(UTC) - lease_acquired_at).total_seconds()
@@ -381,12 +381,22 @@ async def _get_thread_id_for_run(run_id: str) -> str | None:
         return await session.scalar(select(RunORM.thread_id).where(RunORM.run_id == run_id))
 
 
-async def _finalize_timeout(run_id: str) -> None:
-    # Single authoritative timeout write: execute_run's timeout settlement defers here.
+def _webhook_of(run_orm: RunORM) -> str | None:
+    """The run's webhook URL from its persisted execution params, if any."""
+    params = run_orm.execution_params
+    execution = params.get("execution") if isinstance(params, dict) else None
+    return execution.get("webhook") if isinstance(execution, dict) else None
+
+
+async def _finalize_timeout(run_id: str, webhook: str | None) -> None:
+    # Single authoritative timeout write: execute_run's timeout settlement defers
+    # here, so this path owns the webhook too.
     _TIMEOUT_ERROR = "Job exceeded maximum execution time"
     thread_id = await _get_thread_id_for_run(run_id)
     if thread_id is not None:
-        await finalize_run(run_id, thread_id, status="timeout", thread_status="error", error=_TIMEOUT_ERROR)
+        await finalize_run(
+            run_id, thread_id, status="timeout", thread_status="error", error=_TIMEOUT_ERROR, webhook=webhook
+        )
     else:
         await update_run_status(run_id, "timeout", error=_TIMEOUT_ERROR)
 
@@ -398,7 +408,14 @@ async def _finalize_orphan(run_id: str, worker_name: str) -> None:
         run_orm = await session.scalar(select(RunORM).where(RunORM.run_id == run_id, RunORM.claimed_by == worker_name))
     if run_orm is None or run_orm.status in TERMINAL_RUN_STATUSES:
         return
-    await finalize_run(run_id, run_orm.thread_id, status="error", thread_status="error", error="Worker execution error")
+    await finalize_run(
+        run_id,
+        run_orm.thread_id,
+        status="error",
+        thread_status="error",
+        error="Worker execution error",
+        webhook=_webhook_of(run_orm),
+    )
     await _release_lease(run_id, worker_name)
 
 

@@ -1,0 +1,95 @@
+---
+title: "A2A protocol"
+description: "Expose each assistant as an agent-to-agent (A2A) endpoint with agent-card discovery."
+---
+
+Aegra serves the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call your assistants. Each assistant gets its own JSON-RPC endpoint plus agent cards for discovery, mirroring LangGraph Platform's A2A surface.
+
+The implementation is built on the official `a2a-sdk` (`JsonRpcDispatcher`, `DefaultRequestHandler`, `InMemoryTaskStore`) with v0.3 compatibility enabled, so platform-era clients that send `message/send` work unchanged.
+
+## Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/a2a/{assistant_id}` | JSON-RPC transport |
+| `GET` | `/a2a/{assistant_id}` | Agent card for that assistant |
+| `GET` | `/a2a/{assistant_id}/.well-known/agent-card.json` | Agent card (protocol 1.0 discovery) |
+| `GET` | `/a2a/{assistant_id}/.well-known/agent.json` | Agent card (protocol 0.3 discovery) |
+| `GET` | `/.well-known/agent-card.json` | Root card listing every assistant as a skill |
+
+`assistant_id` is a **graph id** from `aegra.json`. An unknown id returns 404.
+
+<Note>
+`DELETE /a2a/{assistant_id}` returns 405 with `Allow: GET, POST`. The route is accepted for platform parity, but A2A's JSON-RPC transport is stateless — cancellation happens through JSON-RPC methods, not HTTP verbs.
+</Note>
+
+## Enabling and disabling
+
+A2A is on by default:
+
+```bash
+A2A_ENABLED=false
+```
+
+When disabled, the routes are never registered.
+
+## Discovery
+
+The root card advertises every graph as a skill and points at the per-assistant endpoints:
+
+```bash
+curl http://localhost:2026/.well-known/agent-card.json
+```
+
+Each per-assistant card declares the endpoint twice — once for protocol version 1.0 and once for 0.3 — so both client generations resolve the same URL. Cards served over HTTP are built per request with the absolute base URL taken from the incoming request, so they work behind a proxy without extra configuration.
+
+## Calling an assistant
+
+```bash
+curl -X POST http://localhost:2026/a2a/agent \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "role": "user",
+        "parts": [{"text": "What is the capital of France?"}]
+      }
+    }
+  }'
+```
+
+The user input is wrapped as `{"messages": [{"role": "user", "content": "<text>"}]}` and passed to the graph.
+
+## Result shape
+
+The graph's result is published as a task artifact named `result`:
+
+- If the final state has a `messages` list whose last message has string `content`, that string is returned as a **text part**.
+- Otherwise the whole serialized state is returned as a **JSON data part** (`application/json`).
+
+A graph that raises marks the task `failed` rather than returning an artifact.
+
+## Authentication and authorization
+
+Every A2A route authenticates through the **same backend as the REST API** before the handler runs. A2A routes live outside the authed routers and enforce auth per handler, mirroring the MCP mount.
+
+As on the REST run path, `@auth.on` handlers for `threads.create_run` are dispatched **before** the graph executes, so a denying handler stops the request before any task is created. The authenticated user is adapted onto the A2A SDK's user interface, so SDK-level context sees the same identity.
+
+## Tracing
+
+A2A executions invoke the graph inline, so trace context is bound explicitly. Spans carry `source: "a2a"` plus the `a2a_context_id`, alongside the usual thread, graph, and user identifiers. The A2A task id is used as the run id for tracing. See [Observability](/guides/observability).
+
+## Limitations
+
+- **Agent cards require authentication.** Every A2A route is authed, including `/.well-known/agent-card.json`. A2A clients that fetch the discovery card anonymously before authenticating will get a 401. Callers must send credentials on the card request too, or you must expose the card through an unauthenticated proxy.
+- **Task store is in-memory and per-instance.** Tasks created by `message/send` live in an `InMemoryTaskStore` held per assistant in the serving process. `tasks/get` only finds a task if the request lands on the **same instance** that created it, and all tasks are lost on restart. Behind a load balancer, use sticky sessions or treat A2A as fire-and-forget.
+- **No streaming, no push notifications.** Agent cards declare `streaming: false` and `push_notifications: false`. Use the [streaming API](/guides/streaming) when you need incremental output.
+- **Text input only.** Only the text of the incoming message is forwarded; file and structured data parts are not mapped into graph input.
+- **Stateless — one fresh thread per request.** Each call generates a new `thread_id`. There is no conversation continuity across A2A calls and no way to target an existing thread.
+- **Graph exception text is returned to the caller.** A failing graph surfaces its exception string in the failed task message. Do not let graph exceptions carry secrets or internal detail if your A2A endpoint is reachable by untrusted callers.
+- **Assistants are graphs.** Assistant-level `config`, `context`, and versioning are not applied — the endpoint targets the graph directly.
+- **No run record.** A2A executions do not create rows in the `runs` table, so they are absent from run search, webhooks, and run TTL sweeps.

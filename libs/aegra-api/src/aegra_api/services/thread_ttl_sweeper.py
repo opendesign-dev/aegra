@@ -1,18 +1,19 @@
 """Background sweeper that deletes stale threads and their checkpoints (TTL).
 
 Opt-in via ``CHECKPOINTER_TTL_ENABLED``. Deletes threads with no active run
-whose ``updated_at`` is older than ``CHECKPOINTER_TTL_MINUTES``, along with
-their checkpoints. langgraph's saver has no native TTL, so this covers the
-thread/checkpoint retention feature. Off by default — it permanently deletes.
+whose age exceeds the thread's own ``ttl`` (when set on create/update) or
+``CHECKPOINTER_TTL_MINUTES`` otherwise, along with their checkpoints. langgraph's
+saver has no native TTL, so this covers the thread/checkpoint retention feature.
+Off by default — it permanently deletes.
 """
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import Float, cast, delete, func, select
+from sqlalchemy.sql.elements import ColumnElement
 
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
@@ -23,6 +24,17 @@ from aegra_api.settings import settings
 logger = structlog.getLogger(__name__)
 
 _ACTIVE_STATUSES = ("pending", "running")
+
+
+def _expired() -> ColumnElement[bool]:
+    """Age predicate using the thread's own ttl minutes, falling back to the global."""
+    minutes = func.coalesce(
+        cast(ThreadORM.ttl["ttl"].astext, Float),
+        float(settings.checkpointer.CHECKPOINTER_TTL_MINUTES),
+    )
+    # make_interval args are years, months, weeks, days, hours, mins, secs; only
+    # secs is double precision, so fractional minutes have to go through it.
+    return ThreadORM.updated_at < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, minutes * 60)
 
 
 class ThreadTTLSweeper:
@@ -67,7 +79,6 @@ class ThreadTTLSweeper:
                 break
 
     async def _tick(self) -> None:
-        cutoff = datetime.now(UTC) - timedelta(minutes=settings.checkpointer.CHECKPOINTER_TTL_MINUTES)
         active = (
             select(RunORM.run_id)
             .where(RunORM.thread_id == ThreadORM.thread_id, RunORM.status.in_(_ACTIVE_STATUSES))
@@ -80,7 +91,7 @@ class ThreadTTLSweeper:
         async with maker() as session:
             rows = await session.scalars(
                 select(ThreadORM.thread_id)
-                .where(ThreadORM.updated_at < cutoff, ~active)
+                .where(_expired(), ~active)
                 .limit(settings.checkpointer.CHECKPOINTER_SWEEP_BATCH_SIZE)
                 .with_for_update(skip_locked=True, of=ThreadORM)
             )

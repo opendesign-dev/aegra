@@ -149,6 +149,15 @@ In dev mode (`REDIS_BROKER_ENABLED=false`), runs execute as in-process asyncio t
 
 Total capacity per instance = `WORKER_COUNT` x `N_JOBS_PER_WORKER` (default: 30 concurrent runs).
 
+## Delayed runs
+
+A run created with `after_seconds` is stored with a future `scheduled_at` and held back until due. A background scheduler submits due runs on each tick.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELAYED_RUN_POLL_INTERVAL_SECONDS` | `5` | How often the scheduler checks for due runs |
+| `DELAYED_RUN_BATCH_SIZE` | `100` | Maximum due runs submitted per tick |
+
 ## Cron scheduler
 
 The background scheduler polls the database for due cron jobs and fires them as runs.
@@ -196,6 +205,27 @@ Both sweepers are **opt-in** and delete permanently. Each claims with `FOR UPDAT
 | `CHECKPOINTER_SWEEP_BATCH_SIZE` | `100` | Threads deleted per sweep |
 | `RUN_TTL_ENABLED` | `false` | Prune terminal run rows so the `runs` table doesn't grow unbounded (thread state + checkpoints untouched) |
 | `RUN_TTL_MINUTES` | `10080` | Age (minutes) after which a terminal run row is pruned (7 days) |
+
+`CHECKPOINTER_TTL_MINUTES` is the fallback age; a thread carrying its own `ttl` is swept at that value instead. The run sweep cadence (hourly) and per-tick cap (1000 rows) are fixed constants. See the [retention guide](/guides/retention) for cascade behaviour.
+
+## Thread state
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `THREAD_STATE_MATERIALIZE` | `true` | Materialize the latest thread state into the 1:1 `thread_state` table so search can filter and project on `values` |
+
+The checkpointer remains the source of truth either way. Setting this to `false` opts into a pure checkpointer-centric mode: `GET /threads/{id}` reads state from the checkpointer, and the `values` filter in thread search is unsupported.
+
+## Protocol endpoints
+
+Both surfaces authenticate through the same backend as the REST API and dispatch `@auth.on` authorization for `threads.create_run` before running a graph.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_ENABLED` | `true` | Mount the MCP Streamable HTTP endpoint, exposing each graph as a tool. Also disabled by `http.disable_mcp` in `aegra.json` |
+| `A2A_ENABLED` | `true` | Register the A2A JSON-RPC endpoints and agent-card discovery routes |
+
+See the [MCP](/guides/mcp) and [A2A](/guides/a2a) guides.
 
 ## Prometheus metrics
 

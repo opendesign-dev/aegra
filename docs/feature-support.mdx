@@ -102,8 +102,8 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 |:--|:--|:--|
 | Custom routes | Supported | Add FastAPI endpoints alongside the Agent Protocol API. |
 | Shared dependencies | Supported | Load Python modules available to all graphs. |
-| MCP server support | Supported | `/mcp` Streamable HTTP endpoint exposes **each graph as its own tool** (tool name = graph id, input schema = the graph's input schema), matching the LangGraph Platform MCP model. Stateless per call, authenticated with the same auth backend as the REST API (tools run under the caller's identity). Toggle with `MCP_ENABLED` or `http.disable_mcp`. |
-| A2A protocol | Supported | `/a2a/{assistant_id}` exposes each assistant as an A2A agent (agent cards under `/.well-known`), built on the official `a2a-sdk` and authenticated with the same backend as REST. Toggle with `A2A_ENABLED`. |
+| MCP server support | Supported | `/mcp` Streamable HTTP endpoint exposes **each graph as its own tool** (tool name = graph id, input schema = the graph's input schema), matching the LangGraph Platform MCP model. Stateless per call, authenticated with the same auth backend as the REST API (tools run under the caller's identity). Toggle with `MCP_ENABLED` or `http.disable_mcp`. See the [MCP guide](/guides/mcp). |
+| A2A protocol | Supported | `/a2a/{assistant_id}` exposes each assistant as an A2A agent (agent cards under `/.well-known`), built on the official `a2a-sdk` and authenticated with the same backend as REST. Toggle with `A2A_ENABLED`. See the [A2A guide](/guides/a2a). |
 | Configurable headers | Supported | `http.configurable_headers` (includes/excludes) forwards allowlisted request headers into each run's `config.configurable`. |
 | WebSocket streaming | Supported | `/threads/{id}/stream/events` also serves the Agent Protocol v2 WebSocket transport used by the latest SDKs. |
 

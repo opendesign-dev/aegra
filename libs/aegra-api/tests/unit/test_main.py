@@ -4,6 +4,8 @@ import importlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import FastAPI
+from starlette.routing import Mount, Route
 
 
 @pytest.mark.unit
@@ -168,3 +170,43 @@ def test_instrument_fastapi_wraps_app_when_observability_enabled():
 
     mock_instrumentor.instrument_app.assert_called_once()
     assert mock_instrumentor.instrument_app.call_args.args[0] is app
+
+
+def _mcp_routes(app: FastAPI) -> list[Route]:
+    return [r for r in app.routes if isinstance(r, Route) and r.path == "/mcp"]
+
+
+@pytest.mark.unit
+def test_mcp_served_at_exact_path_not_a_mount():
+    """A Mount only matches with a trailing slash and 307s '/mcp'. MCP clients use
+    httpx, which does not follow redirects, so the endpoint must be an exact Route."""
+    import aegra_api.main as main_module
+
+    app = FastAPI()
+    with patch.object(main_module, "_mcp_enabled", return_value=True):
+        main_module._include_core_routers(app)
+
+    assert len(_mcp_routes(app)) == 1
+    assert not [r for r in app.routes if isinstance(r, Mount) and r.path == "/mcp"]
+
+
+@pytest.mark.unit
+def test_mcp_route_accepts_the_streamable_http_methods():
+    import aegra_api.main as main_module
+
+    app = FastAPI()
+    with patch.object(main_module, "_mcp_enabled", return_value=True):
+        main_module._include_core_routers(app)
+
+    assert {"GET", "POST", "DELETE"} <= set(_mcp_routes(app)[0].methods or set())
+
+
+@pytest.mark.unit
+def test_mcp_route_absent_when_disabled():
+    import aegra_api.main as main_module
+
+    app = FastAPI()
+    with patch.object(main_module, "_mcp_enabled", return_value=False):
+        main_module._include_core_routers(app)
+
+    assert _mcp_routes(app) == []

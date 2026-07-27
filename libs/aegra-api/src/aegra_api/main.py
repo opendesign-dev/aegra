@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, APIRouter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from starlette.routing import Route
 
 from aegra_api import __version__
 from aegra_api.api.assistants import router as assistants_router
@@ -46,7 +47,7 @@ from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.lease_reaper import lease_reaper
 from aegra_api.services.mcp_server import mcp as mcp_server
-from aegra_api.services.mcp_server import mcp_app
+from aegra_api.services.mcp_server import mcp_asgi
 from aegra_api.services.run_ttl_sweeper import run_ttl_sweeper
 from aegra_api.services.thread_ttl_sweeper import thread_ttl_sweeper
 from aegra_api.services.webhook_deliverer import webhook_deliverer
@@ -161,7 +162,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Start webhook deliverer (drains the transactional outbox)
     await webhook_deliverer.start()
 
-    # Run the MCP session manager for the mounted /mcp app (when enabled).
+    # Run the MCP session manager backing the /mcp route (when enabled).
     mcp_ctx = mcp_server.session_manager.run() if _mcp_enabled() else nullcontext()
     async with mcp_ctx:
         yield
@@ -369,14 +370,14 @@ def _include_core_routers(app: FastAPI) -> None:
     app.include_router(event_streaming_router)
 
     if _mcp_enabled():
-        # Mount the MCP sub-app. Auth auto-application does not descend into a
-        # Mount, so the MCP app enforces its own access controls.
-        app.mount("/mcp", mcp_app)
-        logger.info("MCP server mounted at /mcp")
+        # Route, not Mount: Mount only matches with a trailing slash and 307s
+        # ``/mcp``, which MCP clients don't follow. Auth is handler-enforced.
+        app.router.routes.append(Route("/mcp", mcp_asgi, methods=["GET", "POST", "DELETE"]))
+        logger.info("MCP server registered at /mcp")
 
     if settings.a2a.A2A_ENABLED:
         # A2A routes live outside the authed routers and enforce auth per
-        # handler (same backend as REST), mirroring the MCP mount.
+        # handler (same backend as REST), mirroring the MCP route.
         app.router.routes.extend(a2a_routes())
         logger.info("A2A endpoints registered at /a2a")
 

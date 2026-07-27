@@ -21,6 +21,7 @@ from aegra_api.services.worker_executor import (
     _LoadedRun,
     _release_lease,
     _restore_trace_context,
+    _webhook_of,
 )
 
 MODULE = "aegra_api.services.worker_executor"
@@ -40,12 +41,13 @@ def _make_run_job(
     run_id: str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     thread_id: str = "11111111-2222-3333-4444-555555555555",
     graph_id: str = "test-graph",
+    webhook: str | None = None,
 ) -> RunJob:
     """Create a minimal RunJob for testing."""
     return RunJob(
         identity=RunIdentity(run_id=run_id, thread_id=thread_id, graph_id=graph_id),
         user=User(identity="test-user"),
-        execution=RunExecution(),
+        execution=RunExecution(webhook=webhook),
         behavior=RunBehavior(),
     )
 
@@ -892,8 +894,65 @@ class TestExecuteWithLease:
             status="timeout",
             thread_status="error",
             error="Job exceeded maximum execution time",
+            webhook=None,
         )
         mock_release.assert_awaited_once_with(run_id, "worker-0")
+
+    @pytest.mark.asyncio
+    async def test_timeout_forwards_webhook_to_finalize(self) -> None:
+        """A timed-out run must still notify its webhook: the worker owns the single
+        authoritative 'timeout' write, so it has to carry the URL that execute_run defers."""
+        from aegra_api.services.run_executor import _timeout_cancellations
+
+        run_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        thread_id = "tttttttt-tttt-tttt-tttt-tttttttttttt"
+        webhook = "https://example.com/hook"
+        executor = WorkerExecutor()
+
+        async def slow_job(job: object) -> None:
+            await asyncio.sleep(9999)
+
+        mock_loaded = MagicMock(spec=_LoadedRun)
+        mock_loaded.job = _make_run_job(webhook=webhook)
+        mock_loaded.trace = {}
+
+        with (
+            patch(f"{MODULE}._acquire_and_load", new_callable=AsyncMock, return_value=mock_loaded),
+            patch(f"{MODULE}._restore_trace_context"),
+            patch(f"{MODULE}.execute_run", side_effect=slow_job),
+            patch(f"{MODULE}._heartbeat_loop", new_callable=AsyncMock),
+            patch(f"{MODULE}._get_thread_id_for_run", new_callable=AsyncMock, return_value=thread_id),
+            patch(f"{MODULE}.finalize_run", new_callable=AsyncMock) as mock_finalize,
+            patch(f"{MODULE}._release_lease", new_callable=AsyncMock),
+            patch(f"{MODULE}.settings") as mock_settings,
+        ):
+            mock_settings.worker.BG_JOB_TIMEOUT_SECS = 0.01
+            try:
+                await executor._execute_with_lease(run_id, "worker-0")
+            finally:
+                _timeout_cancellations.discard(run_id)
+
+        assert mock_finalize.await_args.kwargs["webhook"] == webhook
+
+
+class TestFinalizeOrphanWebhook:
+    """_finalize_orphan writes a terminal 'error' status, so it owes a webhook too."""
+
+    def test_webhook_of_reads_execution_params(self) -> None:
+        run_orm = MagicMock()
+        run_orm.execution_params = {"execution": {"webhook": "https://example.com/hook"}}
+        assert _webhook_of(run_orm) == "https://example.com/hook"
+
+    def test_webhook_of_returns_none_when_absent(self) -> None:
+        run_orm = MagicMock()
+        run_orm.execution_params = {"execution": {}}
+        assert _webhook_of(run_orm) is None
+
+    @pytest.mark.parametrize("params", [None, {}, {"execution": None}, {"execution": "not-a-dict"}, ["not-a-dict"]])
+    def test_webhook_of_tolerates_missing_or_malformed_params(self, params: object) -> None:
+        run_orm = MagicMock()
+        run_orm.execution_params = params
+        assert _webhook_of(run_orm) is None
 
 
 class TestDequeue:
