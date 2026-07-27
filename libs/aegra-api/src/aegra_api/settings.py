@@ -313,6 +313,20 @@ class ObservabilitySettings(EnvBase):
     OTEL_TARGETS: str = ""  # Comma-separated: "LANGFUSE,PHOENIX"
     OTEL_CONSOLE_EXPORT: bool = False  # For local debugging
 
+    # --- LLM I/O redaction (PII / compliance) ---
+    # Redact LLM prompts/completions (end-user messages, tool inputs) before
+    # export. Off keeps current behavior; when off we defer to OpenInference's
+    # native OPENINFERENCE_HIDE_* env vars rather than forcing redaction off.
+    OTEL_HIDE_LLM_INPUTS: bool = False
+    OTEL_HIDE_LLM_OUTPUTS: bool = False
+
+    # --- Trace sampling ---
+    # Standard OTEL sampler. Empty keeps the SDK default (parentbased_always_on
+    # → export all). trace_id is derived from run_id, so ratio sampling stays
+    # consistent per run and never splits a single run's trace.
+    OTEL_TRACES_SAMPLER: str = ""
+    OTEL_TRACES_SAMPLER_ARG: float = 1.0
+
     # --- Generic OTLP Target (Default/Custom) ---
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     OTEL_EXPORTER_OTLP_HEADERS: str | None = None
@@ -369,6 +383,10 @@ class WorkerSettings(EnvBase):
     REAPER_INTERVAL_SECONDS: int = 15
     STUCK_PENDING_THRESHOLD_SECONDS: int = 120
     POSTGRES_POLL_INTERVAL_SECONDS: int = 5
+    # Delayed runs (after_seconds): how often to submit due runs, and the max
+    # submitted per tick.
+    DELAYED_RUN_POLL_INTERVAL_SECONDS: int = 5
+    DELAYED_RUN_BATCH_SIZE: int = 100
 
     @model_validator(mode="after")
     def _validate_lease_timing(self) -> "WorkerSettings":
@@ -441,6 +459,58 @@ class EventStreamingSettings(EnvBase):
     FF_V2_EVENT_STREAMING: bool = True
 
 
+class WebhookSettings(EnvBase):
+    """Outbound run-completion webhook delivery via a transactional outbox."""
+
+    WEBHOOK_ENABLED: bool = True
+    WEBHOOK_TIMEOUT_SECONDS: float = 30.0
+    WEBHOOK_MAX_ATTEMPTS: int = 3
+    WEBHOOK_BACKOFF_BASE_SECONDS: float = 1.0
+    # Empty disables signing. When set, requests carry a Standard-Webhooks-style
+    # HMAC-SHA256 ``Webhook-Signature`` header over the timestamp + body.
+    WEBHOOK_SIGNING_SECRET: str = ""
+    # SSRF guard: block webhook hosts that resolve to private/loopback/reserved
+    # IPs. Set true only for trusted internal webhook targets (self-hosted).
+    WEBHOOK_ALLOW_PRIVATE_IPS: bool = False
+
+
+class McpSettings(EnvBase):
+    """MCP server (/mcp) exposing assistants as tools."""
+
+    MCP_ENABLED: bool = True
+
+
+class A2ASettings(EnvBase):
+    """A2A protocol endpoints (/a2a/{assistant_id}) exposing assistants as agents."""
+
+    A2A_ENABLED: bool = True
+
+
+class RunTTLSettings(EnvBase):
+    """Run-row retention (TTL). Opt-in; prunes old terminal run rows so the
+    ``runs`` table doesn't grow unbounded. Thread state + checkpoints are
+    untouched — only historical run rows past the age are deleted.
+    """
+
+    RUN_TTL_ENABLED: bool = False
+    RUN_TTL_MINUTES: int = 10080  # 7 days
+
+
+class CheckpointerSettings(EnvBase):
+    """Thread/checkpoint retention (TTL). Opt-in; deletes stale threads."""
+
+    # Off by default — enabling permanently deletes threads + their checkpoints.
+    CHECKPOINTER_TTL_ENABLED: bool = False
+    # Delete threads with no active run whose updated_at is older than this.
+    CHECKPOINTER_TTL_MINUTES: int = 43200  # 30 days
+    CHECKPOINTER_SWEEP_INTERVAL_MINUTES: int = 60
+    CHECKPOINTER_SWEEP_BATCH_SIZE: int = 100
+    # Materialize latest thread state into thread_state for search. Off = pure
+    # checkpointer-centric: GET thread reads state from the checkpointer and
+    # search's `values` filter is unsupported.
+    THREAD_STATE_MATERIALIZE: bool = True
+
+
 class Settings:
     """Container object that instantiates all application settings groups."""
 
@@ -454,6 +524,11 @@ class Settings:
         self.worker = WorkerSettings()
         self.cron = CronSettings()
         self.event_streaming = EventStreamingSettings()
+        self.webhook = WebhookSettings()
+        self.mcp = McpSettings()
+        self.a2a = A2ASettings()
+        self.run_ttl = RunTTLSettings()
+        self.checkpointer = CheckpointerSettings()
 
 
 settings = Settings()
