@@ -455,8 +455,8 @@ class TestSearchCrons:
 
         result = await cron_service.search_crons(CronSearchRequest(), "test-user")
         assert len(result) == 2
-        assert result[0].cron_id == "c1"
-        assert result[1].cron_id == "c2"
+        assert result[0]["cron_id"] == "c1"
+        assert result[1]["cron_id"] == "c2"
 
 
 class TestCountCrons:
@@ -736,15 +736,15 @@ class TestCreateCronExtended:
         assert added_obj.payload["webhook"] == "https://hook.example.com"
 
     @pytest.mark.asyncio
-    async def test_next_run_date_skips_first_occurrence(
+    async def test_next_run_date_is_the_first_occurrence(
         self,
         cron_service: CronService,
         mock_session: AsyncMock,
     ) -> None:
-        """next_run_date must skip the first scheduled occurrence.
+        """next_run_date is the first scheduled occurrence.
 
-        _trigger_first_run fires a run immediately on creation; the scheduler
-        should therefore start from the SECOND occurrence to avoid a double-fire.
+        Create no longer fires a run immediately, so there is no double-fire to
+        avoid by skipping ahead — the scheduler owns every firing.
         """
         mock_session.scalar.return_value = _make_assistant_orm()
         req = CronCreate(assistant_id="asst-001", schedule="*/5 * * * *")
@@ -754,8 +754,7 @@ class TestCreateCronExtended:
 
         added_obj = mock_session.add.call_args[0][0]
         first_occ = _compute_next_run("*/5 * * * *", now=before)
-        # next_run_date must be strictly after the first scheduled occurrence
-        assert added_obj.next_run_date > first_occ
+        assert added_obj.next_run_date == first_occ
 
     @pytest.mark.asyncio
     async def test_metadata_stored_correctly(
@@ -939,7 +938,7 @@ class TestSearchCronsExtended:
 
         result = await cron_service.search_crons(CronSearchRequest(enabled=True), "test-user")
         assert len(result) == 1
-        assert result[0].enabled is True
+        assert result[0]["enabled"] is True
 
     @pytest.mark.asyncio
     async def test_sort_by_next_run_date(

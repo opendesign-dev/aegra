@@ -114,10 +114,13 @@ OTEL_TARGETS=LANGFUSE,PHOENIX
 | `/assistants/search` | POST | Search assistants |
 | `/assistants/{assistant_id}` | GET | Get assistant details |
 | `/threads` | POST | Create conversation thread |
+| `/threads/search` | POST | Search threads (metadata, status, creation window) |
 | `/threads/{thread_id}/state` | GET | Get thread state |
 | `/threads/{thread_id}/runs` | POST | Execute graph (background) |
 | `/threads/{thread_id}/runs/stream` | POST | Execute graph (streaming) |
 | `/threads/{thread_id}/runs/{run_id}/cancel` | POST | Cancel a run |
+| `/runs/search` | POST | Search runs across threads (assistant, status, creation window) |
+| `/runs/count` | POST | Count runs matching the search filters |
 | `/runs/crons` | POST | Create a stateless cron job |
 | `/threads/{thread_id}/runs/crons` | POST | Create a thread-bound cron job |
 | `/runs/crons/{cron_id}` | PATCH/DELETE | Update or delete a cron job |

@@ -1,9 +1,42 @@
 """Shared test helper functions and mock objects"""
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 from aegra_api.models import Assistant, Run, Thread
+
+
+def make_cron_row(
+    cron_id: str = "test-cron-123",
+    assistant_id: str = "test-assistant-123",
+    thread_id: str | None = None,
+    schedule: str = "*/5 * * * *",
+    user_id: str = "test-user",
+    payload: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> SimpleNamespace:
+    """Create a CronORM-shaped row that ``_cron_to_response`` can serialize.
+
+    A plain Mock breaks Pydantic's from_attributes path, so the attribute set is
+    spelled out to match CronORM.
+    """
+    now = datetime.now(UTC)
+    return SimpleNamespace(
+        cron_id=cron_id,
+        assistant_id=assistant_id,
+        thread_id=thread_id,
+        schedule=schedule,
+        user_id=user_id,
+        payload=payload if payload is not None else {},
+        metadata_dict=metadata or {},
+        on_run_completed=None,
+        end_time=None,
+        next_run_date=None,
+        enabled=True,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 def make_assistant(

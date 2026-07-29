@@ -38,7 +38,7 @@ class TestDatabaseManager:
         with (
             patch("aegra_api.core.database.create_async_engine") as mock_create_engine,
             patch("aegra_api.core.database.AsyncConnectionPool") as mock_pool_cls,
-            patch("aegra_api.core.database.AsyncPostgresSaver") as mock_saver_cls,
+            patch("aegra_api.core.database.AegraPostgresSaver") as mock_saver_cls,
             patch("aegra_api.core.database.AsyncPostgresStore") as mock_store_cls,
             patch("aegra_api.core.database.load_store_config") as mock_load_store_config,
         ):
@@ -108,11 +108,13 @@ class TestDatabaseManager:
         mock_db_deps["pool_instance"].open.assert_awaited_once()
 
         # 3. Verify Components initialization
-        mock_db_deps["saver_cls"].assert_called_with(conn=mock_db_deps["pool_instance"])
+        saver_kwargs = mock_db_deps["saver_cls"].call_args.kwargs
+        assert saver_kwargs["conn"] is mock_db_deps["pool_instance"]
+        assert "serde" in saver_kwargs
         mock_db_deps["saver_instance"].setup.assert_awaited_once()
 
         # Store is initialized with index=None when no store config is provided
-        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None)
+        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None, ttl=None)
         mock_db_deps["store_instance"].setup.assert_awaited_once()
 
         # 4. Verify internal state
@@ -210,7 +212,7 @@ class TestDatabaseManager:
 
         # --- ASSERTIONS ---
         # Store should be initialized with the index config
-        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=index_config)
+        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=index_config, ttl=None)
         mock_db_deps["store_instance"].setup.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -224,5 +226,5 @@ class TestDatabaseManager:
 
         # --- ASSERTIONS ---
         # Store should be initialized with index=None
-        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None)
+        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None, ttl=None)
         mock_db_deps["store_instance"].setup.assert_awaited_once()

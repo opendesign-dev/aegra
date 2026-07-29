@@ -1,6 +1,28 @@
 """Database fixtures for tests"""
 
 from collections.abc import AsyncIterator, Callable
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+
+def make_mock_session(**overrides: Any) -> AsyncMock:
+    """AsyncMock AsyncSession whose result objects are sync, like the real ones.
+
+    A bare AsyncMock makes ``.all()`` awaitable, so callers doing
+    ``list((await session.scalars(stmt)).all())`` — e.g. multitask resolution on
+    run creation — get a coroutine and raise TypeError.
+    """
+    session = AsyncMock()
+    session.add = MagicMock()
+    result = MagicMock()
+    result.all.return_value = []
+    result.first.return_value = None
+    result.one_or_none.return_value = None
+    session.scalars = AsyncMock(return_value=result)
+    session.execute = AsyncMock(return_value=result)
+    for name, value in overrides.items():
+        setattr(session, name, value)
+    return session
 
 
 class DummySessionBase:

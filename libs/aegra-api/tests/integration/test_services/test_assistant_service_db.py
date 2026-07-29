@@ -252,10 +252,13 @@ class TestAssistantServiceDatabase:
         mock_result.all.return_value = []
 
         assistant_service.session.scalars.return_value = mock_result
+        assistant_service.session.scalar.return_value = 0
 
         result = await assistant_service.search_assistants(mock_request)
 
-        assert isinstance(result, list)
+        # search_assistants returns AssistantSearchPage, not a bare list.
+        assert result.items == []
+        assert result.total == 0
         # Verify pagination parameters were applied
         assistant_service.session.scalars.assert_called_once()
 
@@ -380,10 +383,12 @@ class TestAssistantServiceDatabase:
         mock_result.all.return_value = []
 
         assistant_service.session.scalars.return_value = mock_result
+        assistant_service.session.scalar.return_value = 0
 
         result = await assistant_service.search_assistants(mock_request)
 
-        assert isinstance(result, list)
+        # search_assistants returns AssistantSearchPage, not a bare list.
+        assert result.items == []
         # Verify metadata filter was applied
         assistant_service.session.scalars.assert_called_once()
 

@@ -2,9 +2,14 @@
 
 import pytest
 
-from aegra_api.services.assistant_service import get_assistant_service
+from aegra_api.services.assistant_service import AssistantSearchPage, get_assistant_service
 from tests.fixtures.clients import create_test_app, make_client
 from tests.fixtures.test_helpers import make_assistant
+
+
+def _page(items: list) -> AssistantSearchPage:
+    """Wrap items in the page shape the search route expects."""
+    return AssistantSearchPage(items=items, total=len(items), next_offset=None)
 
 
 @pytest.fixture
@@ -241,7 +246,7 @@ class TestDeleteAssistant:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "deleted"
-        mock_assistant_service.delete_assistant.assert_called_once_with("test-assistant-123")
+        mock_assistant_service.delete_assistant.assert_called_once_with("test-assistant-123", delete_threads=False)
 
     def test_delete_assistant_not_found(self, client, mock_assistant_service):
         """Test deleting non-existent assistant"""
@@ -265,7 +270,7 @@ class TestSearchAssistants:
             make_assistant("asst-1", "Assistant 1"),
             make_assistant("asst-2", "Assistant 2"),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post("/assistants/search", json={})
 
@@ -276,7 +281,7 @@ class TestSearchAssistants:
 
     def test_search_assistants_zero_results(self, client, mock_assistant_service):
         """Test searching when no assistants match"""
-        mock_assistant_service.search_assistants.return_value = []
+        mock_assistant_service.search_assistants.return_value = _page([])
 
         resp = client.post(
             "/assistants/search",
@@ -291,7 +296,7 @@ class TestSearchAssistants:
     def test_search_assistants_single_result(self, client, mock_assistant_service):
         """Test searching with exactly one result"""
         assistant = make_assistant("asst-1", "Single Assistant", "unique-graph")
-        mock_assistant_service.search_assistants.return_value = [assistant]
+        mock_assistant_service.search_assistants.return_value = _page([assistant])
 
         resp = client.post(
             "/assistants/search",
@@ -312,7 +317,7 @@ class TestSearchAssistants:
             make_assistant("asst-2", "Assistant 2", "graph-1"),
             make_assistant("asst-3", "Assistant 3", "graph-1"),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -332,7 +337,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", "Assistant 1", "my-graph"),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -349,7 +354,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", "Test Assistant"),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -366,7 +371,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", description="A helpful assistant"),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -382,7 +387,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", metadata={"env": "prod"}),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -398,7 +403,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", metadata={"env": "prod", "region": "us-east"}),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -412,7 +417,7 @@ class TestSearchAssistants:
     def test_search_assistants_with_pagination(self, client, mock_assistant_service):
         """Test searching with offset and limit"""
         assistants = [make_assistant(f"asst-{i}") for i in range(2)]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -429,7 +434,7 @@ class TestSearchAssistants:
             make_assistant("asst-2", "Assistant 2"),
             make_assistant("asst-3", "Assistant 3"),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -447,7 +452,7 @@ class TestSearchAssistants:
             make_assistant("asst-1", "Assistant 1"),
             make_assistant("asst-2", "Assistant 2"),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -463,7 +468,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", "Prod Assistant", "prod-graph", metadata={"env": "prod"}),
         ]
-        mock_assistant_service.search_assistants.return_value = assistants
+        mock_assistant_service.search_assistants.return_value = _page(assistants)
 
         resp = client.post(
             "/assistants/search",
@@ -485,7 +490,7 @@ class TestSearchAssistantsSortAndAuth:
     """Sort params + #333 regression: auth handlers returning filters must not 500."""
 
     def test_search_with_sort_by_name_asc(self, client, mock_assistant_service):
-        mock_assistant_service.search_assistants.return_value = []
+        mock_assistant_service.search_assistants.return_value = _page([])
 
         resp = client.post(
             "/assistants/search",
@@ -499,7 +504,7 @@ class TestSearchAssistantsSortAndAuth:
         assert getattr(sort_column, "key", None) == "name"
 
     def test_search_with_sort_by_only_defaults_to_desc(self, client, mock_assistant_service):
-        mock_assistant_service.search_assistants.return_value = []
+        mock_assistant_service.search_assistants.return_value = _page([])
 
         resp = client.post("/assistants/search", json={"sort_by": "updated_at"})
 

@@ -67,6 +67,23 @@ __all__ = [
 
 
 # Add any global fixtures here
+@pytest.fixture(autouse=True)
+def reset_local_executor():
+    """Clear the executor singleton's per-thread state between tests.
+
+    LocalExecutor marks a thread running until ``_run_then_next`` finishes; tests
+    that patch ``asyncio.create_task`` never let it run, so the thread_id sticks
+    and a later test reusing it gets queued instead of started.
+    """
+    yield
+    from aegra_api.services.executor import executor
+
+    for attr in ("_running_threads", "_pending"):
+        state = getattr(executor, attr, None)
+        if state is not None:
+            state.clear()
+
+
 @pytest.fixture
 def dummy_user():
     """Fixture providing a dummy user for tests"""

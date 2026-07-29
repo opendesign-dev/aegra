@@ -158,6 +158,9 @@ async def test_assistant_deletion_multiple_runs():
         thread_id=thread_id,
         assistant_id=assistant_id,
         input={"messages": [{"role": "user", "content": "Run 2"}]},
+        # Default strategy is reject (409); enqueue keeps both runs on the
+        # thread so deletion has active runs to cancel.
+        multitask_strategy="enqueue",
     )
 
     elog(

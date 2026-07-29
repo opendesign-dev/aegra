@@ -4,33 +4,37 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, MutableMapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, get_args
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from redis import RedisError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse
 
 from aegra_api.core.active_runs import active_runs
 from aegra_api.core.auth_deps import auth_dependency, get_current_user
+from aegra_api.core.auth_filters import build_metadata_filter
 from aegra_api.core.auth_handlers import build_auth_context, handle_event
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import _get_session_maker, get_session
 from aegra_api.core.sse import create_end_event, get_sse_headers, make_sse_response, sse_to_bytes
-from aegra_api.models import Run, RunCreate, RunStatus, User
+from aegra_api.models import Run, RunCreate, RunSearchRequest, RunSelectField, RunStatus, User
 from aegra_api.models.enums import CancelAction
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
+from aegra_api.models.filters import assume_utc, validate_time_range
 from aegra_api.models.runs import RunsCancelRequest
 from aegra_api.services.broker import broker_manager
+from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.run_preparation import _prepare_run
 from aegra_api.services.run_waiters import TERMINAL_STATES, encode_output, heartbeat_wait_body, wrap_run_result
 from aegra_api.services.streaming_service import streaming_service
 from aegra_api.settings import settings
+from aegra_api.utils.assistants import resolve_assistant_id
 from aegra_api.utils.status_compat import validate_run_status
 
 router = APIRouter(tags=["Thread Runs"], dependencies=auth_dependency)
@@ -183,20 +187,7 @@ async def get_run(
     return Run.model_validate(run_orm)
 
 
-# SDK RunSelectField values; fields Aegra does not store are omitted from rows.
-_RUN_SELECT_FIELDS = frozenset(
-    {
-        "run_id",
-        "thread_id",
-        "assistant_id",
-        "created_at",
-        "updated_at",
-        "status",
-        "metadata",
-        "kwargs",
-        "multitask_strategy",
-    }
-)
+_RUN_SELECT_FIELDS = frozenset(get_args(RunSelectField))
 
 
 @router.get("/threads/{thread_id}/runs")
@@ -207,6 +198,12 @@ async def list_runs(
     status: str | None = Query(
         None, description="Filter by run status (e.g. pending, running, success, error, interrupted)"
     ),
+    created_after: datetime | None = Query(
+        None, description="Only runs created at or after this timestamp (ISO 8601; naive means UTC)."
+    ),
+    created_before: datetime | None = Query(
+        None, description="Only runs created at or before this timestamp (ISO 8601; naive means UTC)."
+    ),
     select_fields: list[str] | None = Query(
         None, alias="select", description="Return only these run fields (SDK RunSelectField values)."
     ),
@@ -215,19 +212,28 @@ async def list_runs(
 ) -> list[Run] | list[dict[str, Any]]:
     """List runs for a thread.
 
-    Returns runs ordered by creation time (newest first). Use `status` to
-    filter, `limit`/`offset` to paginate, and `select` to project fields.
+    Returns runs ordered by creation time (newest first). Use `status` and the
+    `created_after`/`created_before` window to filter, `limit`/`offset` to
+    paginate, and `select` to project fields.
     """
     if select_fields:
         invalid = [f for f in select_fields if f not in _RUN_SELECT_FIELDS]
         if invalid:
             raise HTTPException(422, f"Invalid select columns: {invalid}. Expected: {sorted(_RUN_SELECT_FIELDS)}")
+    after = assume_utc(created_after) if created_after else None
+    before = assume_utc(created_before) if created_before else None
+    try:
+        validate_time_range(after, before, "created")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     stmt = (
         select(RunORM)
         .where(
             RunORM.thread_id == thread_id,
             RunORM.user_id == user.identity,
             *([RunORM.status == status] if status else []),
+            *([RunORM.created_at >= after] if after else []),
+            *([RunORM.created_at <= before] if before else []),
         )
         .limit(limit)
         .offset(offset)
@@ -661,6 +667,84 @@ async def cancel_run_endpoint(
         await session.delete(run_orm)
         await session.commit()
     return run
+
+
+def _resolve_search_assistant_id(assistant_id: str) -> str:
+    """Map a graph id in the filter to its canonical assistant id.
+
+    Mirrors run creation so a caller can search by whichever identifier they
+    used to start the run.
+    """
+    return resolve_assistant_id(assistant_id, get_langgraph_service().list_graphs())
+
+
+def _run_search_filters(request: RunSearchRequest, user: User, auth_filters: dict[str, Any] | None) -> list[Any]:
+    """Shared WHERE predicates for /runs/search and /runs/count."""
+    where: list[Any] = [RunORM.user_id == user.identity]
+    if request.assistant_id is not None:
+        where.append(RunORM.assistant_id == _resolve_search_assistant_id(request.assistant_id))
+    if request.thread_id is not None:
+        where.append(RunORM.thread_id == request.thread_id)
+    if request.status is not None:
+        where.append(RunORM.status == request.status)
+    if request.metadata:
+        where.append(RunORM.metadata_dict.op("@>")(request.metadata))
+    if request.created_after is not None:
+        where.append(RunORM.created_at >= request.created_after)
+    if request.created_before is not None:
+        where.append(RunORM.created_at <= request.created_before)
+    auth_filter = build_metadata_filter(RunORM.metadata_dict, auth_filters)
+    if auth_filter is not None:
+        where.append(auth_filter)
+    return where
+
+
+# response_model=None: with `select` the items are partial dicts.
+@router.post("/runs/search", response_model=None)
+async def search_runs(
+    request: RunSearchRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[Run] | list[dict[str, Any]]:
+    """Search runs across every thread the caller owns.
+
+    Filter by assistant, thread, status, metadata, or a `created_after` /
+    `created_before` window. Results are paginated via `limit`/`offset`,
+    ordered by `sort_by`/`sort_order` (default `created_at` descending), and
+    `select` projects fields.
+    """
+    ctx = build_auth_context(user, "runs", "search")
+    auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
+
+    sort_column = getattr(RunORM, request.sort_by) if request.sort_by else RunORM.created_at
+    direction = sort_column.asc() if request.sort_order == "asc" else sort_column.desc()
+    stmt = (
+        select(RunORM)
+        .where(*_run_search_filters(request, user, auth_filters))
+        # Secondary sort keeps offset pagination stable when the primary key ties.
+        .order_by(direction, RunORM.run_id.asc())
+        .offset(request.offset)
+        .limit(request.limit)
+    )
+    runs = [Run.model_validate(row) for row in (await session.scalars(stmt)).all()]
+    if not request.select:
+        return runs
+    wanted = set(request.select)
+    return [{k: v for k, v in r.model_dump(mode="json").items() if k in wanted} for r in runs]
+
+
+@router.post("/runs/count", response_model=int)
+async def count_runs(
+    request: RunSearchRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> int:
+    """Count runs matching the same filters as `/runs/search`."""
+    ctx = build_auth_context(user, "runs", "search")
+    auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
+
+    stmt = select(func.count()).select_from(RunORM).where(*_run_search_filters(request, user, auth_filters))
+    return await session.scalar(stmt) or 0
 
 
 @router.post("/runs/cancel", status_code=204)

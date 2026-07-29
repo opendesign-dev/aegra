@@ -1,6 +1,7 @@
 """Tests for application lifespan and startup logic"""
 
 import importlib
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,7 +22,9 @@ async def test_lifespan_sets_up_observability():
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
         patch("aegra_api.main.setup_observability") as mock_setup_observability,
+        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
+        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 
@@ -52,8 +55,10 @@ async def test_lifespan_calls_required_initialization():
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
         patch("aegra_api.main.setup_observability") as mock_setup_observability,
+        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
         # Setup mocks
+        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 
@@ -95,7 +100,9 @@ async def test_lifespan_skips_migrations_when_disabled(monkeypatch):
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
         patch("aegra_api.main.setup_observability"),
+        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
+        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 
@@ -128,7 +135,9 @@ async def test_lifespan_runs_migrations_when_enabled(monkeypatch):
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
         patch("aegra_api.main.setup_observability"),
+        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
+        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 

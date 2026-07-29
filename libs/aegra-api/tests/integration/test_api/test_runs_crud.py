@@ -326,15 +326,19 @@ class TestCancelRun:
             async def commit(self):
                 pass
 
+            def expire_all(self):
+                pass
+
         override_session_dependency(app, Session)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.streaming_service") as mock_streaming:
-            mock_streaming.cancel_run = AsyncMock()
-
+        # AsyncMock for the whole service: the default action is 'interrupt', so
+        # interrupt_run — not cancel_run — is the awaited call.
+        with patch("aegra_api.api.runs.streaming_service", new_callable=AsyncMock) as mock_streaming:
             resp = client.post("/threads/test-thread-123/runs/test-run-123/cancel")
 
             assert resp.status_code == 200
+            mock_streaming.interrupt_run.assert_awaited_once_with("test-run-123")
 
 
 class TestDeleteRun:

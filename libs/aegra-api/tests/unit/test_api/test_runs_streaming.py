@@ -13,6 +13,7 @@ from aegra_api.api.runs import create_and_stream_run, stream_run
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.models import RunCreate, User
+from tests.fixtures.database import make_mock_session
 
 
 def _make_session_maker(session: AsyncMock) -> MagicMock:
@@ -32,9 +33,7 @@ class TestRunsStreamingEndpoints:
 
     @pytest.fixture
     def mock_session(self) -> AsyncMock:
-        session = AsyncMock()
-        session.add = MagicMock()  # session.add is synchronous
-        return session
+        return make_mock_session()
 
     @pytest.fixture
     def sample_assistant(self) -> AssistantORM:

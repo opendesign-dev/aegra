@@ -33,6 +33,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Thread copy | Supported | `POST /threads/{id}/copy` forks a thread with its full checkpoint history into a new thread. |
 | Thread prune | Supported | `POST /threads/prune` deletes threads by id, or `keep_latest` drops all but the newest checkpoint per namespace. |
 | Thread search projection | Supported | `select` projects fields, `extract` pulls dot/bracket paths, and `values`/`ids` filter on the latest state. Latest state is materialized into a 1:1 `thread_state` table (not the wide thread row), so list/search omit `values`/`interrupts` unless `select`ed; the checkpointer stays the source of truth. |
+| Thread search time window | Supported | `created_after` / `created_before` narrow `/threads/search` and `/threads/count` to a creation window (inclusive, ISO 8601, naive means UTC). |
 | Per-thread TTL | Supported | `ttl` on create/update sets retention; `include=ttl` returns it. |
 | Thread supersteps | Supported | `supersteps` on create seeds the thread's state (Studio initial state). |
 
@@ -56,6 +57,8 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Webhook callbacks | Supported | POST the final Run payload to a `webhook` URL on terminal state. Bounded retry with jitter (tenacity), optional HMAC signing, SSRF guard. |
 | `if_not_exists` | Supported | Run creation on a missing thread: `reject` (default, 404) or `create`. |
 | Thread count | Supported | `POST /threads/count` returns the number of threads matching the search filters. |
+| Run search | Supported | `POST /runs/search` queries runs across every thread you own, filtered by `assistant_id` (graph id accepted), `thread_id`, `status`, `metadata`, and a `created_after` / `created_before` window. `POST /runs/count` returns the matching total. |
+| Run list time window | Supported | `created_after` / `created_before` narrow `GET /threads/{id}/runs` to a creation window. |
 
 ### Scaling and reliability
 

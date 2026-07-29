@@ -3,8 +3,9 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from aegra_api.models.filters import UtcDatetime, validate_time_range
 from aegra_api.utils.status_compat import validate_thread_status
 
 # SDK ThreadSelectField values; fields Aegra does not store are omitted from rows.
@@ -128,7 +129,13 @@ class ThreadSearchRequest(BaseModel):
     )
     ids: list[str] | None = Field(default=None, description="Restrict to these thread ids.")
     status: str | None = Field(default=None, description="Thread status filter (idle, busy, interrupted, error)")
-    limit: int | None = Field(default=20, le=100, ge=1, description="Maximum results")
+    created_after: UtcDatetime | None = Field(
+        default=None, description="Only threads created at or after this timestamp (ISO 8601; naive means UTC)."
+    )
+    created_before: UtcDatetime | None = Field(
+        default=None, description="Only threads created at or before this timestamp (ISO 8601; naive means UTC)."
+    )
+    limit: int | None = Field(default=20, le=1000, ge=1, description="Maximum results")
     offset: int | None = Field(default=0, ge=0, description="Results offset")
     sort_by: Literal["thread_id", "status", "created_at", "updated_at", "state_updated_at"] | None = Field(
         default=None,
@@ -151,6 +158,11 @@ class ThreadSearchRequest(BaseModel):
         if v is not None:
             return validate_thread_status(v)
         return v
+
+    @model_validator(mode="after")
+    def validate_created_range(self) -> "ThreadSearchRequest":
+        validate_time_range(self.created_after, self.created_before, "created")
+        return self
 
 
 class ThreadPruneRequest(BaseModel):

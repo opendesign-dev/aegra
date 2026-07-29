@@ -8,6 +8,7 @@ Used for stress testing worker architecture under realistic load.
 """
 
 import asyncio
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Literal
@@ -46,7 +47,9 @@ TOOLS = [slow_process]
 
 async def call_model(state: State) -> dict[str, list[AIMessage]]:
     """Call the LLM with tool binding."""
-    model = load_chat_model("openai/gpt-4o-mini").bind_tools(TOOLS)
+    # MODEL matches react_agent's Context env convention, so a gateway that only
+    # serves specific models can be pointed at without editing this file.
+    model = load_chat_model(os.environ.get("MODEL", "openai/gpt-4o-mini")).bind_tools(TOOLS)
 
     system_message = (
         "You are a data processing agent. When asked to process data, you MUST call "

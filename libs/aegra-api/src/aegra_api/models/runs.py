@@ -13,11 +13,25 @@ from pydantic import (
 )
 
 from aegra_api.models.enums import DisconnectMode, MultitaskStrategy
+from aegra_api.models.filters import UtcDatetime, validate_time_range
 from aegra_api.utils.status_compat import validate_run_status
 
 # The SDK types run metadata as arbitrary JSON, so the only limit we impose is a
 # serialized-size cap to close the DoS surface; shape is unconstrained.
 _METADATA_MAX_BYTES = 64 * 1024
+
+# SDK RunSelectField values; fields Aegra does not store are omitted from rows.
+RunSelectField = Literal[
+    "run_id",
+    "thread_id",
+    "assistant_id",
+    "created_at",
+    "updated_at",
+    "status",
+    "metadata",
+    "kwargs",
+    "multitask_strategy",
+]
 
 
 class RunCreate(BaseModel):
@@ -185,6 +199,52 @@ class RunsCancelRequest(BaseModel):
             return self
         if not self.thread_id or not self.run_ids:
             raise ValueError("Must provide either a status or both 'thread_id' and 'run_ids'")
+        return self
+
+
+class RunSearchRequest(BaseModel):
+    """Request body for ``POST /runs/search`` and ``POST /runs/count``.
+
+    Queries the ``runs`` table across every thread the caller owns, so assistant
+    attribution comes from the run's own ``assistant_id`` column rather than the
+    last-writer-wins ``assistant_id`` in thread metadata.
+    """
+
+    assistant_id: str | None = Field(
+        default=None,
+        description="Assistant that executed the run. Accepts a graph id, which resolves to its canonical assistant id.",
+    )
+    thread_id: str | None = Field(default=None, description="Restrict to a single thread.")
+    status: str | None = Field(
+        default=None,
+        description="Run status filter (pending, running, success, error, timeout, interrupted).",
+    )
+    metadata: dict[str, Any] | None = Field(default=None, description="Metadata filters (JSONB containment).")
+    created_after: UtcDatetime | None = Field(
+        default=None, description="Only runs created at or after this timestamp (ISO 8601; naive means UTC)."
+    )
+    created_before: UtcDatetime | None = Field(
+        default=None, description="Only runs created at or before this timestamp (ISO 8601; naive means UTC)."
+    )
+    limit: int = Field(default=20, ge=1, le=1000, description="Maximum results")
+    offset: int = Field(default=0, ge=0, description="Results offset")
+    sort_by: Literal["run_id", "thread_id", "assistant_id", "status", "created_at", "updated_at"] | None = Field(
+        default=None, description="Field to sort by. Defaults to created_at."
+    )
+    sort_order: Literal["asc", "desc"] | None = Field(default=None, description="Sort direction. Defaults to 'desc'.")
+    select: list[RunSelectField] | None = Field(default=None, description="Return only these run fields.")
+
+    @field_validator("status")
+    @classmethod
+    def validate_status_filter(cls, v: str | None) -> str | None:
+        """Validate the status filter against the API's status vocabulary."""
+        if v is None:
+            return v
+        return validate_run_status(v)
+
+    @model_validator(mode="after")
+    def validate_created_range(self) -> Self:
+        validate_time_range(self.created_after, self.created_before, "created")
         return self
 
 

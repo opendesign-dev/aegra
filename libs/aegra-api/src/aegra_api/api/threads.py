@@ -954,6 +954,11 @@ def _search_filters(request: ThreadSearchRequest, user: User) -> list[Any]:
         where.append(ThreadStateORM.values.op("@>")(request.values))
     if request.ids:
         where.append(ThreadORM.thread_id.in_(request.ids))
+    # Served by idx_thread_user_created (user_id, created_at DESC).
+    if request.created_after is not None:
+        where.append(ThreadORM.created_at >= request.created_after)
+    if request.created_before is not None:
+        where.append(ThreadORM.created_at <= request.created_before)
     return where
 
 

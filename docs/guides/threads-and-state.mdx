@@ -136,6 +136,79 @@ threads = await client.threads.search(
 )
 ```
 
+### Filtering by creation time
+
+`created_after` and `created_before` narrow the search to a creation window. Both bounds are inclusive and accept ISO 8601 timestamps; a timestamp without an offset is read as UTC. An inverted window (`created_after` later than `created_before`) is rejected with a 422 rather than silently matching nothing.
+
+The SDK client does not expose these fields yet, so call the endpoint directly:
+
+```python
+import httpx
+
+async with httpx.AsyncClient(base_url="http://localhost:2026") as http:
+    resp = await http.post(
+        "/threads/search",
+        json={
+            "created_after": "2026-01-01T00:00:00Z",
+            "created_before": "2026-02-01T00:00:00Z",
+            "sort_by": "created_at",
+            "sort_order": "desc",
+            "limit": 100,
+        },
+    )
+    threads = resp.json()
+```
+
+`POST /threads/count` accepts the same body and returns the matching total. Both endpoints page with `limit` (max 1000) / `offset`.
+
+### Listing conversations for one assistant
+
+A thread's `metadata.assistant_id` records the **last** assistant that ran on it, so it is a useful filter but not a complete history when several assistants share a thread. Combine it with `extract` to get a conversation list with a last-message preview in a single request:
+
+```python
+resp = await http.post(
+    "/threads/search",
+    json={
+        "metadata": {"assistant_id": assistant_id},
+        "created_after": "2026-01-01T00:00:00Z",
+        "sort_by": "created_at",
+        "sort_order": "desc",
+        "extract": {"last_message": "values.messages[-1].content"},
+        "limit": 100,
+    },
+)
+```
+
+For assistant attribution that survives multiple assistants on one thread, query the runs instead — see [Searching runs](#searching-runs) below.
+
+## Searching runs
+
+`POST /runs/search` queries the `runs` table across every thread you own. Unlike thread metadata, each run stores its own `assistant_id` column, so this is the authoritative way to ask "what did this assistant do, and when":
+
+```python
+resp = await http.post(
+    "/runs/search",
+    json={
+        "assistant_id": assistant_id,      # a graph id is also accepted
+        "status": "success",
+        "created_after": "2026-01-01T00:00:00Z",
+        "created_before": "2026-02-01T00:00:00Z",
+        "sort_by": "created_at",
+        "sort_order": "desc",
+        "limit": 100,
+    },
+)
+runs = resp.json()
+
+# Then pull each conversation's checkpoint history
+for run in runs:
+    history = await client.threads.get_history(run["thread_id"])
+```
+
+Available filters: `assistant_id`, `thread_id`, `status`, `metadata` (JSONB containment), `created_after`, `created_before`. Results are paginated with `limit` (max 1000) / `offset`, sorted by `sort_by` / `sort_order` (default `created_at` descending), and `select` projects fields.
+
+`POST /runs/count` accepts the same body and returns the matching total. `GET /threads/{id}/runs` takes the same `created_after` / `created_before` window when you already know the thread.
+
 ## Listing threads
 
 ```python
@@ -157,7 +230,7 @@ await client.threads.delete(thread_id)
 Threads automatically track metadata about their usage:
 
 - `owner`: User identity at creation time (mirrors `user_id` on the Thread object, which is used for access control)
-- `assistant_id`: Last assistant used
+- `assistant_id`: Last assistant used — overwritten on each run, so use [run search](#searching-runs) when a thread spans several assistants
 - `graph_id`: Last graph executed
 
 You can add your own metadata at creation or update time:

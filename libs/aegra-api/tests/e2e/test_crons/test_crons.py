@@ -104,15 +104,16 @@ async def test_cron_accepts_graph_id_as_assistant_id() -> None:
     client = get_e2e_client()
     marker = f"cron-via-graph-id-{uuid4()}"
 
-    cron_run = await client.crons.create(
+    cron = await client.crons.create(
         "agent",
         schedule="0 2 * * *",
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    elog("Cron.create (graph id)", cron_run)
+    elog("Cron.create (graph id)", cron)
 
-    assert "run_id" in cron_run
-    assert cron_run["assistant_id"] != "agent"
+    assert "cron_id" in cron
+    assert "run_id" not in cron
+    assert cron["assistant_id"] != "agent"
 
     crons = await client.crons.search(assistant_id="agent")
     matching = [
@@ -142,14 +143,15 @@ async def test_cron_stateless_create_and_delete() -> None:
     assistant_id = assistant["assistant_id"]
     elog("Assistant", assistant)
 
-    cron_run = await client.crons.create(
+    cron = await client.crons.create(
         assistant_id,
         schedule="0 3 * * *",  # 03:00 UTC every day — won't fire during test
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    elog("Cron.create (stateless)", cron_run)
+    elog("Cron.create (stateless)", cron)
 
-    assert "run_id" in cron_run
+    assert "cron_id" in cron
+    assert "run_id" not in cron
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
 
     await client.crons.delete(cron_id)
@@ -207,15 +209,16 @@ async def test_cron_for_thread_create_and_delete() -> None:
     thread_id = thread["thread_id"]
     elog("Thread", thread)
 
-    cron_run = await client.crons.create_for_thread(
+    cron = await client.crons.create_for_thread(
         thread_id,
         assistant_id,
         schedule="0 4 * * *",  # 04:00 UTC every day
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    elog("Cron.create_for_thread", cron_run)
+    elog("Cron.create_for_thread", cron)
 
-    assert "run_id" in cron_run
+    assert "cron_id" in cron
+    assert "run_id" not in cron
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
 
     await client.crons.delete(cron_id)
@@ -274,18 +277,20 @@ async def test_cron_search_and_count() -> None:
     )
     assistant_id = assistant["assistant_id"]
 
-    run_a = await client.crons.create(
+    cron_a = await client.crons.create(
         assistant_id,
         schedule="0 5 * * *",
         input={"messages": [{"role": "user", "content": marker_a}]},
     )
-    run_b = await client.crons.create(
+    cron_b = await client.crons.create(
         assistant_id,
         schedule="0 6 * * *",
         input={"messages": [{"role": "user", "content": marker_b}]},
     )
-    assert "run_id" in run_a
-    assert "run_id" in run_b
+    assert "cron_id" in cron_a
+    assert "cron_id" in cron_b
+    assert "run_id" not in cron_a
+    assert "run_id" not in cron_b
     cron_id_a = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker_a)
     cron_id_b = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker_b)
     elog("Created crons", {"a": cron_id_a, "b": cron_id_b})
@@ -321,12 +326,13 @@ async def test_cron_update() -> None:
     )
     assistant_id = assistant["assistant_id"]
 
-    cron_run = await client.crons.create(
+    cron = await client.crons.create(
         assistant_id,
         schedule="0 7 * * *",
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    assert "run_id" in cron_run
+    assert "cron_id" in cron
+    assert "run_id" not in cron
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
     elog("Created cron", {"cron_id": cron_id})
 
@@ -379,7 +385,7 @@ async def test_cron_with_timezone() -> None:
     )
     assistant_id = assistant["assistant_id"]
 
-    cron_run = await _create_cron_via_http(
+    cron = await _create_cron_via_http(
         {
             "assistant_id": assistant_id,
             "schedule": "0 9 * * *",
@@ -387,7 +393,8 @@ async def test_cron_with_timezone() -> None:
             "input": {"messages": [{"role": "user", "content": marker}]},
         }
     )
-    assert "run_id" in cron_run
+    assert "cron_id" in cron
+    assert "run_id" not in cron
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
     elog("Created cron with timezone", {"cron_id": cron_id})
 
@@ -424,7 +431,7 @@ async def test_cron_example_seconds_schedule_fires_on_live_scheduler() -> None:
     cron_id: str | None = None
 
     try:
-        cron_run = await _create_thread_cron_via_http(
+        cron = await _create_thread_cron_via_http(
             thread_id,
             {
                 "assistant_id": assistant_id,
@@ -433,9 +440,8 @@ async def test_cron_example_seconds_schedule_fires_on_live_scheduler() -> None:
             },
         )
         cron_id = (await _search_crons_via_http({"assistant_id": assistant_id, "thread_id": thread_id}))[0]["cron_id"]
-        elog("cron_example scheduled cron", {"cron_id": cron_id, "run": cron_run})
+        elog("cron_example scheduled cron", {"cron_id": cron_id, "run": cron})
 
-        await client.runs.join(thread_id, cron_run["run_id"])
         await _wait_for_tick_count(client=client, thread_id=thread_id, minimum=1, attempts=10)
 
         state = await _wait_for_tick_count(client=client, thread_id=thread_id, minimum=2, attempts=30)

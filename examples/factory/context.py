@@ -1,6 +1,7 @@
 """Typed factory context — drives model selection, graph structure, and MCP lifecycle."""
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
 
 @dataclass(kw_only=True)
@@ -27,7 +28,9 @@ class FactoryContext:
             MCP tool servers and adds their tools to the agent.
     """
 
-    model: str = "openai/gpt-4o-mini"
+    # MODEL matches react_agent's Context env convention, so a gateway that only
+    # serves specific models can be pointed at without editing this file.
+    model: str = field(default_factory=lambda: os.environ.get("MODEL", "openai/gpt-4o-mini"))
     system_prompt: str = "You are a helpful assistant."
     enable_search: bool = True
     enable_mcp: bool = False

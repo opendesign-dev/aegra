@@ -464,7 +464,7 @@ class TestAssistantServiceCreate:
         """Test duplicate assistant handling with error policy"""
         request = AssistantCreate(
             graph_id="test-graph",
-            if_exists="error",
+            if_exists="raise",
         )
 
         # Mock existing assistant
@@ -799,10 +799,13 @@ class TestAssistantServiceSearch:
         mock_result.all.return_value = []
 
         assistant_service.session.scalars.return_value = mock_result
+        assistant_service.session.scalar.return_value = 0
 
         result = await assistant_service.search_assistants(mock_request)
 
-        assert isinstance(result, list)
+        assert result.items == []
+        assert result.total == 0
+        assert result.next_offset is None
         assistant_service.session.scalars.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1151,6 +1154,8 @@ class TestAuthDispatch:
         result = Mock()
         result.all.return_value = []
         assistant_service.session.scalars.return_value = result
+        # search_assistants also runs a COUNT for the page total.
+        assistant_service.session.scalar.return_value = 0
         with patch(_DISPATCH, new=AsyncMock(return_value={"owner": "user-123"})):
             await assistant_service.search_assistants(request)
 

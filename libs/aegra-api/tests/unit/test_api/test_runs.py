@@ -27,6 +27,7 @@ from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.models import Run, RunCreate, RunStatus, User
+from tests.fixtures.database import make_mock_session
 
 
 class TestRunsEndpoints:
@@ -38,10 +39,7 @@ class TestRunsEndpoints:
 
     @pytest.fixture
     def mock_session(self) -> AsyncMock:
-        session = AsyncMock()
-        session.refresh = AsyncMock()
-        session.add = MagicMock()  # session.add is synchronous
-        return session
+        return make_mock_session(refresh=AsyncMock())
 
     @pytest.fixture
     def sample_thread(self) -> ThreadORM:
@@ -257,11 +255,16 @@ class TestRunsEndpoints:
         mock_result.all.return_value = runs
         mock_session.scalars.return_value = mock_result
 
+        # Called directly, so every Query-defaulted param must be passed; an
+        # omitted one stays a Query sentinel object rather than becoming None.
         result = await list_runs(
             thread_id,
             limit=10,
             offset=0,
             status=None,
+            created_after=None,
+            created_before=None,
+            select_fields=None,
             user=mock_user,
             session=mock_session,
         )

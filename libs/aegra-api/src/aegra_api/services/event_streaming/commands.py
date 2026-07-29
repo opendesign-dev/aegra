@@ -125,6 +125,9 @@ async def _run_start(
         interrupt_before=params.get("interrupt_before"),
         interrupt_after=params.get("interrupt_after"),
         multitask_strategy=multitask,
+        # The v2 client mints the thread id and expects run.start to create it
+        # (see _verify_thread_owned_or_new); the RunCreate default would 404.
+        if_not_exists="create",
     )
     run_id = await _start(session, thread_id, request, user)
     return build_success(command_id, {"run_id": run_id}, applied_through_seq=0), run_id
