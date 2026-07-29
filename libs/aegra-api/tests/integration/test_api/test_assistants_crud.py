@@ -663,6 +663,30 @@ class TestListAssistantVersions:
         assert data[0]["version"] == 1
         assert data[2]["version"] == 3
 
+    def test_list_assistant_versions_forwards_pagination_body(self, client, mock_assistant_service):
+        """The SDK sends {metadata, limit, offset}; the route must pass it through.
+
+        Regression: the endpoint declared no request body, so `get_versions(limit=1)`
+        returned every version instead of one page.
+        """
+        mock_assistant_service.list_assistant_versions.return_value = []
+
+        resp = client.post(
+            "/assistants/test-assistant-123/versions",
+            json={"limit": 5, "offset": 10, "metadata": {"env": "prod"}},
+        )
+
+        assert resp.status_code == 200, resp.text
+        _assistant_id, request = mock_assistant_service.list_assistant_versions.call_args.args
+        assert (request.limit, request.offset) == (5, 10)
+        assert request.metadata == {"env": "prod"}
+
+    def test_list_assistant_versions_rejects_bad_pagination(self, client, mock_assistant_service):
+        """Out-of-range paging is a client error, not a silently clamped query."""
+        mock_assistant_service.list_assistant_versions.return_value = []
+        assert client.post("/assistants/a/versions", json={"limit": 0}).status_code == 422
+        assert client.post("/assistants/a/versions", json={"offset": -1}).status_code == 422
+
     def test_list_assistant_versions_empty(self, client, mock_assistant_service):
         """Test listing versions when there are none"""
         mock_assistant_service.list_assistant_versions.return_value = []

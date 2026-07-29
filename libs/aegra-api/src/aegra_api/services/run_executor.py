@@ -15,7 +15,7 @@ from sqlalchemy import update
 from aegra_api.core.active_runs import active_runs
 from aegra_api.core.auth_ctx import with_auth_ctx
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.core.redis_manager import redis_manager
 from aegra_api.core.serializers.langgraph import LangGraphSerializer
 from aegra_api.models.run_job import RunJob
@@ -174,7 +174,7 @@ async def _release_for_recovery(run_id: str) -> None:
     which resumes from the last checkpoint. No retry budget is charged — a
     rolling deploy is not a failure.
     """
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         await session.execute(
             update(RunORM)

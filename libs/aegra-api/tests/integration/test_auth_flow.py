@@ -42,7 +42,8 @@ async def authenticate(headers: dict) -> dict:
         "is_authenticated": True,
         "permissions": ["read"],
     }
-"""
+""",
+            encoding="utf-8",
         )
         return auth_file
 
@@ -58,7 +59,8 @@ async def authenticate(headers: dict) -> dict:
                     "graphs": {"test": "./test.py:graph"},
                     "auth": {"path": f"./{mock_auth_file.name}:auth"},
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         return config_file
 
@@ -136,7 +138,8 @@ class TestMockJWTAuth:
                     "graphs": {"test": "./test.py:graph"},
                     "auth": {"path": f"./{test_auth_file.name}:auth"},
                 }
-            )
+            ),
+            encoding="utf-8",
         )
 
         # Load backend - it should load from config

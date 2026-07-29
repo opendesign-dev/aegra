@@ -19,7 +19,8 @@ app = FastAPI()
 @app.get("/custom")
 async def custom():
     return {"message": "custom"}
-"""
+""",
+        encoding="utf-8",
     )
 
     # Load the app
@@ -45,7 +46,8 @@ async def handler(request):
     return {"message": "custom"}
 
 app = Starlette(routes=[Route("/custom", handler)])
-"""
+""",
+        encoding="utf-8",
     )
 
     # Starlette apps should be rejected - only FastAPI is allowed
@@ -68,7 +70,7 @@ def test_load_custom_app_file_not_found():
 def test_load_custom_app_missing_variable(tmp_path):
     """Test loading app when variable doesn't exist"""
     app_file = tmp_path / "no_app.py"
-    app_file.write_text("x = 1")
+    app_file.write_text("x = 1", encoding="utf-8")
 
     with pytest.raises(AttributeError, match="App 'app' not found"):
         load_custom_app(f"{app_file}:app")
@@ -77,7 +79,7 @@ def test_load_custom_app_missing_variable(tmp_path):
 def test_load_custom_app_not_starlette(tmp_path):
     """Test loading app when variable is not a FastAPI app"""
     app_file = tmp_path / "not_app.py"
-    app_file.write_text("app = 'not an app'")
+    app_file.write_text("app = 'not an app'", encoding="utf-8")
 
     with pytest.raises(TypeError, match="not a FastAPI application"):
         load_custom_app(f"{app_file}:app")

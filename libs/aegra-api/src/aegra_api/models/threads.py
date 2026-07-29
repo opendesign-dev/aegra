@@ -1,17 +1,19 @@
 """Thread-related Pydantic models for Agent Protocol"""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from aegra_api.models.enums import (
+    OnConflictBehavior,
+    PruneStrategy,
+    SortOrder,
+    ThreadSelectField,
+    ThreadSortBy,
+)
 from aegra_api.models.filters import UtcDatetime, validate_time_range
 from aegra_api.utils.status_compat import validate_thread_status
-
-# SDK ThreadSelectField values; fields Aegra does not store are omitted from rows.
-ThreadSelectField = Literal[
-    "thread_id", "created_at", "updated_at", "metadata", "config", "context", "status", "values", "interrupts"
-]
 
 
 def _normalize_ttl(value: Any) -> dict[str, Any] | None:
@@ -43,14 +45,16 @@ class ThreadCreate(BaseModel):
 
     metadata: dict[str, Any] | None = Field(default=None, description="Thread metadata")
     initial_state: dict[str, Any] | None = Field(default=None, description="LangGraph initial state")
+    # snake_case is the wire name (what the SDK sends and what OpenAPI must
+    # advertise); the camelCase alias stays accepted for older clients.
     thread_id: str | None = Field(
         default=None,
-        alias="threadId",
+        validation_alias=AliasChoices("thread_id", "threadId"),
         description="Optional client-provided thread ID for idempotent creation",
     )
-    if_exists: str | None = Field(
+    if_exists: OnConflictBehavior | None = Field(
         default="raise",
-        alias="ifExists",
+        validation_alias=AliasChoices("if_exists", "ifExists"),
         description="Behavior when thread exists: 'raise' (default) or 'do_nothing'",
     )
     graph_id: str | None = Field(default=None, description="Graph to associate with the thread (metadata.graph_id)")
@@ -137,11 +141,11 @@ class ThreadSearchRequest(BaseModel):
     )
     limit: int | None = Field(default=20, le=1000, ge=1, description="Maximum results")
     offset: int | None = Field(default=0, ge=0, description="Results offset")
-    sort_by: Literal["thread_id", "status", "created_at", "updated_at", "state_updated_at"] | None = Field(
+    sort_by: ThreadSortBy | None = Field(
         default=None,
         description="Field to sort by (SDK-compatible). 'state_updated_at' maps to updated_at.",
     )
-    sort_order: Literal["asc", "desc"] | None = Field(
+    sort_order: SortOrder | None = Field(
         default=None,
         description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
     )
@@ -169,7 +173,7 @@ class ThreadPruneRequest(BaseModel):
     """Request body for ``POST /threads/prune``."""
 
     thread_ids: list[str] = Field(..., description="Threads to prune.")
-    strategy: Literal["delete", "keep_latest"] = Field(
+    strategy: PruneStrategy = Field(
         default="delete",
         description="'delete' removes the threads entirely; 'keep_latest' keeps only the newest checkpoint per namespace.",
     )

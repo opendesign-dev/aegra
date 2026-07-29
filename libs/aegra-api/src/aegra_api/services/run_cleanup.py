@@ -15,18 +15,18 @@ from aegra_api.core.active_runs import active_runs
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.services.executor import executor
 from aegra_api.services.streaming_service import streaming_service
 
 logger = structlog.getLogger(__name__)
 
 # Strong refs so fire-and-forget cleanup tasks survive GC until done.
-_background_cleanup_tasks: set[asyncio.Task[None]] = set()
+background_cleanup_tasks: set[asyncio.Task[None]] = set()
 
 # Transient infra failures we tolerate during cleanup. Programmer errors
 # (TypeError, AttributeError, ...) propagate.
-_CLEANUP_ERRORS: tuple[type[BaseException], ...] = (RedisError, SQLAlchemyError, OSError)
+CLEANUP_ERRORS: tuple[type[BaseException], ...] = (RedisError, SQLAlchemyError, OSError)
 
 
 async def delete_thread_checkpoints(thread_id: str) -> None:
@@ -39,7 +39,7 @@ async def delete_thread_checkpoints(thread_id: str) -> None:
     """
     try:
         await db_manager.get_checkpointer().adelete_thread(thread_id)
-    except _CLEANUP_ERRORS:
+    except CLEANUP_ERRORS:
         logger.exception("Failed to delete thread checkpoints", thread_id=thread_id)
 
 
@@ -49,7 +49,7 @@ async def delete_thread_by_id(thread_id: str, user_id: str) -> None:
     Opens its own DB session so it can be called after the request session has
     been closed (e.g. in a finally block or background task).
     """
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         active_runs_stmt = select(RunORM).where(
             RunORM.thread_id == thread_id,
@@ -69,7 +69,7 @@ async def delete_thread_by_id(thread_id: str, user_id: str) -> None:
                 except asyncio.CancelledError:
                     # Expected: we just called task.cancel(). Nothing to log.
                     pass
-                except _CLEANUP_ERRORS:
+                except CLEANUP_ERRORS:
                     logger.exception("Error awaiting cancelled task during thread cleanup", run_id=run_id)
 
         thread = await session.scalar(
@@ -98,18 +98,18 @@ async def cleanup_after_background_run(run_id: str, thread_id: str, user_id: str
         # Cancellation = shutdown; timeout = run exceeded 1h cap. Either way we
         # still proceed to delete the thread below — no need to log.
         pass
-    except _CLEANUP_ERRORS:
+    except CLEANUP_ERRORS:
         logger.exception("Error waiting for background run", run_id=run_id)
 
     try:
         await delete_thread_by_id(thread_id, user_id)
-    except _CLEANUP_ERRORS:
+    except CLEANUP_ERRORS:
         logger.exception("Failed to delete ephemeral thread", thread_id=thread_id, run_id=run_id)
 
 
 def schedule_background_cleanup(run_id: str, thread_id: str, user_id: str) -> asyncio.Task[None]:
     """Fire-and-forget background cleanup, strong ref held until done."""
     task = asyncio.create_task(cleanup_after_background_run(run_id, thread_id, user_id))
-    _background_cleanup_tasks.add(task)
-    task.add_done_callback(_background_cleanup_tasks.discard)
+    background_cleanup_tasks.add(task)
+    task.add_done_callback(background_cleanup_tasks.discard)
     return task

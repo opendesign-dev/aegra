@@ -6,4 +6,25 @@ managers, streaming service) can import it without circular dependencies.
 
 import asyncio
 
+import structlog
+
+logger = structlog.getLogger(__name__)
+
 active_runs: dict[str, asyncio.Task[None]] = {}
+
+
+async def drain_task(task: asyncio.Task[None], run_id: str) -> None:
+    """Wait for a cancelled run task to stop before its rows are deleted.
+
+    The run's own executor owns the outcome, so a failure here is not fatal —
+    but it is logged rather than swallowed, or a programmer error inside the
+    graph task would vanish without trace.
+    """
+    try:
+        await task
+    except asyncio.CancelledError:
+        # Only the task's own cancellation is expected; ours must keep propagating.
+        if not task.cancelled():
+            raise
+    except Exception:
+        logger.warning("run task raised while draining", run_id=run_id, exc_info=True)

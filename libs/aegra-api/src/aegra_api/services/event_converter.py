@@ -27,6 +27,15 @@ class EventConverter:
         stream_mode, payload, namespace = self._parse_raw_event(raw_event)
         return self._create_sse_event(stream_mode, payload, event_id, namespace)
 
+    def base_mode(self, raw_event: Any) -> str:
+        """The SDK stream mode a raw broker event belongs to.
+
+        Strips the ``messages/partial`` and ``values|ns`` modifiers so callers can
+        match against the plain SDK ``StreamMode`` vocabulary.
+        """
+        mode, _payload, _namespace = self._parse_raw_event(raw_event)
+        return mode.split("/", 1)[0].split("|", 1)[0]
+
     def _parse_raw_event(self, raw_event: Any) -> tuple[str, Any, list[str] | None]:
         """
         Parse raw event into (stream_mode, payload, namespace).

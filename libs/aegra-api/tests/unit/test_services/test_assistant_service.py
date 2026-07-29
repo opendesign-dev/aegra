@@ -8,12 +8,13 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
+from aegra_api.models.assistants import AssistantVersionsRequest
 from aegra_api.models.auth import User
 from aegra_api.services.assistant_service import AssistantService, to_pydantic
 
@@ -1106,6 +1107,60 @@ class TestAuthDispatch:
         ctx, value = handle.await_args.args
         assert (ctx.resource, ctx.action) == ("assistants", "search")
         assert value == {"assistant_id": "asst-1", "metadata": None}
+
+    @pytest.mark.asyncio
+    async def test_versions_forwards_metadata_filter_to_dispatch(self, assistant_service: AssistantService) -> None:
+        """A metadata filter in the body reaches the auth handler, not just the query."""
+        assistant_service.session.scalar.return_value = None  # 404 after dispatch
+        request = AssistantVersionsRequest(metadata={"env": "prod"})
+        with patch(_DISPATCH, new=AsyncMock(return_value=None)) as handle, pytest.raises(HTTPException):
+            await assistant_service.list_assistant_versions("asst-1", request)
+        _ctx, value = handle.await_args.args
+        assert value == {"assistant_id": "asst-1", "metadata": {"env": "prod"}}
+
+    @pytest.mark.asyncio
+    async def test_versions_applies_limit_and_offset(self, assistant_service: AssistantService) -> None:
+        """The SDK always sends limit/offset; the query must carry them.
+
+        Regression: the endpoint took no body at all, so `get_versions(limit=1)`
+        silently returned every version an assistant had ever had.
+        """
+        assistant_service.session.scalar.return_value = MagicMock(assistant_id="asst-1")
+        empty = Mock()
+        empty.all.return_value = []
+        assistant_service.session.scalars.return_value = empty
+
+        with patch(_DISPATCH, new=AsyncMock(return_value=None)):
+            await assistant_service.list_assistant_versions("asst-1", AssistantVersionsRequest(limit=5, offset=10))
+
+        stmt = assistant_service.session.scalars.await_args.args[0]
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "LIMIT 5" in compiled
+        assert "OFFSET 10" in compiled
+
+    @pytest.mark.asyncio
+    async def test_versions_empty_page_past_the_first_is_not_404(self, assistant_service: AssistantService) -> None:
+        """Running off the end of the list returns [], not a 404."""
+        assistant_service.session.scalar.return_value = MagicMock(assistant_id="asst-1")
+        empty = Mock()
+        empty.all.return_value = []
+        assistant_service.session.scalars.return_value = empty
+
+        with patch(_DISPATCH, new=AsyncMock(return_value=None)):
+            result = await assistant_service.list_assistant_versions("asst-1", AssistantVersionsRequest(offset=999))
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_versions_first_page_empty_still_404s(self, assistant_service: AssistantService) -> None:
+        """An assistant with no versions at all is still a 404."""
+        assistant_service.session.scalar.return_value = MagicMock(assistant_id="asst-1")
+        empty = Mock()
+        empty.all.return_value = []
+        assistant_service.session.scalars.return_value = empty
+
+        with patch(_DISPATCH, new=AsyncMock(return_value=None)), pytest.raises(HTTPException) as exc:
+            await assistant_service.list_assistant_versions("asst-1")
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

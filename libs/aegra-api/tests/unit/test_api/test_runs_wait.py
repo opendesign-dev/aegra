@@ -44,7 +44,7 @@ def _make_multi_session_maker(*sessions: AsyncMock) -> MagicMock:
 def _make_request() -> RunCreate:
     """Build a standard RunCreate request.
 
-    A real model, not a Mock: _prepare_run reads fields the mock did not define
+    A real model, not a Mock: prepare_run reads fields the mock did not define
     (webhook, if_not_exists, durability), and an undefined Mock attribute is a
     truthy Mock rather than the field's default.
     """
@@ -94,7 +94,7 @@ async def _consume_streaming_response(response: object) -> dict:
     return json.loads(body) if body else {}
 
 
-# Standard patches for _prepare_run dependencies
+# Standard patches for prepare_run dependencies
 _PREPARE_RUN_PATCHES = {
     "aegra_api.services.run_preparation._validate_resume_command": AsyncMock,
     "aegra_api.services.run_preparation.set_thread_status": AsyncMock,
@@ -114,7 +114,7 @@ class TestWaitForRunExceptionPaths:
         user = User(identity="test-user", scopes=[])
         request = _make_request()
 
-        # Pre-execution session (for thread ownership check + _prepare_run)
+        # Pre-execution session (for thread ownership check + prepare_run)
         session_1 = make_mock_session()
         session_1.add = MagicMock()
         session_1.scalar.side_effect = [None, _make_assistant()]
@@ -129,8 +129,8 @@ class TestWaitForRunExceptionPaths:
             raise TimeoutError()
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -170,8 +170,8 @@ class TestWaitForRunExceptionPaths:
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -217,8 +217,8 @@ class TestWaitForRunExceptionPaths:
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -264,8 +264,8 @@ class TestWaitForRunExceptionPaths:
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -303,8 +303,8 @@ class TestWaitForRunExceptionPaths:
         mock_maker = _make_session_maker(session)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -338,8 +338,8 @@ class TestWaitForRunExceptionPaths:
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),

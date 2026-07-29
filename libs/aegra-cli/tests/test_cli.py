@@ -64,7 +64,7 @@ class TestDevCommand:
     def test_dev_builds_correct_command(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command builds the correct uvicorn command."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -84,7 +84,7 @@ class TestDevCommand:
     def test_dev_no_reload_skips_reload_flag(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that --no-reload disables uvicorn auto-reload."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -98,7 +98,7 @@ class TestDevCommand:
     def test_dev_default_host_and_port(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command uses default host and port."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -116,7 +116,7 @@ class TestDevCommand:
     def test_dev_custom_host(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command accepts custom host."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -129,7 +129,7 @@ class TestDevCommand:
     def test_dev_custom_port(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command accepts custom port."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -142,8 +142,8 @@ class TestDevCommand:
     def test_dev_port_from_env_var(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command picks up PORT from env var when no CLI flag is passed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path(".env").write_text("PORT=9090\n")
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path(".env").write_text("PORT=9090\n", encoding="utf-8")
 
             with (
                 patch.dict(os.environ, {}, clear=False),
@@ -160,8 +160,8 @@ class TestDevCommand:
     def test_dev_cli_flag_overrides_env_var(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that explicit --port flag takes precedence over PORT env var."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path(".env").write_text("PORT=9090\n")
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path(".env").write_text("PORT=9090\n", encoding="utf-8")
 
             with (
                 patch.dict(os.environ, {}, clear=False),
@@ -178,8 +178,8 @@ class TestDevCommand:
     def test_dev_host_from_env_var(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command picks up HOST from env var when no CLI flag is passed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path(".env").write_text("HOST=0.0.0.0\n")
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path(".env").write_text("HOST=0.0.0.0\n", encoding="utf-8")
 
             with (
                 patch.dict(os.environ, {}, clear=False),
@@ -196,7 +196,7 @@ class TestDevCommand:
     def test_dev_custom_app(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command accepts custom app path."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -208,7 +208,7 @@ class TestDevCommand:
     def test_dev_uvicorn_not_installed(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test error handling when uvicorn is not installed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.side_effect = FileNotFoundError("uvicorn not found")
@@ -220,7 +220,7 @@ class TestDevCommand:
     def test_dev_keyboard_interrupt(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test handling of keyboard interrupt during dev server."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_process = create_mock_popen(0)
@@ -234,7 +234,7 @@ class TestDevCommand:
     def test_dev_shows_server_info(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command shows server info in output."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -248,9 +248,12 @@ class TestDevCommand:
     def test_dev_with_env_file(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command loads .env file when specified."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
             # Create a test .env file
-            Path(".env").write_text("POSTGRES_USER=testuser\nPOSTGRES_DB=testdb\n")
+            Path(".env").write_text(
+                "POSTGRES_USER=testuser\nPOSTGRES_DB=testdb\n",
+                encoding="utf-8",
+            )
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -264,8 +267,8 @@ class TestDevCommand:
     def test_dev_with_env_file_short_flag(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that dev command accepts -e short flag for env file."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path(".env").write_text("TEST_VAR=value\n")
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path(".env").write_text("TEST_VAR=value\n", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -277,7 +280,7 @@ class TestDevCommand:
     def test_dev_with_debug_port_wraps_debugpy(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that providing --debug-port wraps uvicorn with debugpy listen."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("importlib.util.find_spec", return_value=object()),
@@ -303,7 +306,7 @@ class TestDevCommand:
     ) -> None:
         """Test that --no-reload disables reload even when debugpy is enabled."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("importlib.util.find_spec", return_value=object()),
@@ -326,7 +329,7 @@ class TestDevCommand:
     ) -> None:
         """Test that providing an IPv6 debug host (::1) is accepted and bracketed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("importlib.util.find_spec", return_value=object()),
@@ -350,7 +353,7 @@ class TestDevCommand:
     ) -> None:
         """Test that providing a localhost debug host is accepted and formatted correctly."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("importlib.util.find_spec", return_value=object()),
@@ -375,7 +378,7 @@ class TestDevCommand:
     ) -> None:
         """Test that an invalid debug host prints a warning and keeps loopback binding."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("importlib.util.find_spec", return_value=object()),
@@ -405,7 +408,7 @@ class TestDevCommand:
     def test_dev_debug_host_non_loopback_warns(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that using a non-loopback --debug-host prints a warning panel."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("importlib.util.find_spec", return_value=object()),
@@ -432,7 +435,7 @@ class TestDevCommand:
     ) -> None:
         """Test that --wait-for-client adds the debugpy wait flag."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("importlib.util.find_spec", return_value=object()),
@@ -452,7 +455,7 @@ class TestDevCommand:
     ) -> None:
         """Test that missing debugpy yields an instructive error message."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("importlib.util.find_spec", return_value=None):
                 result = cli_runner.invoke(cli, ["dev", "--no-db-check", "--debug-port", "5678"])
@@ -465,7 +468,7 @@ class TestDevCommand:
     ) -> None:
         """Test that using --wait-for-client without --debug-port errors fast with UsageError."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             result = cli_runner.invoke(cli, ["dev", "--no-db-check", "--wait-for-client"])
 
@@ -477,7 +480,7 @@ class TestDevCommand:
     ) -> None:
         """Test that using --debug-host without --debug-port errors fast with UsageError."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             result = cli_runner.invoke(cli, ["dev", "--no-db-check", "--debug-host", "0.0.0.0"])
 
@@ -581,7 +584,7 @@ class TestDownCommand:
     def test_down_with_compose_file(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down command uses docker-compose.yml."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -598,7 +601,7 @@ class TestDownCommand:
     def test_down_with_volumes_flag(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down command includes -v when --volumes is specified."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -610,7 +613,7 @@ class TestDownCommand:
     def test_down_with_v_short_flag(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down command accepts -v short flag."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -622,7 +625,7 @@ class TestDownCommand:
     def test_down_volumes_shows_warning(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down --volumes shows a warning about data loss."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -647,7 +650,7 @@ class TestDownCommand:
     def test_down_success_message(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down command shows success message."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -658,7 +661,7 @@ class TestDownCommand:
     def test_down_failure_shows_error(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down command shows error on failure."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 1
@@ -670,7 +673,7 @@ class TestDownCommand:
     def test_down_docker_not_installed(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test error handling when docker is not installed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.side_effect = FileNotFoundError("docker not found")
@@ -682,7 +685,7 @@ class TestDownCommand:
     def test_down_shows_running_command(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down command shows the command being run."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -767,7 +770,7 @@ class TestConfigDiscovery:
     def test_find_config_file_aegra_json(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that find_config_file finds aegra.json in current directory."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             result = find_config_file()
             assert result is not None
@@ -776,7 +779,7 @@ class TestConfigDiscovery:
     def test_find_config_file_langgraph_json(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that find_config_file finds langgraph.json as fallback."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("langgraph.json").write_text('{"graphs": {}}')
+            Path("langgraph.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             result = find_config_file()
             assert result is not None
@@ -785,8 +788,8 @@ class TestConfigDiscovery:
     def test_find_config_file_prefers_aegra(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that find_config_file prefers aegra.json over langgraph.json."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path("langgraph.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path("langgraph.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             result = find_config_file()
             assert result is not None
@@ -810,7 +813,7 @@ class TestConfigDiscovery:
         """Test that dev command uses auto-discovered config."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             # Create aegra.json
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
                 mock_popen.return_value = create_mock_popen(0)
@@ -826,7 +829,7 @@ class TestConfigDiscovery:
         # Create config file outside the isolated filesystem
         config_file = tmp_path / "custom" / "aegra.json"
         config_file.parent.mkdir(parents=True)
-        config_file.write_text('{"graphs": {}}')
+        config_file.write_text('{"graphs": {}}', encoding="utf-8")
 
         with patch("aegra_cli.cli.subprocess.Popen") as mock_popen:
             mock_popen.return_value = create_mock_popen(0)
@@ -841,7 +844,7 @@ class TestConfigDiscovery:
         import os
 
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             # Clear any existing AEGRA_CONFIG
             original = os.environ.pop("AEGRA_CONFIG", None)
@@ -875,7 +878,7 @@ class TestGetProjectSlug:
         """Test that get_project_slug reads name from config file."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             config_path = Path("aegra.json")
-            config_path.write_text('{"name": "My Test Project"}')
+            config_path.write_text('{"name": "My Test Project"}', encoding="utf-8")
             slug = get_project_slug(config_path)
             assert slug == "my_test_project"
 
@@ -893,7 +896,7 @@ class TestGetProjectSlug:
         """Test that get_project_slug handles invalid JSON gracefully."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             config_path = Path("aegra.json")
-            config_path.write_text("not valid json")
+            config_path.write_text("not valid json", encoding="utf-8")
             slug = get_project_slug(config_path)
             # Should fall back to directory name
             assert slug is not None
@@ -904,7 +907,7 @@ class TestGetProjectSlug:
         """Test that get_project_slug handles config without name field."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             config_path = Path("aegra.json")
-            config_path.write_text('{"graphs": {}}')
+            config_path.write_text('{"graphs": {}}', encoding="utf-8")
             slug = get_project_slug(config_path)
             # Should fall back to directory name
             assert slug is not None
@@ -923,7 +926,7 @@ class TestEnsureDockerFiles:
             assert result.exists()
             assert result.name == "docker-compose.yml"
 
-            content = result.read_text()
+            content = result.read_text(encoding="utf-8")
             assert "postgres" in content
             assert "myapp-postgres" in content
             assert "myapp:" in content
@@ -931,7 +934,7 @@ class TestEnsureDockerFiles:
 
             dockerfile = project_path / "Dockerfile"
             assert dockerfile.exists()
-            assert "aegra" in dockerfile.read_text()
+            assert "aegra" in dockerfile.read_text(encoding="utf-8")
 
     def test_ensure_docker_files_skips_existing(
         self, cli_runner: CliRunner, tmp_path: Path
@@ -940,14 +943,14 @@ class TestEnsureDockerFiles:
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             project_path = Path.cwd()
             compose_path = project_path / "docker-compose.yml"
-            compose_path.write_text("existing compose")
+            compose_path.write_text("existing compose", encoding="utf-8")
             dockerfile_path = project_path / "Dockerfile"
-            dockerfile_path.write_text("existing dockerfile")
+            dockerfile_path.write_text("existing dockerfile", encoding="utf-8")
 
             ensure_docker_files(project_path, "myapp")
 
-            assert compose_path.read_text() == "existing compose"
-            assert dockerfile_path.read_text() == "existing dockerfile"
+            assert compose_path.read_text(encoding="utf-8") == "existing compose"
+            assert dockerfile_path.read_text(encoding="utf-8") == "existing dockerfile"
 
     def test_ensure_docker_files_creates_missing_dockerfile(
         self, cli_runner: CliRunner, tmp_path: Path
@@ -956,14 +959,14 @@ class TestEnsureDockerFiles:
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
             project_path = Path.cwd()
             compose_path = project_path / "docker-compose.yml"
-            compose_path.write_text("existing compose")
+            compose_path.write_text("existing compose", encoding="utf-8")
 
             ensure_docker_files(project_path, "myapp")
 
-            assert compose_path.read_text() == "existing compose"
+            assert compose_path.read_text(encoding="utf-8") == "existing compose"
             dockerfile = project_path / "Dockerfile"
             assert dockerfile.exists()
-            assert "aegra" in dockerfile.read_text()
+            assert "aegra" in dockerfile.read_text(encoding="utf-8")
 
 
 class TestUpCommandExtended:
@@ -1006,7 +1009,7 @@ class TestDownCommandExtended:
     def test_down_uses_docker_compose_yml(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that down uses docker-compose.yml."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("docker-compose.yml").write_text("services: {}")
+            Path("docker-compose.yml").write_text("services: {}", encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -1046,7 +1049,7 @@ class TestServeCommand:
     def test_serve_runs_uvicorn(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that serve runs uvicorn with correct arguments."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.return_value.returncode = 0
@@ -1066,8 +1069,8 @@ class TestServeCommand:
     def test_serve_port_from_env_var(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that serve command picks up PORT from env var when no CLI flag is passed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path(".env").write_text("PORT=9090\n")
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path(".env").write_text("PORT=9090\n", encoding="utf-8")
 
             with (
                 patch.dict(os.environ, {}, clear=False),
@@ -1084,8 +1087,8 @@ class TestServeCommand:
     def test_serve_cli_flag_overrides_env_var(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that explicit --port flag takes precedence over PORT env var."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path(".env").write_text("PORT=9090\n")
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path(".env").write_text("PORT=9090\n", encoding="utf-8")
 
             with (
                 patch.dict(os.environ, {}, clear=False),
@@ -1102,8 +1105,8 @@ class TestServeCommand:
     def test_serve_host_from_env_var(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test that serve command picks up HOST from env var when no CLI flag is passed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
-            Path(".env").write_text("HOST=192.168.1.5\n")
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
+            Path(".env").write_text("HOST=192.168.1.5\n", encoding="utf-8")
 
             with (
                 patch.dict(os.environ, {}, clear=False),
@@ -1120,7 +1123,7 @@ class TestServeCommand:
     def test_serve_uvicorn_not_installed(self, cli_runner: CliRunner, tmp_path: Path) -> None:
         """Test error handling when uvicorn is not installed."""
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.cli.subprocess.run") as mock_run:
                 mock_run.side_effect = FileNotFoundError("uvicorn not found")
@@ -1136,7 +1139,7 @@ class TestLoadEnvFile:
     def test_loads_simple_key_value(self, tmp_path: Path) -> None:
         """Test basic KEY=value parsing."""
         env_file = tmp_path / ".env"
-        env_file.write_text("MY_VAR=hello\n")
+        env_file.write_text("MY_VAR=hello\n", encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             load_env_file(env_file)
 
@@ -1145,7 +1148,7 @@ class TestLoadEnvFile:
     def test_strips_inline_comments_from_unquoted_values(self, tmp_path: Path) -> None:
         """Test that inline comments are stripped from unquoted values."""
         env_file = tmp_path / ".env"
-        env_file.write_text("ENV_MODE=LOCAL # this is a comment\n")
+        env_file.write_text("ENV_MODE=LOCAL # this is a comment\n", encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             load_env_file(env_file)
 
@@ -1154,7 +1157,7 @@ class TestLoadEnvFile:
     def test_preserves_hash_in_quoted_values(self, tmp_path: Path) -> None:
         """Test that # inside quoted values is preserved."""
         env_file = tmp_path / ".env"
-        env_file.write_text('PASSWORD="my#secret"\n')
+        env_file.write_text('PASSWORD="my#secret"\n', encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             load_env_file(env_file)
 
@@ -1163,7 +1166,7 @@ class TestLoadEnvFile:
     def test_preserves_hash_in_single_quoted_values(self, tmp_path: Path) -> None:
         """Test that # inside single-quoted values is preserved."""
         env_file = tmp_path / ".env"
-        env_file.write_text("PASSWORD='my#secret'\n")
+        env_file.write_text("PASSWORD='my#secret'\n", encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             load_env_file(env_file)
 
@@ -1172,7 +1175,7 @@ class TestLoadEnvFile:
     def test_skips_comment_lines(self, tmp_path: Path) -> None:
         """Test that full-line comments are skipped."""
         env_file = tmp_path / ".env"
-        env_file.write_text("# this is a comment\nKEY=value\n")
+        env_file.write_text("# this is a comment\nKEY=value\n", encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             load_env_file(env_file)
 
@@ -1182,7 +1185,7 @@ class TestLoadEnvFile:
     def test_skips_empty_lines(self, tmp_path: Path) -> None:
         """Test that empty lines are skipped."""
         env_file = tmp_path / ".env"
-        env_file.write_text("\n\nKEY=value\n\n")
+        env_file.write_text("\n\nKEY=value\n\n", encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             load_env_file(env_file)
 
@@ -1191,7 +1194,7 @@ class TestLoadEnvFile:
     def test_does_not_override_existing_env_vars(self, tmp_path: Path) -> None:
         """Test that existing env vars are not overwritten."""
         env_file = tmp_path / ".env"
-        env_file.write_text("MY_VAR=from_file\n")
+        env_file.write_text("MY_VAR=from_file\n", encoding="utf-8")
         with patch.dict("os.environ", {"MY_VAR": "from_env"}, clear=True):
             load_env_file(env_file)
 
@@ -1205,7 +1208,7 @@ class TestLoadEnvFile:
     def test_returns_path_on_success(self, tmp_path: Path) -> None:
         """Test that the file path is returned on success."""
         env_file = tmp_path / ".env"
-        env_file.write_text("KEY=value\n")
+        env_file.write_text("KEY=value\n", encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             result = load_env_file(env_file)
             assert result == env_file
@@ -1213,7 +1216,7 @@ class TestLoadEnvFile:
     def test_inline_comment_with_multiple_hashes(self, tmp_path: Path) -> None:
         """Test stripping inline comment when value itself has no quotes."""
         env_file = tmp_path / ".env"
-        env_file.write_text("AUTH_TYPE=noop  # noop, custom\n")
+        env_file.write_text("AUTH_TYPE=noop  # noop, custom\n", encoding="utf-8")
         with patch.dict("os.environ", {}, clear=True):
             load_env_file(env_file)
 

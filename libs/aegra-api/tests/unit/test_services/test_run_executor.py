@@ -350,7 +350,7 @@ class TestShutdownCancellation:
 
         session = AsyncMock()
         maker = _session_maker(session)
-        with patch("aegra_api.services.run_executor._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_executor.get_session_maker", return_value=maker):
             await _release_for_recovery("run-1")
 
         session.execute.assert_awaited_once()

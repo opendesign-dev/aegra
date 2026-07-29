@@ -23,14 +23,14 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aegra_api.core.orm import Cron as CronORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.models import RunCreate, User
 from aegra_api.services.cron_service import (
     CronService,
     should_delete_stateless_thread,
 )
 from aegra_api.services.run_cleanup import delete_thread_by_id, schedule_background_cleanup
-from aegra_api.services.run_preparation import _prepare_run
+from aegra_api.services.run_preparation import prepare_run
 from aegra_api.settings import settings
 
 logger = structlog.getLogger(__name__)
@@ -141,7 +141,7 @@ class CronScheduler:
         silently kill the rest of the batch.
         """
         now = datetime.now(UTC)
-        maker = _get_session_maker()
+        maker = get_session_maker()
 
         async with maker() as claim_session:
             due_crons = await self._find_due_crons(claim_session, now)
@@ -197,7 +197,7 @@ class CronScheduler:
         )
 
         try:
-            _run_id, _run, _job = await _prepare_run(
+            _run_id, _run, _job = await prepare_run(
                 session,
                 thread_id,
                 run_request,

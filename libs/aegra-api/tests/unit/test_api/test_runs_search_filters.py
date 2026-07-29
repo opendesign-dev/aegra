@@ -6,9 +6,10 @@ from unittest.mock import Mock, patch
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
-from aegra_api.api.runs import _RUN_SELECT_FIELDS, _run_search_filters
+from aegra_api.api.runs import _RUN_SELECT_FIELDS
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.models import RunSearchRequest, User
+from aegra_api.services.run_search import build_run_filters
 
 
 class Compiled:
@@ -43,8 +44,8 @@ def _filters(
     """Build predicates with graph resolution stubbed to a known registry."""
     service = Mock()
     service.list_graphs.return_value = {"known-graph": "graph.py"}
-    with patch("aegra_api.api.runs.get_langgraph_service", return_value=service):
-        return Compiled(_run_search_filters(request, _user(), auth_filters, cross_user=cross_user))
+    with patch("aegra_api.services.run_search.get_langgraph_service", return_value=service):
+        return Compiled(build_run_filters(request, _user(), auth_filters, cross_user=cross_user))
 
 
 class TestOwnershipScoping:

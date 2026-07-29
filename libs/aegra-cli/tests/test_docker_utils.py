@@ -168,7 +168,7 @@ class TestFindComposeFile:
     def test_finds_compose_yml_in_current_directory(self, tmp_path: Path) -> None:
         """Test that function finds docker-compose.yml in current directory."""
         compose_file = tmp_path / "docker-compose.yml"
-        compose_file.write_text("version: '3'\n")
+        compose_file.write_text("version: '3'\n", encoding="utf-8")
 
         with patch("aegra_cli.utils.docker.Path.cwd") as mock_cwd:
             mock_cwd.return_value = tmp_path
@@ -179,7 +179,7 @@ class TestFindComposeFile:
     def test_finds_compose_yaml_in_current_directory(self, tmp_path: Path) -> None:
         """Test that function finds docker-compose.yaml in current directory."""
         compose_file = tmp_path / "docker-compose.yaml"
-        compose_file.write_text("version: '3'\n")
+        compose_file.write_text("version: '3'\n", encoding="utf-8")
 
         with patch("aegra_cli.utils.docker.Path.cwd") as mock_cwd:
             mock_cwd.return_value = tmp_path
@@ -190,7 +190,7 @@ class TestFindComposeFile:
     def test_finds_compose_file_in_parent_directory(self, tmp_path: Path) -> None:
         """Test that function finds docker-compose.yml in parent directory."""
         compose_file = tmp_path / "docker-compose.yml"
-        compose_file.write_text("version: '3'\n")
+        compose_file.write_text("version: '3'\n", encoding="utf-8")
 
         subdir = tmp_path / "subdir"
         subdir.mkdir()
@@ -212,10 +212,10 @@ class TestFindComposeFile:
     def test_prefers_yml_over_yaml(self, tmp_path: Path) -> None:
         """Test that function prefers .yml over .yaml when both exist."""
         yml_file = tmp_path / "docker-compose.yml"
-        yml_file.write_text("version: '3'\n")
+        yml_file.write_text("version: '3'\n", encoding="utf-8")
 
         yaml_file = tmp_path / "docker-compose.yaml"
-        yaml_file.write_text("version: '3'\n")
+        yaml_file.write_text("version: '3'\n", encoding="utf-8")
 
         with patch("aegra_cli.utils.docker.Path.cwd") as mock_cwd:
             mock_cwd.return_value = tmp_path
@@ -251,7 +251,7 @@ class TestDevCommandWithDockerCheck:
         from aegra_cli.cli import cli
 
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with patch("aegra_cli.utils.docker.is_docker_installed") as mock_installed:
                 mock_installed.return_value = False
@@ -267,7 +267,7 @@ class TestDevCommandWithDockerCheck:
         from aegra_cli.cli import cli
 
         with cli_runner.isolated_filesystem(temp_dir=tmp_path):
-            Path("aegra.json").write_text('{"graphs": {}}')
+            Path("aegra.json").write_text('{"graphs": {}}', encoding="utf-8")
 
             with (
                 patch("aegra_cli.utils.docker.is_docker_installed") as mock_installed,

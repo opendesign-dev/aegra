@@ -149,7 +149,7 @@ def _serialize_cron(response: CronResponse, select_fields: Sequence[str] | None)
     return response.model_dump(mode="json")
 
 
-def _cron_to_response(row: CronORM) -> CronResponse:
+def cron_to_response(row: CronORM) -> CronResponse:
     """Convert ORM row to Pydantic response, mapping ``metadata_dict`` → ``metadata``."""
     return CronResponse(
         cron_id=str(row.cron_id),
@@ -281,7 +281,7 @@ class CronService:
 
     async def get_cron(self, cron_id: str, user_identity: str) -> CronResponse:
         """Return one cron owned by the caller, or 404."""
-        return _cron_to_response(await self._get_cron_or_404(cron_id, user_identity))
+        return cron_to_response(await self._get_cron_or_404(cron_id, user_identity))
 
     async def update_cron(
         self,
@@ -359,7 +359,7 @@ class CronService:
             raise HTTPException(404, f"Cron '{cron_id}' not found")
 
         logger.info("Updated cron job", cron_id=cron_id)
-        return _cron_to_response(updated)
+        return cron_to_response(updated)
 
     async def delete_cron(self, cron_id: str, user_identity: str) -> None:
         """Delete a cron job."""
@@ -397,7 +397,7 @@ class CronService:
         stmt = stmt.offset(request.offset).limit(request.limit)
 
         result = await self.session.scalars(stmt)
-        return [_serialize_cron(_cron_to_response(row), request.select) for row in result.all()]
+        return [_serialize_cron(cron_to_response(row), request.select) for row in result.all()]
 
     async def count_crons(
         self,

@@ -16,7 +16,7 @@ def make_cron_row(
     payload: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> SimpleNamespace:
-    """Create a CronORM-shaped row that ``_cron_to_response`` can serialize.
+    """Create a CronORM-shaped row that ``cron_to_response`` can serialize.
 
     A plain Mock breaks Pydantic's from_attributes path, so the attribute set is
     spelled out to match CronORM.

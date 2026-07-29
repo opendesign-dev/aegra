@@ -33,7 +33,7 @@ class TestLangGraphServiceRealFiles:
 
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "aegra.json"
-            config_path.write_text(json.dumps(config_data))
+            config_path.write_text(json.dumps(config_data), encoding="utf-8")
 
             with (
                 patch("aegra_api.services.langgraph_service.LangGraphService._ensure_default_assistants"),
@@ -53,7 +53,7 @@ class TestLangGraphServiceRealFiles:
 
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "env_config.json"
-            config_path.write_text(json.dumps(config_data))
+            config_path.write_text(json.dumps(config_data), encoding="utf-8")
 
             # Directly patch settings object. This is more reliable than monkeypatch.setenv
             # because the Settings object is instantiated once at module import time.
@@ -81,7 +81,7 @@ class TestLangGraphServiceRealFiles:
         temp_dir = temp_dir_obj.name
         try:
             langgraph_path = Path(temp_dir) / "langgraph.json"
-            langgraph_path.write_text(json.dumps(config_data))
+            langgraph_path.write_text(json.dumps(config_data), encoding="utf-8")
 
             # Change working directory so relative path lookups work
             monkeypatch.chdir(temp_dir)
@@ -114,7 +114,7 @@ class TestLangGraphServiceRealFiles:
         """Test error with invalid JSON in real file"""
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "invalid.json"
-            config_path.write_text("invalid json content")
+            config_path.write_text("invalid json content", encoding="utf-8")
 
             service = LangGraphService(str(config_path))
 
@@ -232,7 +232,7 @@ graph = create_graph()
 
         with TemporaryDirectory() as temp_dir:
             graph_file = Path(temp_dir) / "test_graph.py"
-            graph_file.write_text(graph_code)
+            graph_file.write_text(graph_code, encoding="utf-8")
 
             graph_info = {"file_path": str(graph_file), "export_name": "graph"}
 
@@ -259,7 +259,7 @@ graph = create_graph()
 
         with TemporaryDirectory() as temp_dir:
             graph_file = Path(temp_dir) / "invalid_graph.py"
-            graph_file.write_text(invalid_code)
+            graph_file.write_text(invalid_code, encoding="utf-8")
 
             graph_info = {"file_path": str(graph_file), "export_name": "graph"}
 
@@ -284,7 +284,7 @@ def create_graph():
 
         with TemporaryDirectory() as temp_dir:
             graph_file = Path(temp_dir) / "missing_export.py"
-            graph_file.write_text(graph_code)
+            graph_file.write_text(graph_code, encoding="utf-8")
 
             graph_info = {"file_path": str(graph_file), "export_name": "graph"}
 
@@ -349,7 +349,7 @@ class TestLangGraphServiceErrorHandling:
         """Test error handling when config file cannot be read"""
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "readonly.json"
-            config_path.write_text('{"test": "value"}')
+            config_path.write_text('{"test": "value"}', encoding="utf-8")
 
             # Make file read-only (Unix only)
             import stat

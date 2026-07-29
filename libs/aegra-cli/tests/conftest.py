@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +13,22 @@ from click.testing import CliRunner
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+
+@pytest.fixture(autouse=True)
+def isolate_environ() -> Generator[None, None, None]:
+    """Restore ``os.environ`` after every test.
+
+    ``load_env_file`` writes straight into the process environment — correct for a
+    CLI that loads once at startup, but it means one test's ``.env`` leaks into the
+    next, where dotenv's existing-vars-win rule silently ignores the new file.
+    """
+    saved = os.environ.copy()
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
 
 
 @pytest.fixture
@@ -121,8 +138,8 @@ def existing_project_dir(tmp_path: Path) -> Path:
     project_dir.mkdir(parents=True)
 
     # Create some existing files
-    (project_dir / "aegra.json").write_text('{"existing": "config"}')
-    (project_dir / ".env.example").write_text("EXISTING=value")
+    (project_dir / "aegra.json").write_text('{"existing": "config"}', encoding="utf-8")
+    (project_dir / ".env.example").write_text("EXISTING=value", encoding="utf-8")
 
     return project_dir
 
@@ -144,6 +161,7 @@ version: "3.8"
 services:
   postgres:
     image: pgvector/pgvector:pg18
-"""
+""",
+        encoding="utf-8",
     )
     return compose_file

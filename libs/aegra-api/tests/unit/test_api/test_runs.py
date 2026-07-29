@@ -11,9 +11,6 @@ from langgraph_sdk import Auth
 
 from aegra_api.api.runs import (
     _authorize_run_creation,
-    _interrupt_pending,
-    _mark_cancel_requested,
-    _wait_for_settle,
     cancel_run_endpoint,
     create_and_stream_run,
     create_run,
@@ -27,6 +24,7 @@ from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.models import Run, RunCreate, RunStatus, User
+from aegra_api.services.run_cancellation import interrupt_pending, mark_cancel_requested, wait_for_settle
 from tests.fixtures.database import make_mock_session
 
 
@@ -88,7 +86,7 @@ class TestRunsEndpoints:
             patch("aegra_api.services.run_preparation.update_thread_metadata", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.set_thread_status", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.uuid4", return_value=run_id),
-            patch("aegra_api.api.runs.asyncio.create_task") as mock_create_task,
+            patch("aegra_api.services.run_preparation.asyncio.create_task") as mock_create_task,
             patch("aegra_api.api.runs.active_runs", {}),
         ):
             mock_lg_service.return_value.list_graphs.return_value = ["test-graph"]
@@ -293,7 +291,7 @@ class TestRunsEndpoints:
         mock_session.scalar.side_effect = [run_orm, run_orm]
 
         with patch(
-            "aegra_api.api.runs.streaming_service.interrupt_run",
+            "aegra_api.services.run_cancellation.streaming_service.interrupt_run",
             new_callable=AsyncMock,
         ) as mock_interrupt:
             result = await update_run(
@@ -347,7 +345,7 @@ class TestRunsEndpoints:
         ctx.__aexit__ = AsyncMock(return_value=False)
         mock_maker = MagicMock(return_value=ctx)
 
-        with patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker):
+        with patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker):
             response = await join_run("thread-1", "run-1", mock_user)
 
         # join_run now returns StreamingResponse; consume body to get JSON
@@ -382,8 +380,8 @@ class TestRunsEndpoints:
 
         # Mock executor and settings for the heartbeat body
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_waiters.executor") as mock_executor,
             patch("aegra_api.services.run_waiters.settings") as mock_settings,
         ):
@@ -410,7 +408,7 @@ class TestCancelDurability:
     @pytest.mark.asyncio
     async def test_mark_cancel_requested_persists_flag(self) -> None:
         session = AsyncMock()
-        await _mark_cancel_requested(session, ["run-1"])
+        await mark_cancel_requested(session, ["run-1"])
 
         session.execute.assert_awaited_once()
         session.commit.assert_awaited_once()
@@ -421,7 +419,7 @@ class TestCancelDurability:
         # Only an unclaimed pending run is finalized by the API; a running run is
         # left to its executor. The guard lives in the WHERE clause.
         session = AsyncMock()
-        await _interrupt_pending(session, ["run-1"])
+        await interrupt_pending(session, ["run-1"])
 
         params = list(session.execute.await_args.args[0].compile().params.values())
         assert "interrupted" in params
@@ -438,8 +436,8 @@ class TestCancelDurability:
         released.all.return_value = [("interrupted", None)]
         session.execute = AsyncMock(side_effect=[still_leased, released])
 
-        with patch("aegra_api.api.runs.asyncio.sleep", new_callable=AsyncMock):
-            await _wait_for_settle(session, ["run-1"], attempts=5, delay=0)
+        with patch("aegra_api.services.run_cancellation.asyncio.sleep", new_callable=AsyncMock):
+            await wait_for_settle(session, ["run-1"], attempts=5, delay=0)
 
         assert session.execute.await_count == 2
 
@@ -452,8 +450,8 @@ class TestCancelDurability:
         leased.all.return_value = [("interrupted", "worker-0")]
         session.execute = AsyncMock(return_value=leased)
 
-        with patch("aegra_api.api.runs.asyncio.sleep", new_callable=AsyncMock):
-            await _wait_for_settle(session, ["run-1"], attempts=3, delay=0)
+        with patch("aegra_api.services.run_cancellation.asyncio.sleep", new_callable=AsyncMock):
+            await wait_for_settle(session, ["run-1"], attempts=3, delay=0)
 
         # Ran the full bounded budget — never falsely settled
         assert session.execute.await_count == 3
@@ -478,7 +476,9 @@ class TestCancelDurability:
         session.commit = AsyncMock()
         session.expire_all = MagicMock()
 
-        with patch("aegra_api.api.runs.streaming_service.interrupt_run", new_callable=AsyncMock) as mock_interrupt:
+        with patch(
+            "aegra_api.services.run_cancellation.streaming_service.interrupt_run", new_callable=AsyncMock
+        ) as mock_interrupt:
             result = await cancel_run_endpoint("t", "run-1", 0, "interrupt", mock_user, session)
 
         mock_interrupt.assert_awaited_once_with("run-1")
@@ -563,8 +563,8 @@ class TestRunCreationAuthorization:
         request = RunCreate(assistant_id="a", input={})
         with (
             patch("aegra_api.core.auth_handlers.get_auth_instance", return_value=auth),
-            patch("aegra_api.api.runs._get_session_maker", return_value=self._maker_no_thread()),
-            patch("aegra_api.api.runs._prepare_run", new_callable=AsyncMock) as prep,
+            patch("aegra_api.api.runs.get_session_maker", return_value=self._maker_no_thread()),
+            patch("aegra_api.api.runs.prepare_run", new_callable=AsyncMock) as prep,
             pytest.raises(HTTPException) as exc,
         ):
             await create_and_stream_run("t1", request, mock_user)
@@ -582,8 +582,8 @@ class TestRunCreationAuthorization:
         request = RunCreate(assistant_id="a", input={})
         with (
             patch("aegra_api.core.auth_handlers.get_auth_instance", return_value=auth),
-            patch("aegra_api.api.runs._get_session_maker", return_value=self._maker_no_thread()),
-            patch("aegra_api.api.runs._prepare_run", new_callable=AsyncMock) as prep,
+            patch("aegra_api.api.runs.get_session_maker", return_value=self._maker_no_thread()),
+            patch("aegra_api.api.runs.prepare_run", new_callable=AsyncMock) as prep,
             pytest.raises(HTTPException) as exc,
         ):
             await wait_for_run("t1", request, mock_user)

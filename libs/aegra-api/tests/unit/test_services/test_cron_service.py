@@ -21,8 +21,8 @@ from aegra_api.services.cron_service import (
     CronService,
     _build_payload,
     _compute_next_run,
-    _cron_to_response,
     _is_valid_schedule,
+    cron_to_response,
 )
 
 # ---------------------------------------------------------------------------
@@ -150,14 +150,14 @@ class TestComputeNextRun:
 
 
 class TestCronToResponse:
-    """Test _cron_to_response helper."""
+    """Test cron_to_response helper."""
 
     def test_maps_all_fields(self) -> None:
         cron = _make_cron_orm(
             metadata_dict={"k": "v"},
             payload={"input": {"x": 1}},
         )
-        resp = _cron_to_response(cron)
+        resp = cron_to_response(cron)
         assert resp.cron_id == "cron-001"
         assert resp.assistant_id == "asst-001"
         assert resp.metadata == {"k": "v"}
@@ -166,7 +166,7 @@ class TestCronToResponse:
 
     def test_handles_none_metadata(self) -> None:
         cron = _make_cron_orm(metadata_dict=None, payload=None)
-        resp = _cron_to_response(cron)
+        resp = cron_to_response(cron)
         assert resp.metadata == {}
         assert resp.payload == {}
 
@@ -621,32 +621,32 @@ class TestIsValidSchedule:
 
 
 # ---------------------------------------------------------------------------
-# _cron_to_response — additional coverage
+# cron_to_response — additional coverage
 # ---------------------------------------------------------------------------
 
 
 class TestCronToResponseExtended:
-    """Additional coverage for _cron_to_response."""
+    """Additional coverage for cron_to_response."""
 
     def test_handles_thread_id(self) -> None:
         cron = _make_cron_orm(thread_id="t-42")
-        resp = _cron_to_response(cron)
+        resp = cron_to_response(cron)
         assert resp.thread_id == "t-42"
 
     def test_handles_on_run_completed(self) -> None:
         cron = _make_cron_orm(on_run_completed="keep")
-        resp = _cron_to_response(cron)
+        resp = cron_to_response(cron)
         assert resp.on_run_completed == "keep"
 
     def test_handles_end_time(self) -> None:
         end = datetime(2025, 12, 31, 23, 59, 59, tzinfo=UTC)
         cron = _make_cron_orm(end_time=end)
-        resp = _cron_to_response(cron)
+        resp = cron_to_response(cron)
         assert resp.end_time == end
 
     def test_disabled_cron(self) -> None:
         cron = _make_cron_orm(enabled=False)
-        resp = _cron_to_response(cron)
+        resp = cron_to_response(cron)
         assert resp.enabled is False
 
 

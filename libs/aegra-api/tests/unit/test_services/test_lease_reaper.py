@@ -28,7 +28,7 @@ class TestFindRecoverable:
         session.execute = AsyncMock(side_effect=[crashed_result, stuck_result])
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
             crashed, stuck = await LeaseReaper._find_recoverable()
 
         assert crashed == ["run-1"]
@@ -42,7 +42,7 @@ class TestFindRecoverable:
         session.execute = AsyncMock(return_value=empty_result)
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
             crashed, stuck = await LeaseReaper._find_recoverable()
 
         assert crashed == []
@@ -61,7 +61,7 @@ class TestReaperUsesDbClock:
         session.execute = AsyncMock(return_value=empty)
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
             await LeaseReaper._find_recoverable()
 
         sqls = [str(call.args[0]).lower() for call in session.execute.await_args_list]
@@ -77,7 +77,7 @@ class TestReaperUsesDbClock:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
             await LeaseReaper._reset_to_pending(["run-1"])
 
         assert "now()" in str(session.execute.await_args.args[0]).lower()
@@ -94,7 +94,7 @@ class TestResetToPending:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
             result = await LeaseReaper._reset_to_pending(["run-1", "run-2"])
 
         assert result == ["run-1"]
@@ -109,7 +109,7 @@ class TestResetToPending:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
             result = await LeaseReaper._reset_to_pending(["run-1"])
 
         assert result == []

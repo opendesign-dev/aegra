@@ -27,7 +27,7 @@ from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt,
 
 from aegra_api.core.active_runs import active_runs
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.core.redis_manager import redis_manager
 from aegra_api.models.enums import TERMINAL_RUN_STATUSES
 from aegra_api.models.run_job import RunJob
@@ -358,7 +358,7 @@ class WorkerExecutor(BaseExecutor):
     @staticmethod
     async def _poll_postgres() -> str | None:
         """Pick the oldest pending, unclaimed run from Postgres."""
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             run_id = await session.scalar(
                 select(RunORM.run_id)
@@ -376,7 +376,7 @@ class WorkerExecutor(BaseExecutor):
 
 async def _get_thread_id_for_run(run_id: str) -> str | None:
     """Look up the thread_id for a run. Returns None if the row is missing."""
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         return await session.scalar(select(RunORM.thread_id).where(RunORM.run_id == run_id))
 
@@ -403,7 +403,7 @@ async def _finalize_timeout(run_id: str, webhook: str | None) -> None:
 
 async def _finalize_orphan(run_id: str, worker_name: str) -> None:
     # Guard on claimed_by so a run the reaper already reassigned isn't clobbered.
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         run_orm = await session.scalar(select(RunORM).where(RunORM.run_id == run_id, RunORM.claimed_by == worker_name))
     if run_orm is None or run_orm.status in TERMINAL_RUN_STATUSES:
@@ -462,7 +462,7 @@ async def _wake_thread_successor(done_run_id: str) -> None:
     Best-effort: on any failure the idle tick / Postgres poll still recovers it.
     """
     try:
-        maker = _get_session_maker()
+        maker = get_session_maker()
         thread_subq = select(RunORM.thread_id).where(RunORM.run_id == done_run_id).scalar_subquery()
         async with maker() as session:
             successor = await session.scalar(
@@ -514,7 +514,7 @@ async def _acquire_and_load(run_id: str, worker_name: str) -> _LoadedRun | None:
     IntegrityError → treated as "not claimed". Missing execution_params
     (corruption / pre-migration row) releases the claim and errors the run.
     """
-    maker = _get_session_maker()
+    maker = get_session_maker()
     try:
         async with maker() as session:
             result = await session.execute(
@@ -568,7 +568,7 @@ async def _acquire_and_load(run_id: str, worker_name: str) -> _LoadedRun | None:
 
 async def _release_lease(run_id: str, worker_name: str) -> None:
     """Clear lease fields after job completion, only if this worker still owns the lease."""
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         await session.execute(
             update(RunORM)
@@ -604,7 +604,7 @@ async def _heartbeat_loop(
     """
     interval = settings.worker.HEARTBEAT_INTERVAL_SECONDS
     duration = settings.worker.LEASE_DURATION_SECONDS
-    maker = _get_session_maker()
+    maker = get_session_maker()
     loop = asyncio.get_running_loop()
     last_renew = loop.time()
 
@@ -661,7 +661,7 @@ async def _heartbeat_loop(
 
 async def _is_run_terminal(run_id: str) -> bool:
     """Check if a run has reached a terminal state in the DB."""
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         run_orm = await session.scalar(select(RunORM).where(RunORM.run_id == run_id))
         if run_orm is None:

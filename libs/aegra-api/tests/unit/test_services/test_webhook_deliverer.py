@@ -29,7 +29,7 @@ class TestFinish:
     @pytest.mark.asyncio
     async def test_marks_delivered_on_ok(self) -> None:
         session = _session()
-        with patch(f"{MODULE}._get_session_maker", return_value=_maker(session)):
+        with patch(f"{MODULE}.get_session_maker", return_value=_maker(session)):
             await WebhookDeliverer()._finish("d1", ok=True, attempts=0, error=None)
         assert session.execute.await_args.args[0] is wd._MARK_DELIVERED_SQL
         session.commit.assert_awaited_once()
@@ -37,7 +37,7 @@ class TestFinish:
     @pytest.mark.asyncio
     async def test_reschedules_when_under_max(self) -> None:
         session = _session()
-        with patch(f"{MODULE}._get_session_maker", return_value=_maker(session)):
+        with patch(f"{MODULE}.get_session_maker", return_value=_maker(session)):
             await WebhookDeliverer()._finish("d1", ok=False, attempts=0, error="boom")
         assert session.execute.await_args.args[0] is wd._RESCHEDULE_SQL
         assert session.execute.await_args.args[1]["attempts"] == 1
@@ -46,7 +46,7 @@ class TestFinish:
     async def test_dead_letters_when_exhausted(self) -> None:
         # WEBHOOK_MAX_ATTEMPTS defaults to 3, so attempts=2 → 3 exhausts.
         session = _session()
-        with patch(f"{MODULE}._get_session_maker", return_value=_maker(session)):
+        with patch(f"{MODULE}.get_session_maker", return_value=_maker(session)):
             await WebhookDeliverer()._finish("d1", ok=False, attempts=2, error="boom")
         assert session.execute.await_args.args[0] is wd._MARK_DEAD_SQL
         assert session.execute.await_args.args[1]["attempts"] == 3

@@ -72,3 +72,81 @@ PruneStrategy = Literal["delete", "keep_latest"]
 
 # Status filter for bulk run cancel (SDK BulkCancelRunsStatus)
 BulkCancelRunsStatus = Literal["pending", "running", "all"]
+
+# Field projections accepted by the ``select`` body param on each search endpoint.
+# Must stay value-identical to the SDK: a client sending a field Aegra omits gets
+# a 422 on a request the Platform would have served.
+
+AssistantSelectField = Literal[
+    "assistant_id",
+    "graph_id",
+    "name",
+    "description",
+    "config",
+    "context",
+    "created_at",
+    "updated_at",
+    "metadata",
+    "version",
+]
+
+ThreadSelectField = Literal[
+    "thread_id",
+    "created_at",
+    "updated_at",
+    "metadata",
+    "config",
+    "context",
+    "status",
+    "values",
+    "interrupts",
+]
+
+RunSelectField = Literal[
+    "run_id",
+    "thread_id",
+    "assistant_id",
+    "created_at",
+    "updated_at",
+    "status",
+    "metadata",
+    "kwargs",
+    "multitask_strategy",
+]
+
+CronSelectField = Literal[
+    "cron_id",
+    "assistant_id",
+    "thread_id",
+    "end_time",
+    "schedule",
+    "timezone",
+    "created_at",
+    "updated_at",
+    "user_id",
+    "payload",
+    "next_run_date",
+    "metadata",
+    "now",
+    "on_run_completed",
+    "enabled",
+]
+
+# Sort keys accepted by each search endpoint (SDK *SortBy). Runs have no SDK
+# counterpart; Aegra's own set lives on RunSearchRequest.
+
+AssistantSortBy = Literal["assistant_id", "graph_id", "name", "created_at", "updated_at"]
+
+ThreadSortBy = Literal["thread_id", "status", "created_at", "updated_at", "state_updated_at"]
+
+CronSortBy = Literal[
+    "cron_id",
+    "assistant_id",
+    "thread_id",
+    "created_at",
+    "updated_at",
+    "next_run_date",
+    "end_time",
+]
+
+SortOrder = Literal["asc", "desc"]

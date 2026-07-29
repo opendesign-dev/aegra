@@ -74,7 +74,7 @@ class TestReadRunOutput:
         session.scalar.return_value = _make_run_orm(output={"result": "ok"})
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker):
             result = await read_run_output("run-1", "thread-1", "test-user")
 
         assert result == {"result": "ok"}
@@ -85,7 +85,7 @@ class TestReadRunOutput:
         session.scalar.return_value = None
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker):
             result = await read_run_output("run-1", "thread-1", "test-user")
 
         assert result == {}
@@ -96,7 +96,7 @@ class TestReadRunOutput:
         session.scalar.return_value = _make_run_orm(output=None)
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker):
             result = await read_run_output("run-1", "thread-1", "test-user")
 
         assert result == {}
@@ -112,7 +112,7 @@ class TestReadRunOutput:
         )
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker):
             result = await read_run_output("run-1", "thread-1", "test-user")
 
         assert result == {"__error__": {"error": "error", "message": "Graph crashed"}}
@@ -132,7 +132,7 @@ class TestHeartbeatWaitBody:
         maker = _make_session_maker(session)
 
         with (
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_waiters.executor") as mock_executor,
             patch("aegra_api.services.run_waiters.settings") as mock_settings,
         ):
@@ -159,7 +159,7 @@ class TestHeartbeatWaitBody:
             await completion_event.wait()
 
         with (
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_waiters.executor") as mock_executor,
             patch("aegra_api.services.run_waiters.settings") as mock_settings,
         ):
@@ -196,7 +196,7 @@ class TestHeartbeatWaitBody:
             raise TimeoutError(f"Run {run_id} timed out")
 
         with (
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_waiters.executor") as mock_executor,
             patch("aegra_api.services.run_waiters.settings") as mock_settings,
         ):
@@ -222,7 +222,7 @@ class TestHeartbeatWaitBody:
             await completion_event.wait()
 
         with (
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_waiters.executor") as mock_executor,
             patch("aegra_api.services.run_waiters.settings") as mock_settings,
         ):
@@ -255,8 +255,8 @@ class TestHeartbeatWaitBody:
 class TestJoinRunEndpoint:
     """Tests for the join_run endpoint.
 
-    join_run uses _get_session_maker from runs.py (for the initial DB check)
-    and heartbeat_wait_body uses _get_session_maker from run_waiters.py
+    join_run uses get_session_maker from runs.py (for the initial DB check)
+    and heartbeat_wait_body uses get_session_maker from run_waiters.py
     (for reading the final output). We patch both paths via a shared maker.
     """
 
@@ -269,7 +269,7 @@ class TestJoinRunEndpoint:
         maker = _make_session_maker(session)
         user = User(identity="test-user", scopes=[])
 
-        with patch("aegra_api.api.runs._get_session_maker", return_value=maker):
+        with patch("aegra_api.api.runs.get_session_maker", return_value=maker):
             response = await join_run("thread-1", "run-1", user)
 
         assert response.media_type == "application/json"
@@ -286,7 +286,7 @@ class TestJoinRunEndpoint:
         maker = _make_session_maker(session)
         user = User(identity="test-user", scopes=[])
 
-        with patch("aegra_api.api.runs._get_session_maker", return_value=maker):
+        with patch("aegra_api.api.runs.get_session_maker", return_value=maker):
             with pytest.raises(Exception) as exc_info:
                 await join_run("thread-1", "run-1", user)
             assert exc_info.value.status_code == 404
@@ -321,8 +321,8 @@ class TestJoinRunEndpoint:
         multi_maker = MagicMock(side_effect=session_factory)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=multi_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=multi_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=multi_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=multi_maker),
             patch("aegra_api.services.run_waiters.executor") as mock_executor,
             patch("aegra_api.services.run_waiters.settings") as mock_settings,
         ):
@@ -345,7 +345,7 @@ class TestJoinRunEndpoint:
         maker = _make_session_maker(session)
         user = User(identity="test-user", scopes=[])
 
-        with patch("aegra_api.api.runs._get_session_maker", return_value=maker):
+        with patch("aegra_api.api.runs.get_session_maker", return_value=maker):
             response = await join_run("thread-1", "run-1", user)
 
         body = b""

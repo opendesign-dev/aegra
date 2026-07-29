@@ -5,8 +5,9 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from aegra_api.models import RunSearchRequest, ThreadSearchRequest
+from aegra_api.models import Run, RunSearchRequest, ThreadSearchRequest
 from aegra_api.models.filters import assume_utc, validate_time_range
+from aegra_api.models.runs import project_runs
 
 
 class TestAssumeUtc:
@@ -149,3 +150,40 @@ class TestRunSearchRequestValidation:
         """A negative offset is invalid."""
         with pytest.raises(ValidationError):
             RunSearchRequest(offset=-1)
+
+
+class TestRunProjection:
+    """``select`` projection for /runs/search and GET /threads/{id}/runs."""
+
+    @staticmethod
+    def _run() -> Run:
+        return Run(
+            run_id="run-1",
+            thread_id="thread-1",
+            assistant_id="agent",
+            status="success",
+            input={"messages": ["hi"]},
+            config={"tags": ["a"]},
+            context={"model": "x"},
+            multitask_strategy="reject",
+            user_id="user-1",
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
+    def test_projects_only_requested_fields(self) -> None:
+        rows = project_runs([self._run()], ["run_id", "status"])
+        assert rows == [{"run_id": "run-1", "status": "success"}]
+
+    def test_kwargs_is_rebuilt_from_execution_params(self) -> None:
+        """The SDK exposes run params under `kwargs`; Aegra stores them in columns."""
+        rows = project_runs([self._run()], ["run_id", "kwargs"])
+        assert rows[0]["kwargs"] == {
+            "input": {"messages": ["hi"]},
+            "config": {"tags": ["a"]},
+            "context": {"model": "x"},
+            "multitask_strategy": "reject",
+        }
+
+    def test_kwargs_absent_when_not_selected(self) -> None:
+        assert "kwargs" not in project_runs([self._run()], ["run_id"])[0]

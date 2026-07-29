@@ -320,10 +320,6 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
     return async_session_maker
 
 
-# Backwards-compatible alias for callers that imported the private symbol.
-_get_session_maker = get_session_maker
-
-
 async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency that yields an AsyncSession."""
     maker = get_session_maker()

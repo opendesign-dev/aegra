@@ -451,7 +451,8 @@ class TestLangGraphServiceGraphs:
             "class MyState:\n"
             "    name: str = 'test'\n"
             "\n"
-            "graph = MyState()\n"
+            "graph = MyState()\n",
+            encoding="utf-8",
         )
 
         service = LangGraphService()

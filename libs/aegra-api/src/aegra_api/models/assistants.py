@@ -1,11 +1,16 @@
 """Assistant-related Pydantic models for Agent Protocol"""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from aegra_api.models.enums import OnConflictBehavior
+from aegra_api.models.enums import (
+    AssistantSelectField,
+    AssistantSortBy,
+    OnConflictBehavior,
+    SortOrder,
+)
 
 
 class AssistantCreate(BaseModel):
@@ -53,12 +58,14 @@ class Assistant(BaseModel):
 
 
 class AssistantUpdate(BaseModel):
-    """Request model for creating assistants"""
+    """Request model for updating assistants — every field is an optional patch."""
 
     name: str | None = Field(default=None, description="The name of the assistant (auto-generated if not provided)")
     description: str | None = Field(default=None, description="The description of the assistant. Defaults to null.")
     config: dict[str, Any] | None = Field(default_factory=dict, description="Configuration to use for the graph.")
-    graph_id: str = Field(default="agent", description="The ID of the graph")
+    graph_id: str | None = Field(
+        default=None, description="The ID of the graph. Omit to keep the assistant's current graph."
+    )
     context: dict[str, Any] | None = Field(
         default_factory=dict,
         description="The context to use for the graph. Useful when graph is configurable.",
@@ -81,40 +88,38 @@ class AssistantSearchRequest(BaseModel):
     name: str | None = Field(default=None, description="Filter by assistant name")
     description: str | None = Field(default=None, description="Filter by assistant description")
     graph_id: str | None = Field(default=None, description="Filter by graph ID")
-    limit: int | None = Field(default=20, le=100, ge=1, description="Maximum results")
+    limit: int | None = Field(default=20, le=1000, ge=1, description="Maximum results")
     offset: int | None = Field(default=0, ge=0, description="Results offset")
     metadata: dict[str, Any] | None = Field(
         default_factory=dict,
         description="Metadata to use for searching and filtering assistants.",
     )
-    sort_by: Literal["assistant_id", "name", "graph_id", "created_at", "updated_at"] | None = Field(
+    sort_by: AssistantSortBy | None = Field(
         default=None,
         description="Field to sort by (SDK-compatible).",
     )
-    sort_order: Literal["asc", "desc"] | None = Field(
+    sort_order: SortOrder | None = Field(
         default=None,
         description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
     )
-    select: (
-        list[
-            Literal[
-                "assistant_id",
-                "graph_id",
-                "name",
-                "description",
-                "config",
-                "context",
-                "created_at",
-                "updated_at",
-                "metadata",
-                "version",
-            ]
-        ]
-        | None
-    ) = Field(
+    select: list[AssistantSelectField] | None = Field(
         default=None,
         description="Fields to return for each assistant (SDK-compatible). None returns full assistants.",
     )
+
+
+class AssistantVersionsRequest(BaseModel):
+    """Request body for ``POST /assistants/{assistant_id}/versions``.
+
+    The SDK always sends limit/offset here; an unpaginated response would grow
+    without bound on an assistant with a long edit history.
+    """
+
+    metadata: dict[str, Any] | None = Field(
+        default=None, description="Only versions whose metadata contains these key/value pairs."
+    )
+    limit: int = Field(default=10, ge=1, le=1000, description="Maximum versions to return.")
+    offset: int = Field(default=0, ge=0, description="Versions to skip, newest first.")
 
 
 class AgentSchemas(BaseModel):

@@ -78,7 +78,7 @@ def graph_module_dir(tmp_path: Path) -> Path:
 def _write_graph_module(directory: Path, filename: str, code: str) -> Path:
     """Write a Python module to disk and return its path."""
     filepath = directory / filename
-    filepath.write_text(code)
+    filepath.write_text(code, encoding="utf-8")
     return filepath
 
 

@@ -33,6 +33,7 @@ from aegra_api.core.orm import AssistantVersion as AssistantVersionORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session
 from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
+from aegra_api.models.assistants import AssistantVersionsRequest
 from aegra_api.models.auth import User
 from aegra_api.services.authenticated import Authenticated
 from aegra_api.services.langgraph_service import LangGraphService, get_langgraph_service
@@ -549,11 +550,14 @@ class AssistantService(Authenticated):
         updated_assistant = await self.session.scalar(stmt)
         return to_pydantic(updated_assistant)
 
-    async def list_assistant_versions(self, assistant_id: str) -> list[Assistant]:
-        """List all versions of an assistant"""
+    async def list_assistant_versions(
+        self, assistant_id: str, request: AssistantVersionsRequest | None = None
+    ) -> list[Assistant]:
+        """List versions of an assistant, newest first, paginated."""
+        request = request or AssistantVersionsRequest()
         # Versions dispatches `search` (not `read`) per the auth dispatch spec,
         # with the {assistant_id, metadata} value shape.
-        filters = await self._dispatch("search", {"assistant_id": assistant_id, "metadata": None})
+        filters = await self._dispatch("search", {"assistant_id": assistant_id, "metadata": request.metadata})
 
         stmt = select(AssistantORM).where(
             AssistantORM.assistant_id == assistant_id,
@@ -570,11 +574,16 @@ class AssistantService(Authenticated):
             select(AssistantVersionORM)
             .where(AssistantVersionORM.assistant_id == assistant_id)
             .order_by(AssistantVersionORM.version.desc())
+            .offset(request.offset)
+            .limit(request.limit)
         )
+        if request.metadata:
+            stmt = stmt.where(AssistantVersionORM.metadata_dict.op("@>")(request.metadata))
         result = await self.session.scalars(stmt)
         versions = result.all()
 
-        if not versions:
+        # An empty page past the first is just the end of the list, not a 404.
+        if not versions and request.offset == 0 and not request.metadata:
             raise HTTPException(404, f"No versions found for Assistant '{assistant_id}'")
 
         # Convert to Pydantic models

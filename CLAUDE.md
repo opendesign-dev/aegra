@@ -76,6 +76,14 @@ aegra/
 
 **Key principle:** LangGraph handles ALL state persistence and graph execution. FastAPI provides only HTTP/Agent Protocol compliance.
 
+### API Layering
+Routes in `api/` are thin: parse and validate the request, call a service, shape the response. Business logic — multi-step orchestration, shared query construction, anything two endpoints both need — belongs in `services/`. Put new logic there rather than growing a route module.
+
+Resources are split by what they own, not just by URL prefix: `api/threads.py` owns the thread record (CRUD, search, prune, copy) while `api/thread_state.py` owns the checkpointed graph state behind it (state, history) — different backing stores, different failure surfaces. `main._include_core_routers` registers the state routes first; keep that order in test apps too (`tests/fixtures/clients.py`).
+
+### SDK Contract
+Aegra's wire contract is pinned to the installed `langgraph-sdk` by `tests/contract/test_sdk_contract.py`. Value sets the SDK also defines (statuses, stream modes, `select` field sets, `sort_by` keys) live in `models/enums.py` as the single source of truth and are asserted equal to their SDK counterparts. Add new ones there and register the pair in the contract test — a set that drifts silently turns into a 422 on a request LangGraph Platform would have served.
+
 ### Run Execution Architecture
 - **Production mode** (`REDIS_BROKER_ENABLED=true`): Runs are dispatched via a Redis job queue (BLPOP). Workers run as concurrent asyncio tasks inside each instance (default: 3 workers x 10 jobs = 30 concurrent runs per instance). Lease-based crash recovery with heartbeat and reaper. Execution params stored in Postgres so workers can reconstruct jobs. OpenTelemetry trace context propagates across the Redis queue boundary.
 - **Dev mode** (`aegra dev`, `REDIS_BROKER_ENABLED=false`): Runs execute as in-process asyncio tasks via `LocalExecutor`. No Redis needed. SSE uses an in-memory broker.

@@ -29,7 +29,7 @@ class TestRunTTLSweeperTick:
     @pytest.mark.asyncio
     async def test_issues_delete_with_ttl_and_batch_params(self) -> None:
         session = _session_deleting(["r1", "r2"])
-        with patch(f"{MODULE}._get_session_maker", return_value=_maker(session)):
+        with patch(f"{MODULE}.get_session_maker", return_value=_maker(session)):
             await RunTTLSweeper()._tick()
 
         session.execute.assert_awaited_once()
@@ -40,7 +40,7 @@ class TestRunTTLSweeperTick:
     @pytest.mark.asyncio
     async def test_commits_even_when_nothing_pruned(self) -> None:
         session = _session_deleting([])
-        with patch(f"{MODULE}._get_session_maker", return_value=_maker(session)):
+        with patch(f"{MODULE}.get_session_maker", return_value=_maker(session)):
             await RunTTLSweeper()._tick()
 
         # The atomic DELETE...RETURNING runs regardless; empty just returns no ids.

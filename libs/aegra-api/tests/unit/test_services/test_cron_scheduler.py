@@ -116,7 +116,7 @@ class TestSchedulerTick:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._get_session_maker",
+                "aegra_api.services.cron_scheduler.get_session_maker",
                 return_value=mock_maker,
             ),
             patch.object(scheduler, "_find_due_crons", new_callable=AsyncMock, return_value=[]),
@@ -136,7 +136,7 @@ class TestSchedulerTick:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._get_session_maker",
+                "aegra_api.services.cron_scheduler.get_session_maker",
                 return_value=mock_maker,
             ),
             patch.object(scheduler, "_find_due_crons", new_callable=AsyncMock, return_value=[cron]),
@@ -168,7 +168,7 @@ class TestSchedulerTick:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._get_session_maker",
+                "aegra_api.services.cron_scheduler.get_session_maker",
                 return_value=mock_maker,
             ),
             patch.object(scheduler, "_find_due_crons", new_callable=AsyncMock, return_value=[cron_fail, cron_ok]),
@@ -199,7 +199,7 @@ class TestTickTimezone:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
                 return_value=("run-1", Mock(), None),
             ),
@@ -226,7 +226,7 @@ class TestTickTimezone:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
                 return_value=("run-1", Mock(), None),
             ),
@@ -259,7 +259,7 @@ class TestFireCron:
         mock_session = AsyncMock()
 
         with patch(
-            "aegra_api.services.cron_scheduler._prepare_run",
+            "aegra_api.services.cron_scheduler.prepare_run",
             new_callable=AsyncMock,
         ) as mock_prepare:
             mock_prepare.return_value = ("run-1", Mock(), None)
@@ -280,7 +280,7 @@ class TestFireCron:
         with (
             patch("aegra_api.services.cron_scheduler.uuid4", return_value="eph-thread-1"),
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
                 return_value=("run-1", Mock(), None),
             ),
@@ -299,7 +299,7 @@ class TestFireCron:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
                 return_value=("run-1", Mock(), None),
             ),
@@ -319,7 +319,7 @@ class TestFireCron:
         with (
             patch("aegra_api.services.cron_scheduler.uuid4", return_value="eph-thread-keep"),
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
                 return_value=("run-1", Mock(), None),
             ),
@@ -339,7 +339,7 @@ class TestFireCron:
         with (
             patch("aegra_api.services.cron_scheduler.uuid4", return_value="eph-thread-fail"),
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ),
@@ -360,7 +360,7 @@ class TestFireCron:
         mock_session = AsyncMock()
 
         with patch(
-            "aegra_api.services.cron_scheduler._prepare_run",
+            "aegra_api.services.cron_scheduler.prepare_run",
             new_callable=AsyncMock,
         ) as mock_prepare:
             mock_prepare.return_value = ("run-1", Mock(), None)
@@ -377,7 +377,7 @@ class TestFireCron:
         mock_session = AsyncMock()
 
         with patch(
-            "aegra_api.services.cron_scheduler._prepare_run",
+            "aegra_api.services.cron_scheduler.prepare_run",
             new_callable=AsyncMock,
         ) as mock_prepare:
             mock_prepare.return_value = ("run-1", Mock(), None)
@@ -397,7 +397,7 @@ class TestFireCron:
         mock_session = AsyncMock()
 
         with patch(
-            "aegra_api.services.cron_scheduler._prepare_run",
+            "aegra_api.services.cron_scheduler.prepare_run",
             new_callable=AsyncMock,
         ) as mock_prepare:
             mock_prepare.return_value = ("run-1", Mock(), None)
@@ -409,7 +409,7 @@ class TestFireCron:
 
     @pytest.mark.asyncio
     async def test_handles_http_exception_in_run_creation(self) -> None:
-        """HTTPException from _prepare_run should be caught and logged, not raised."""
+        """HTTPException from prepare_run should be caught and logged, not raised."""
         scheduler = CronScheduler()
         cron = _make_cron_orm(end_time=None)
         cron.end_time = None
@@ -417,7 +417,7 @@ class TestFireCron:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
             ) as mock_prepare,
             patch(
@@ -434,7 +434,7 @@ class TestFireCron:
 
     @pytest.mark.asyncio
     async def test_does_not_advance_next_run_date_on_non_http_error(self) -> None:
-        """Non-HTTPException from _prepare_run must not advance the schedule."""
+        """Non-HTTPException from prepare_run must not advance the schedule."""
         scheduler = CronScheduler()
         cron = _make_cron_orm(end_time=None)
         cron.end_time = None
@@ -442,7 +442,7 @@ class TestFireCron:
 
         with (
             patch(
-                "aegra_api.services.cron_scheduler._prepare_run",
+                "aegra_api.services.cron_scheduler.prepare_run",
                 new_callable=AsyncMock,
             ) as mock_prepare,
             patch(
@@ -478,7 +478,7 @@ class TestFireCron:
         mock_session = AsyncMock()
 
         with patch(
-            "aegra_api.services.cron_scheduler._prepare_run",
+            "aegra_api.services.cron_scheduler.prepare_run",
             new_callable=AsyncMock,
         ) as mock_prepare:
             mock_prepare.return_value = ("run-1", Mock(), None)

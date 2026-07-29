@@ -22,6 +22,7 @@ from aegra_api.api.event_streaming import router as event_streaming_router
 from aegra_api.api.runs import router as runs_router
 from aegra_api.api.stateless_runs import router as stateless_runs_router
 from aegra_api.api.store import router as store_router
+from aegra_api.api.thread_state import router as thread_state_router
 from aegra_api.api.threads import router as threads_router
 from aegra_api.config import CorsConfig, HttpConfig, get_config_dir, load_http_config
 from aegra_api.core.app_loader import load_custom_app
@@ -231,7 +232,7 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
         content=AgentProtocolError(
             error="internal_error",
             message="An unexpected error occurred",
-            details=None,  # FIX: do not leak internal exception details
+            details=None,  # Never echo internal exception details to the client.
         ).model_dump(),
     )
 
@@ -348,20 +349,16 @@ def _add_common_middleware(app: FastAPI, cors_config: CorsConfig | None) -> None
 def _include_core_routers(app: FastAPI) -> None:
     """Include all core API routers with auth dependency.
 
-    Routers are included in consistent order:
-    1. Health (no auth)
-    2. Assistants (with auth)
-    3. Threads (with auth)
-    4. Runs (with auth)
-    5. Stateless Runs (with auth)
-    6. Crons (with auth)
-    7. Store (with auth)
+    Order matters only for health (no auth) going first; the rest are disjoint
+    path sets. Thread state routes register before the thread record routes so
+    ``/threads/{id}/state`` is never shadowed by a broader pattern.
 
     Args:
         app: FastAPI application instance
     """
     app.include_router(health_router)
     app.include_router(assistants_router)
+    app.include_router(thread_state_router)
     app.include_router(threads_router)
     app.include_router(runs_router)
     app.include_router(stateless_runs_router)

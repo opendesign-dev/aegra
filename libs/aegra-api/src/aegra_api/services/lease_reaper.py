@@ -15,7 +15,7 @@ from redis import RedisError
 from sqlalchemy import func, select, update
 
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.core.redis_manager import redis_manager
 from aegra_api.settings import settings
 
@@ -97,7 +97,7 @@ class LeaseReaper:
         wall clock, so a skewed reaper cannot reclaim a lease that is still valid
         on the DB's timeline (the double-run window per-pod time would open).
         """
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             crashed_result = await session.execute(
                 select(RunORM.run_id).where(
@@ -126,7 +126,7 @@ class LeaseReaper:
         The re-check uses the DB clock (``func.now()``) — same source as the
         initial find — so the atomic reclaim can't race a pod's skewed wall clock.
         """
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             result = await session.execute(
                 update(RunORM)
@@ -167,7 +167,7 @@ class LeaseReaper:
         retryable: list[str] = []
         exhausted: list[str] = []
 
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             for run_id in run_ids:
                 run_orm = await session.scalar(select(RunORM).where(RunORM.run_id == run_id))
@@ -203,7 +203,7 @@ class LeaseReaper:
     @staticmethod
     async def _mark_permanently_failed(run_ids: list[str]) -> None:
         """Mark runs as error with max retries exceeded message."""
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             await session.execute(
                 update(RunORM)

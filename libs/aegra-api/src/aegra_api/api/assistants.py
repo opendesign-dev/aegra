@@ -1,14 +1,6 @@
-"""Assistant endpoints for Agent Protocol
+"""Assistant endpoints for Agent Protocol.
 
-NOTE: This API follows a layered architecture pattern with business logic
-separated into a service layer (assistant_service.py). This was the first
-API to be refactored, and the plan is to gradually refactor all other APIs
-(runs, threads, etc.) to follow this same pattern for better code
-organization, testability, and maintainability.
-
-Architecture:
-- API Layer (this file): Thin FastAPI route handlers, request/response handling
-- Service Layer (assistant_service.py): Business logic, validation, orchestration
+Thin route handlers; the business logic lives in ``services/assistant_service``.
 """
 
 from typing import Any
@@ -25,6 +17,7 @@ from aegra_api.models import (
     AssistantSearchRequest,
     AssistantUpdate,
 )
+from aegra_api.models.assistants import AssistantVersionsRequest
 from aegra_api.models.errors import NOT_FOUND
 from aegra_api.services.assistant_service import AssistantService, get_assistant_service
 
@@ -185,14 +178,16 @@ async def set_assistant_latest(
 )
 async def list_assistant_versions(
     assistant_id: str,
+    request: AssistantVersionsRequest | None = None,
     service: AssistantService = Depends(get_assistant_service),
 ):
-    """List all versions of an assistant.
+    """List versions of an assistant.
 
-    Returns versions ordered from newest to oldest. Each version captures the
-    assistant's configuration at the time of creation or update.
+    Returns versions ordered from newest to oldest, paginated by `limit` and
+    `offset`. Each version captures the assistant's configuration at the time
+    of creation or update.
     """
-    return await service.list_assistant_versions(assistant_id)
+    return await service.list_assistant_versions(assistant_id, request)
 
 
 @router.get(

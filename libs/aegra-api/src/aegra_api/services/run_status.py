@@ -20,7 +20,7 @@ from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import ThreadState as ThreadStateORM
 from aegra_api.core.orm import WebhookDelivery as WebhookDeliveryORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.core.serializers import GeneralSerializer
 from aegra_api.models.enums import TERMINAL_RUN_STATUSES
 from aegra_api.settings import settings
@@ -82,7 +82,7 @@ async def update_run_status(
     long-running graph execution.
     """
     validated = validate_run_status(status)
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         values: dict[str, Any] = {
             "status": validated,
@@ -144,7 +144,7 @@ async def finalize_run(
     """
     validated_run = validate_run_status(status)
     validated_thread = validate_thread_status(thread_status)
-    maker = _get_session_maker()
+    maker = get_session_maker()
 
     run_values: dict[str, Any] = {
         "status": validated_run,

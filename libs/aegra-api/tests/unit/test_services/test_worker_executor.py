@@ -128,7 +128,7 @@ class TestAcquireAndLoad:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _acquire_and_load("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "worker-0")
 
         assert result is not None
@@ -146,7 +146,7 @@ class TestAcquireAndLoad:
         session.rollback = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _acquire_and_load("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "worker-0")
 
         assert result is None
@@ -165,7 +165,7 @@ class TestAcquireAndLoad:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _acquire_and_load("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "worker-0")
 
         assert result is None
@@ -184,7 +184,7 @@ class TestReleaseLease:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             await _release_lease("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "test-worker")
 
         session.execute.assert_awaited_once()
@@ -218,7 +218,7 @@ class TestHeartbeatLoop:
             # Don't actually sleep
 
         with (
-            patch(f"{MODULE}._get_session_maker", return_value=maker),
+            patch(f"{MODULE}.get_session_maker", return_value=maker),
             patch(f"{MODULE}.settings") as mock_settings,
             patch(f"{MODULE}.asyncio.sleep", side_effect=counting_sleep),
         ):
@@ -247,7 +247,7 @@ class TestHeartbeatLoop:
                 raise asyncio.CancelledError
 
         with (
-            patch(f"{MODULE}._get_session_maker", return_value=maker),
+            patch(f"{MODULE}.get_session_maker", return_value=maker),
             patch(f"{MODULE}.settings") as mock_settings,
             patch(f"{MODULE}.asyncio.sleep", side_effect=counting_sleep),
         ):
@@ -288,7 +288,7 @@ class TestHeartbeatCancelMarker:
             return None
 
         with (
-            patch(f"{MODULE}._get_session_maker", return_value=maker),
+            patch(f"{MODULE}.get_session_maker", return_value=maker),
             patch(f"{MODULE}.settings") as mock_settings,
             patch(f"{MODULE}.asyncio.sleep", side_effect=one_tick),
         ):
@@ -320,7 +320,7 @@ class TestHeartbeatCancelMarker:
             return None
 
         with (
-            patch(f"{MODULE}._get_session_maker", return_value=maker),
+            patch(f"{MODULE}.get_session_maker", return_value=maker),
             patch(f"{MODULE}.settings") as mock_settings,
             patch(f"{MODULE}.asyncio.sleep", side_effect=one_tick),
         ):
@@ -418,7 +418,7 @@ class TestIsRunTerminal:
         session.scalar = AsyncMock(return_value=run_orm)
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _is_run_terminal("run-1")
 
         assert result is True
@@ -431,7 +431,7 @@ class TestIsRunTerminal:
         session.scalar = AsyncMock(return_value=run_orm)
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _is_run_terminal("run-1")
 
         assert result is True
@@ -444,7 +444,7 @@ class TestIsRunTerminal:
         session.scalar = AsyncMock(return_value=run_orm)
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _is_run_terminal("run-1")
 
         assert result is True
@@ -455,7 +455,7 @@ class TestIsRunTerminal:
         session.scalar = AsyncMock(return_value=None)
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _is_run_terminal("run-1")
 
         assert result is True
@@ -468,7 +468,7 @@ class TestIsRunTerminal:
         session.scalar = AsyncMock(return_value=run_orm)
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _is_run_terminal("run-1")
 
         assert result is False
@@ -481,7 +481,7 @@ class TestIsRunTerminal:
         session.scalar = AsyncMock(return_value=run_orm)
         maker = _make_session_maker(session)
 
-        with patch(f"{MODULE}._get_session_maker", return_value=maker):
+        with patch(f"{MODULE}.get_session_maker", return_value=maker):
             result = await _is_run_terminal("run-1")
 
         assert result is False

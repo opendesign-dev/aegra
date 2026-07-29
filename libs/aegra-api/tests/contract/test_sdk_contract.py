@@ -82,6 +82,14 @@ _ENUM_PAIRS: list[tuple[str, object, object]] = [
     ("CancelAction", enums.CancelAction, sdk.CancelAction),
     ("PruneStrategy", enums.PruneStrategy, sdk.PruneStrategy),
     ("BulkCancelRunsStatus", enums.BulkCancelRunsStatus, sdk.BulkCancelRunsStatus),
+    ("AssistantSelectField", enums.AssistantSelectField, sdk.AssistantSelectField),
+    ("ThreadSelectField", enums.ThreadSelectField, sdk.ThreadSelectField),
+    ("RunSelectField", enums.RunSelectField, sdk.RunSelectField),
+    ("CronSelectField", enums.CronSelectField, sdk.CronSelectField),
+    ("AssistantSortBy", enums.AssistantSortBy, sdk.AssistantSortBy),
+    ("ThreadSortBy", enums.ThreadSortBy, sdk.ThreadSortBy),
+    ("CronSortBy", enums.CronSortBy, sdk.CronSortBy),
+    ("SortOrder", enums.SortOrder, sdk.SortOrder),
 ]
 
 

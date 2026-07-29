@@ -13,7 +13,7 @@ import contextlib
 import structlog
 from sqlalchemy import text
 
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.settings import settings
 
 logger = structlog.getLogger(__name__)
@@ -79,7 +79,7 @@ class RunTTLSweeper:
                 break
 
     async def _tick(self) -> None:
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             result = await session.execute(
                 _SWEEP_SQL,

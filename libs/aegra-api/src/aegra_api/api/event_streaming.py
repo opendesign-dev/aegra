@@ -34,7 +34,7 @@ from aegra_api.core.auth_middleware import get_auth_backend
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.core.serializers import GeneralSerializer
 from aegra_api.core.sse import (
     _decode_literal_unicode_escapes,
@@ -82,7 +82,7 @@ def _thread_run_lister(thread_id: str, user: User) -> RunLister:
     """
 
     async def list_run_ids() -> list[tuple[str, str | None, str | None]]:
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             rows = await session.execute(
                 select(RunORM.run_id, RunORM.status, AssistantORM.graph_id)
@@ -164,7 +164,7 @@ async def stream_thread_events(
     # The SDK opens the stream before run.start, against a thread it minted
     # client-side — a not-yet-existing thread is allowed; one owned by another
     # user is not.
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         await _verify_thread_owned_or_new(session, thread_id, user)
 
@@ -200,7 +200,7 @@ async def post_thread_command(
     """
     _require_v2_enabled()
 
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         # run.start may target a not-yet-created thread (the SDK mints the id and
         # expects run preparation to create it); other ownership is enforced there.
@@ -255,7 +255,7 @@ async def stream_thread_events_ws(websocket: WebSocket, thread_id: str) -> None:
         await websocket.close(code=_WS_CLOSE_INTERNAL_ERROR, reason=_trim_close_reason(caps.error_message))
         return
 
-    maker = _get_session_maker()
+    maker = get_session_maker()
     try:
         async with maker() as session:
             await _verify_thread_owned_or_new(session, thread_id, user)
@@ -396,7 +396,7 @@ class _ProtocolSocket:
         WS the resulting HTTPException becomes a protocol error envelope.
         """
         envelope = {"id": command_id, "method": method, "params": params}
-        maker = _get_session_maker()
+        maker = get_session_maker()
         try:
             async with maker() as session:
                 await _verify_thread_owned_or_new(session, self._thread_id, self._user)
@@ -418,7 +418,7 @@ class _ProtocolSocket:
             return build_error(command_id, "invalid_argument", "xray must be a boolean or integer.")
 
         assistant_id = params.get("assistant_id")
-        maker = _get_session_maker()
+        maker = get_session_maker()
         try:
             async with maker() as session:
                 if not isinstance(assistant_id, str) or not assistant_id:

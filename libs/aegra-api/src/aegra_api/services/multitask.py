@@ -7,17 +7,16 @@ serialization (worker claim gate in prod, local per-thread chain in dev).
 """
 
 import asyncio
-import contextlib
 
 import structlog
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aegra_api.core.active_runs import active_runs
+from aegra_api.core.active_runs import active_runs, drain_task
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.models.auth import User
 from aegra_api.services.run_status import update_run_status
 from aegra_api.services.streaming_service import streaming_service
@@ -96,13 +95,12 @@ async def _cancel_active_run(run_id: str) -> None:
         logger.debug("Cancel signal failed", run_id=run_id, error=str(exc))
     if task is not None and not task.done():
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
+        await drain_task(task, run_id)
     await _await_terminal(run_id)
 
 
 async def _await_terminal(run_id: str) -> None:
-    session_maker = _get_session_maker()
+    session_maker = get_session_maker()
     for _ in range(_CANCEL_SETTLE_ATTEMPTS):
         async with session_maker() as session:
             status = await session.scalar(select(RunORM.status).where(RunORM.run_id == run_id))

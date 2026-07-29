@@ -103,7 +103,8 @@ async def test_default_cors_includes_expose_headers(isolated_module_reload):
             {
                 "graphs": {"test": "./test.py:graph"},
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     main = reload_main_module()
@@ -145,7 +146,8 @@ async def test_cors_config_without_custom_app_applies_settings(isolated_module_r
                     },
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     main = reload_main_module()
@@ -185,7 +187,8 @@ async def test_cors_expose_headers_defaults_when_not_specified(isolated_module_r
                     },
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     main = reload_main_module()
@@ -216,7 +219,8 @@ async def test_default_cors_credentials_false_with_wildcard_origins(isolated_mod
             {
                 "graphs": {"test": "./test.py:graph"},
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     main = reload_main_module()
@@ -245,7 +249,8 @@ async def test_cors_credentials_true_with_concrete_origins(isolated_module_reloa
                     },
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     main = reload_main_module()
@@ -275,7 +280,8 @@ async def test_cors_credentials_explicit_override(isolated_module_reload: Path) 
                     },
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     main = reload_main_module()

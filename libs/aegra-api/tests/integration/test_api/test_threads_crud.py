@@ -100,6 +100,29 @@ class TestCreateThread:
         assert data["status"] == "idle"
         assert data["metadata"]["thread_name"] == "Test Thread"
 
+    def test_create_thread_accepts_sdk_snake_case_ids(self, client):
+        """`thread_id` / `if_exists` are the wire names the LangGraph SDK sends.
+
+        Regression: both fields carried a camelCase `alias`, so the generated
+        OpenAPI advertised `threadId` / `ifExists` — a contract that disagreed
+        with every request the SDK actually makes.
+        """
+        resp = client.post(
+            "/threads",
+            json={"thread_id": "sdk-snake-1", "if_exists": "do_nothing"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["thread_id"] == "sdk-snake-1"
+
+    def test_create_thread_still_accepts_legacy_camel_case_ids(self, client):
+        """The camelCase spelling stays accepted so older clients keep working."""
+        resp = client.post(
+            "/threads",
+            json={"threadId": "sdk-camel-1", "ifExists": "do_nothing"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["thread_id"] == "sdk-camel-1"
+
     def test_create_thread_preserves_graph_id_from_metadata(self, client):
         """Test that client-provided graph_id in metadata is preserved (fixes #254)."""
         resp = client.post(

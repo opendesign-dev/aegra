@@ -13,7 +13,7 @@ import structlog
 from sqlalchemy import select, text
 
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.models.run_job import RunJob
 from aegra_api.services.executor import executor
 from aegra_api.settings import settings
@@ -91,7 +91,7 @@ class DelayedRunScheduler:
 
     async def _tick(self) -> bool:
         """Claim and submit due runs; return whether any were found."""
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             result = await session.execute(_CLAIM_DUE_SQL, {"batch": settings.worker.DELAYED_RUN_BATCH_SIZE})
             due_ids = [row[0] for row in result.fetchall()]
@@ -106,7 +106,7 @@ class DelayedRunScheduler:
 
     @staticmethod
     async def _submit(run_id: str) -> None:
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             run_orm = await session.scalar(select(RunORM).where(RunORM.run_id == run_id))
             if run_orm is None or run_orm.execution_params is None:

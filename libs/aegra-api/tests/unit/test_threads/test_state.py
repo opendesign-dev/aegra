@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from aegra_api.api.threads import get_thread_state
+from aegra_api.api.thread_state import get_thread_state
 from aegra_api.models import User
 
 
@@ -123,7 +123,7 @@ class TestGetThreadState:
                 return_value={"configurable": {}},
             ),
             patch(
-                "aegra_api.api.threads.thread_state_service.convert_snapshot_to_thread_state",
+                "aegra_api.api.thread_state.thread_state_service.convert_snapshot_to_thread_state",
                 side_effect=Exception("convert failed"),
             ) as mock_convert,
         ):
@@ -161,7 +161,7 @@ class TestGetThreadState:
                 return_value=config,
             ),
             patch(
-                "aegra_api.api.threads.thread_state_service.convert_snapshot_to_thread_state",
+                "aegra_api.api.thread_state.thread_state_service.convert_snapshot_to_thread_state",
                 return_value=mock_thread_state,
             ) as mock_convert,
         ):

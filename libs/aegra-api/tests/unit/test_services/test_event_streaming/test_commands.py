@@ -16,9 +16,9 @@ def user() -> User:
 
 @pytest.fixture
 def prepared_run(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    """Stub _prepare_run to return a fixed run_id without touching the DB."""
+    """Stub prepare_run to return a fixed run_id without touching the DB."""
     mock = AsyncMock(return_value=("run-xyz", object(), object()))
-    monkeypatch.setattr(cmd, "_prepare_run", mock)
+    monkeypatch.setattr(cmd, "prepare_run", mock)
     return mock
 
 
@@ -257,7 +257,7 @@ class TestErrors:
         async def boom(*_a: Any, **_k: Any) -> None:
             raise RuntimeError("db exploded")
 
-        monkeypatch.setattr(cmd, "_prepare_run", boom)
+        monkeypatch.setattr(cmd, "prepare_run", boom)
         resp, run_id = await _dispatch(
             {"id": 9, "method": "run.start", "params": {"assistant_id": "x", "input": {}}}, user
         )
@@ -280,7 +280,7 @@ class TestErrors:
         async def boom(*_a: Any, **_k: Any) -> None:
             raise HTTPException(404, "Assistant 'x' not found")
 
-        monkeypatch.setattr(cmd, "_prepare_run", boom)
+        monkeypatch.setattr(cmd, "prepare_run", boom)
         resp, run_id = await _dispatch(
             {"id": 5, "method": "run.start", "params": {"assistant_id": "x", "input": {}}}, user
         )
@@ -295,7 +295,7 @@ class TestErrors:
         async def boom(*_a: Any, **_k: Any) -> None:
             raise HTTPException(403, "nope")
 
-        monkeypatch.setattr(cmd, "_prepare_run", boom)
+        monkeypatch.setattr(cmd, "prepare_run", boom)
         resp, _ = await _dispatch({"id": 6, "method": "run.start", "params": {"assistant_id": "x", "input": {}}}, user)
         assert resp["error"] == "permission_denied"
 

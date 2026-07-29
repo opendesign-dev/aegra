@@ -6,10 +6,10 @@ from unittest.mock import Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from aegra_api.api.runs import SEARCH_ALL_USERS_PERMISSION
 from aegra_api.core.auth_deps import get_current_user, require_auth
 from aegra_api.models import RunSearchRequest
 from aegra_api.models.auth import User
+from aegra_api.services.run_search import SEARCH_ALL_USERS_PERMISSION
 from tests.fixtures.clients import create_test_app, make_client
 from tests.fixtures.database import DummySessionBase
 from tests.fixtures.session_fixtures import override_session_dependency
@@ -44,7 +44,7 @@ def stub_graphs():
     """Stub the graph registry so assistant_id resolution needs no running server."""
     service = Mock()
     service.list_graphs.return_value = {"known-graph": "graph.py"}
-    with patch("aegra_api.api.runs.get_langgraph_service", return_value=service):
+    with patch("aegra_api.services.run_search.get_langgraph_service", return_value=service):
         yield
 
 

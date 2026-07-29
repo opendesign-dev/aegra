@@ -127,7 +127,7 @@ class TestStatelessWaitForRun:
         client = make_client(app)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_service,
             patch("aegra_api.api.stateless_runs.delete_thread_by_id", new_callable=AsyncMock),
         ):
@@ -149,7 +149,7 @@ class TestStatelessWaitForRun:
         override_session_dependency(app, BasicSession)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker):
+        with patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker):
             resp = client.post(
                 "/runs/wait",
                 json={
@@ -220,8 +220,8 @@ class TestStatelessWaitForRun:
         mock_executor.submit = AsyncMock(return_value=None)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_waiters.executor", mock_executor),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_service,
             patch("aegra_api.api.stateless_runs.delete_thread_by_id", new_callable=AsyncMock),
@@ -271,7 +271,7 @@ class TestStatelessStreamRun:
         client = make_client(app)
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_service,
             patch("aegra_api.api.stateless_runs.delete_thread_by_id", new_callable=AsyncMock),
         ):
@@ -292,7 +292,7 @@ class TestStatelessStreamRun:
         override_session_dependency(app, BasicSession)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker):
+        with patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker):
             resp = client.post(
                 "/runs/stream",
                 json={
@@ -388,7 +388,7 @@ class TestStatelessCreateRun:
         client = make_client(app)
 
         # Mock _delete_thread_by_id: assistant lookup raises 404, the cleanup
-        # path opens its own DB session via _get_session_maker which is not
+        # path opens its own DB session via get_session_maker which is not
         # initialized in this test harness.
         with patch("aegra_api.api.stateless_runs.delete_thread_by_id", new_callable=AsyncMock):
             resp = client.post(

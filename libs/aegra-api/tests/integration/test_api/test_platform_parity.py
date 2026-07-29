@@ -103,9 +103,9 @@ class TestGetCronById:
 
     def test_returns_the_cron(self, client: tuple[TestClient, AsyncMock]) -> None:
         http, service = client
-        from aegra_api.services.cron_service import _cron_to_response
+        from aegra_api.services.cron_service import cron_to_response
 
-        service.get_cron.return_value = _cron_to_response(make_cron_row(cron_id="c-1"))
+        service.get_cron.return_value = cron_to_response(make_cron_row(cron_id="c-1"))
 
         resp = http.get("/runs/crons/c-1")
 

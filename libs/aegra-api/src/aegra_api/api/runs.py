@@ -1,8 +1,6 @@
 """Run endpoints for Agent Protocol"""
 
-import asyncio
-import contextlib
-from collections.abc import AsyncGenerator, Callable, MutableMapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, MutableMapping
 from datetime import UTC, datetime
 from typing import Any, get_args
 
@@ -14,27 +12,25 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse
 
-from aegra_api.core.active_runs import active_runs
+from aegra_api.core.active_runs import active_runs, drain_task
 from aegra_api.core.auth_deps import auth_dependency, get_current_user
-from aegra_api.core.auth_filters import build_metadata_filter
 from aegra_api.core.auth_handlers import build_auth_context, handle_event
-from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
-from aegra_api.core.orm import _get_session_maker, get_session
+from aegra_api.core.orm import get_session, get_session_maker
 from aegra_api.core.sse import create_end_event, get_sse_headers, make_sse_response, sse_to_bytes
 from aegra_api.models import Run, RunCreate, RunSearchRequest, RunSelectField, RunStatus, User
-from aegra_api.models.enums import CancelAction
+from aegra_api.models.enums import CancelAction, StreamMode
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
 from aegra_api.models.filters import assume_utc, validate_time_range
-from aegra_api.models.runs import RunsCancelRequest
+from aegra_api.models.runs import RunsCancelRequest, project_runs
 from aegra_api.services.broker import broker_manager
-from aegra_api.services.langgraph_service import get_langgraph_service
-from aegra_api.services.run_preparation import _prepare_run
+from aegra_api.services.run_cancellation import rollback_runs, signal_cancel, wait_for_settle
+from aegra_api.services.run_preparation import prepare_run
+from aegra_api.services.run_search import SEARCH_ALL_USERS_PERMISSION, build_run_filters
 from aegra_api.services.run_waiters import TERMINAL_STATES, encode_output, heartbeat_wait_body, wrap_run_result
-from aegra_api.services.streaming_service import streaming_service
+from aegra_api.services.streaming_service import normalize_stream_modes, streaming_service
 from aegra_api.settings import settings
-from aegra_api.utils.assistants import resolve_assistant_id
 from aegra_api.utils.status_compat import validate_run_status
 
 router = APIRouter(tags=["Thread Runs"], dependencies=auth_dependency)
@@ -42,14 +38,8 @@ router = APIRouter(tags=["Thread Runs"], dependencies=auth_dependency)
 logger = structlog.getLogger(__name__)
 
 
-# active_runs is imported from aegra_api.core.active_runs (dependency-free module)
-
 # Default stream modes for background run execution
 DEFAULT_STREAM_MODES = ["values"]
-
-# Grants /runs/search and /runs/count the whole deployment instead of the caller's
-# own runs. Empty by default under noop auth, so the widened scope stays opt-in.
-SEARCH_ALL_USERS_PERMISSION = "runs:search:all"
 
 
 async def _authorize_run_creation(user: User, request: RunCreate, thread_id: str) -> None:
@@ -73,6 +63,20 @@ async def _authorize_run_creation(user: User, request: RunCreate, thread_id: str
         request.context = {**(request.context or {}), **handler_context}
 
 
+def _cancel_handler(run_id: str) -> Callable[[MutableMapping[str, Any]], Awaitable[None]]:
+    """Build the SSE close handler that cancels ``run_id`` when the client drops."""
+
+    async def _cancel_on_client_close(_msg: MutableMapping[str, Any]) -> None:
+        try:
+            await broker_manager.request_cancel(run_id, "cancel")
+        except (RedisError, OSError):
+            # Swallow infra/transport failures so sse-starlette's task group tears
+            # down cleanly; the lease reaper picks up runs we couldn't reach.
+            logger.exception("Failed to cancel run on client disconnect", run_id=run_id)
+
+    return _cancel_on_client_close
+
+
 @router.post("/threads/{thread_id}/runs", response_model=Run, responses={**NOT_FOUND, **CONFLICT})
 async def create_run(
     thread_id: str,
@@ -93,7 +97,7 @@ async def create_run(
 
     await _authorize_run_creation(user, request, thread_id)
 
-    _run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status="pending")
+    _run_id, run, _job = await prepare_run(session, thread_id, request, user, initial_status="pending")
 
     return run
 
@@ -118,7 +122,7 @@ async def create_and_stream_run(
     ``KEEPALIVE_INTERVAL_SECS`` so idle proxies don't drop long-running
     silent nodes (e.g. agents holding an upstream WebSocket).
     """
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         existing_thread = await session.scalar(select(ThreadORM).where(ThreadORM.thread_id == thread_id))
         if existing_thread and existing_thread.user_id != user.identity:
@@ -126,28 +130,16 @@ async def create_and_stream_run(
 
         await _authorize_run_creation(user, request, thread_id)
 
-        run_id, run, _job = await _prepare_run(session, thread_id, request, user, initial_status="pending")
+        run_id, run, _job = await prepare_run(session, thread_id, request, user, initial_status="pending")
 
     # Default to cancel on disconnect - this matches user expectation that clicking
     # "Cancel" in the frontend will stop the backend task. Users can explicitly
     # set on_disconnect="continue" if they want the task to continue.
     cancel_on_disconnect = (request.on_disconnect or "cancel").lower() == "cancel"
 
-    async def _cancel_on_client_close(_msg: MutableMapping[str, Any]) -> None:
-        try:
-            await broker_manager.request_cancel(run_id, "cancel")
-        except (RedisError, OSError):
-            # Swallow infra/transport failures so sse-starlette's task group
-            # tears down cleanly. Programmer errors (TypeError, AttributeError,
-            # ...) propagate. The lease reaper picks up unreachable runs.
-            # OSError covers ConnectionError/TimeoutError (3.11+ subclasses).
-            logger.exception("Failed to cancel run on client disconnect", run_id=run_id)
-
-    close_handler = _cancel_on_client_close if cancel_on_disconnect else None
-
     return make_sse_response(
         sse_to_bytes(streaming_service.stream_run_execution(run, None)),
-        close_handler=close_handler,
+        close_handler=_cancel_handler(run_id) if cancel_on_disconnect else None,
         headers={
             **get_sse_headers(),
             "Location": f"/threads/{thread_id}/runs/{run_id}/stream",
@@ -178,16 +170,12 @@ async def get_run(
         RunORM.thread_id == thread_id,
         RunORM.user_id == user.identity,
     )
-    logger.info(f"[get_run] querying DB run_id={run_id} thread_id={thread_id} user={user.identity}")
     run_orm = await session.scalar(stmt)
     if not run_orm:
         raise HTTPException(404, f"Run '{run_id}' not found")
 
     # No refresh needed: fresh per-request session + expire_on_commit=False means
     # the scalar() row is already current; a refresh() would just re-SELECT it.
-    logger.info(
-        f"[get_run] found run status={run_orm.status} user={user.identity} thread_id={thread_id} run_id={run_id}"
-    )
     return Run.model_validate(run_orm)
 
 
@@ -243,14 +231,11 @@ async def list_runs(
         .offset(offset)
         .order_by(RunORM.created_at.desc())
     )
-    logger.info(f"[list_runs] querying DB thread_id={thread_id} user={user.identity}")
     result = await session.scalars(stmt)
     rows = result.all()
     runs = [Run.model_validate(r) for r in rows]
-    logger.info(f"[list_runs] total={len(runs)} user={user.identity} thread_id={thread_id}")
     if select_fields:
-        wanted = set(select_fields)
-        return [{k: v for k, v in r.model_dump(mode="json").items() if k in wanted} for r in runs]
+        return project_runs(runs, select_fields)
     return runs
 
 
@@ -267,7 +252,6 @@ async def update_run(
     Primarily used to interrupt a running execution. Set `status` to
     `"interrupted"` to cooperatively stop the run.
     """
-    logger.info(f"[update_run] fetch for update run_id={run_id} thread_id={thread_id} user={user.identity}")
     run_orm = await session.scalar(
         select(RunORM).where(
             RunORM.run_id == str(run_id),
@@ -283,10 +267,9 @@ async def update_run(
     validated_status = validate_run_status(request.status)
 
     if validated_status == "interrupted":
-        logger.info(f"[update_run] cancelling/interrupting run_id={run_id} user={user.identity} thread_id={thread_id}")
+        logger.info("interrupting run", run_id=run_id, thread_id=thread_id, user_id=user.identity)
         # Handle interruption - use interrupt_run for cooperative interruption
         await streaming_service.interrupt_run(run_id)
-        logger.info(f"[update_run] set DB status=interrupted run_id={run_id}")
         # cancel_requested makes the interrupt durable: the owning worker's
         # heartbeat honors it even if the pub/sub signal was lost.
         await session.execute(
@@ -295,7 +278,6 @@ async def update_run(
             .values(status="interrupted", cancel_requested=True, updated_at=datetime.now(UTC))
         )
         await session.commit()
-        logger.info(f"[update_run] commit done (interrupted) run_id={run_id}")
 
     # Return final run state
     run_orm = await session.scalar(select(RunORM).where(RunORM.run_id == run_id))
@@ -326,7 +308,7 @@ async def join_run(
     Sessions are managed manually (not via ``Depends``) to avoid holding a
     pool connection during the long wait.
     """
-    maker = _get_session_maker()
+    maker = get_session_maker()
 
     # Short-lived session: validate run exists and check terminal state
     async with maker() as session:
@@ -378,7 +360,7 @@ async def wait_for_run(
     Sessions are managed manually (not via ``Depends``) to avoid holding a
     pool connection during the long wait.
     """
-    maker = _get_session_maker()
+    maker = get_session_maker()
 
     # Session block: all pre-execution DB work (validate, create run, submit)
     async with maker() as session:
@@ -388,7 +370,7 @@ async def wait_for_run(
 
         await _authorize_run_creation(user, request, thread_id)
 
-        run_id, _run, _job = await _prepare_run(session, thread_id, request, user, initial_status="pending")
+        run_id, _run, _job = await prepare_run(session, thread_id, request, user, initial_status="pending")
 
     # No pool connection held from here — safe for long waits
     return StreamingResponse(
@@ -406,12 +388,29 @@ async def wait_for_run(
     )
 
 
+_STREAM_MODES = frozenset(get_args(StreamMode))
+
+
+def _parse_stream_modes(values: list[str] | None) -> frozenset[str] | None:
+    """Validate the SDK's repeated ``stream_mode`` query param into an allowlist."""
+    if not values:
+        return None
+    requested = [stripped for value in values for mode in value.split(",") if (stripped := mode.strip())]
+    invalid = [mode for mode in requested if mode not in _STREAM_MODES]
+    if invalid:
+        raise HTTPException(422, f"Invalid stream mode: {invalid[0]}")
+    return normalize_stream_modes(requested)
+
+
 @router.get("/threads/{thread_id}/runs/{run_id}/stream", responses={**SSE_RESPONSE, **NOT_FOUND})
 async def stream_run(
     thread_id: str,
     run_id: str,
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
-    _stream_mode: str | None = Query(None, description="Override the stream mode for this connection."),
+    stream_mode: list[str] | None = Query(
+        None, description="Narrow this connection to a subset of the run's stream modes."
+    ),
+    cancel_on_disconnect: bool = Query(False, description="Cancel the run when this client disconnects."),
     user: User = Depends(get_current_user),
 ) -> EventSourceResponse:
     """Stream an existing run's execution via SSE.
@@ -421,12 +420,18 @@ async def stream_run(
     finished, a single `end` event is emitted. Use the `Last-Event-ID`
     header to resume from a specific event after a disconnect.
 
+    `stream_mode` must be a subset of the modes the run was created with;
+    control events (`metadata`, `error`, `end`) are always delivered. By
+    default a disconnect leaves the run alone — other consumers may still be
+    attached via `/join` or another `/stream` — so pass
+    `cancel_on_disconnect=true` to cancel it instead.
+
     A periodic SSE keepalive comment is sent every
     ``KEEPALIVE_INTERVAL_SECS`` so idle proxies don't drop attached streams.
     """
-    maker = _get_session_maker()
+    modes = _parse_stream_modes(stream_mode)
+    maker = get_session_maker()
     async with maker() as session:
-        logger.info(f"[stream_run] fetch for stream run_id={run_id} thread_id={thread_id} user={user.identity}")
         run_orm = await session.scalar(
             select(RunORM).where(
                 RunORM.run_id == str(run_id),
@@ -437,22 +442,17 @@ async def stream_run(
         if not run_orm:
             raise HTTPException(404, f"Run '{run_id}' not found")
 
-        logger.info(f"[stream_run] status={run_orm.status} user={user.identity} thread_id={thread_id} run_id={run_id}")
         run_status = run_orm.status
         run_model = Run.model_validate(run_orm)
-    # No client_close_handler_callable: this is a reconnect-style endpoint, so
-    # a single client disconnecting must not cancel the shared run — other
-    # consumers may still be attached via /join or another /stream.
-    # If already terminal and no Last-Event-ID, just emit end.
-    # If Last-Event-ID is present, fall through to stream_run_execution
-    # which will replay missed events from the buffer before ending.
+
+    # Terminal with no Last-Event-ID: nothing to replay, just close the stream.
+    # With a Last-Event-ID, fall through so the buffer replays what was missed.
     if run_status in TERMINAL_STATES and not last_event_id:
         final_status = "error" if run_status == "error" else run_status
 
         async def generate_final() -> AsyncGenerator[str, None]:
             yield create_end_event(status=final_status)
 
-        logger.info(f"[stream_run] starting terminal stream run_id={run_id} status={run_status}")
         return make_sse_response(
             sse_to_bytes(generate_final()),
             headers={
@@ -462,10 +462,9 @@ async def stream_run(
             },
         )
 
-    # Stream active or pending runs via broker
-
     return make_sse_response(
-        sse_to_bytes(streaming_service.stream_run_execution(run_model, last_event_id)),
+        sse_to_bytes(streaming_service.stream_run_execution(run_model, last_event_id, stream_modes=modes)),
+        close_handler=_cancel_handler(run_id) if cancel_on_disconnect else None,
         headers={
             **get_sse_headers(),
             "Location": f"/threads/{thread_id}/runs/{run_id}/stream",
@@ -499,7 +498,7 @@ async def join_thread_stream(
     if "run_modes" not in requested:
         raise HTTPException(422, "Only the 'run_modes' thread stream mode is supported")
 
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         run_orm = await session.scalar(
             select(RunORM)
@@ -547,53 +546,6 @@ async def join_thread_stream(
     )
 
 
-async def _mark_cancel_requested(session: AsyncSession, run_ids: list[str]) -> None:
-    """Persist the cancel intent so the owning worker's heartbeat honors it.
-
-    Durable and cross-instance: survives a dropped pub/sub signal and even a
-    worker crash (the reaper re-enqueues the run with the marker intact). Pub/sub
-    remains only an accelerator.
-    """
-    await session.execute(update(RunORM).where(RunORM.run_id.in_(run_ids)).values(cancel_requested=True))
-    await session.commit()
-
-
-async def _interrupt_pending(session: AsyncSession, run_ids: list[str]) -> None:
-    """Finalize unclaimed pending runs as interrupted — no executor will settle them.
-
-    A running run is left to its executor, which finalizes ``interrupted`` via the
-    marker/pub/sub. Guarded on ``status='pending'`` so a run a worker just claimed
-    is left for that worker, not stolen into a terminal state mid-flight.
-    """
-    await session.execute(
-        update(RunORM)
-        .where(RunORM.run_id.in_(run_ids), RunORM.status == "pending")
-        .values(status="interrupted", updated_at=datetime.now(UTC))
-    )
-    await session.commit()
-
-
-async def _wait_for_settle(
-    session: AsyncSession, run_ids: list[str], *, attempts: int = 20, delay: float = 0.5
-) -> None:
-    """Poll until every run's executor has fully settled it (terminal + lease released).
-
-    The termination signal is worker-controlled, never the API's own write. A run
-    is settled once its status is terminal AND its lease is released
-    (``claimed_by IS NULL``). A prod worker writes the terminal status in
-    finalize_run but only drops the lease afterwards, so the lease-release is the
-    definitive "worker is fully done" point — the safe moment to delete
-    checkpoints for a rollback. In dev ``claimed_by`` is always NULL, so this
-    reduces to waiting for the terminal status the local task writes. Bounded so a
-    crashed worker (orphaned lease on a terminal run) cannot block forever.
-    """
-    for _ in range(attempts):
-        await asyncio.sleep(delay)
-        rows = (await session.execute(select(RunORM.status, RunORM.claimed_by).where(RunORM.run_id.in_(run_ids)))).all()
-        if all(status in TERMINAL_STATES and claimed_by is None for status, claimed_by in rows):
-            return
-
-
 @router.post(
     "/threads/{thread_id}/runs/{run_id}/cancel",
     response_model=Run,
@@ -621,7 +573,6 @@ async def cancel_run_endpoint(
     and then discard the run record plus its checkpoints. Set `wait=1` to block
     until the background task has fully settled before returning the updated run.
     """
-    logger.info(f"[cancel_run] fetch run run_id={run_id} thread_id={thread_id} user={user.identity}")
     run_orm = await session.scalar(
         select(RunORM).where(
             RunORM.run_id == run_id,
@@ -632,26 +583,13 @@ async def cancel_run_endpoint(
     if not run_orm:
         raise HTTPException(404, f"Run '{run_id}' not found")
 
-    # Persist the cancel intent first (durable, cross-instance), then fire the
-    # pub/sub accelerator. The executor — not the API — writes the terminal
-    # status, so a lost pub/sub message no longer lets the run finish and
-    # overwrite 'interrupted' back to 'success'.
-    logger.info(f"[cancel_run] {action} run_id={run_id} user={user.identity} thread_id={thread_id}")
-    await _mark_cancel_requested(session, [run_id])
-    if action == "interrupt":
-        await streaming_service.interrupt_run(run_id)
-    else:
-        await streaming_service.cancel_run(run_id)
-    # Only a pending (unclaimed) run needs the API to settle it; a running run is
-    # finalized by its executor via the marker/pub/sub.
-    await _interrupt_pending(session, [run_id])
+    logger.info("cancelling run", action=action, run_id=run_id, thread_id=thread_id, user_id=user.identity)
+    await signal_cancel(session, [run_id], action)
 
     # Rollback must always settle first: deleting checkpoints while the executor
-    # is still finalizing would let it write rows back afterwards. The wait keys
-    # off the executor's own settle signal (terminal status + released lease),
-    # not a status the API pre-wrote — so it truly waits for the worker to stop.
+    # is still finalizing would let it write rows back afterwards.
     if wait or action == "rollback":
-        await _wait_for_settle(session, [run_id])
+        await wait_for_settle(session, [run_id])
 
     # Reload the settled snapshot (also what a rollback returns post-delete).
     session.expire_all()
@@ -667,61 +605,8 @@ async def cancel_run_endpoint(
     run = Run.model_validate(run_orm)
 
     if action == "rollback":
-        await db_manager.get_checkpointer().adelete_for_runs([run_id])
-        await session.delete(run_orm)
-        await session.commit()
+        await rollback_runs(session, [run_id])
     return run
-
-
-def _resolve_search_assistant_id(assistant_id: str) -> str:
-    """Map a graph id in the filter to its canonical assistant id.
-
-    Mirrors run creation so a caller can search by whichever identifier they
-    used to start the run.
-    """
-    return resolve_assistant_id(assistant_id, get_langgraph_service().list_graphs())
-
-
-def _match(column: Any, value: str | list[str], transform: Callable[[str], str] | None = None) -> Any:
-    """Equality for a scalar, IN for a list — one filter field, either shape."""
-    if isinstance(value, list):
-        return column.in_([transform(v) for v in value] if transform else value)
-    return column == (transform(value) if transform else value)
-
-
-def _run_search_filters(
-    request: RunSearchRequest,
-    user: User,
-    auth_filters: dict[str, Any] | None,
-    *,
-    cross_user: bool,
-) -> list[Any]:
-    """Shared WHERE predicates for /runs/search and /runs/count.
-
-    ``cross_user`` comes from the caller's permissions, never from the request —
-    there is no field a client can send to widen its own scope.
-    """
-    where: list[Any] = []
-    if not cross_user:
-        where.append(RunORM.user_id == user.identity)
-    if request.assistant_id is not None:
-        where.append(_match(RunORM.assistant_id, request.assistant_id, _resolve_search_assistant_id))
-    if request.thread_id is not None:
-        where.append(_match(RunORM.thread_id, request.thread_id))
-    if request.ids is not None:
-        where.append(RunORM.run_id.in_(request.ids))
-    if request.status is not None:
-        where.append(_match(RunORM.status, request.status))
-    if request.metadata:
-        where.append(RunORM.metadata_dict.op("@>")(request.metadata))
-    if request.created_after is not None:
-        where.append(RunORM.created_at >= request.created_after)
-    if request.created_before is not None:
-        where.append(RunORM.created_at <= request.created_before)
-    auth_filter = build_metadata_filter(RunORM.metadata_dict, auth_filters)
-    if auth_filter is not None:
-        where.append(auth_filter)
-    return where
 
 
 # response_model=None: with `select` the items are partial dicts.
@@ -749,7 +634,7 @@ async def search_runs(
     direction = sort_column.asc() if request.sort_order == "asc" else sort_column.desc()
     stmt = (
         select(RunORM)
-        .where(*_run_search_filters(request, user, auth_filters, cross_user=cross_user))
+        .where(*build_run_filters(request, user, auth_filters, cross_user=cross_user))
         # Secondary sort keeps offset pagination stable when the primary key ties.
         .order_by(direction, RunORM.run_id.asc())
         .offset(request.offset)
@@ -758,8 +643,7 @@ async def search_runs(
     runs = [Run.model_validate(row) for row in (await session.scalars(stmt)).all()]
     if not request.select:
         return runs
-    wanted = set(request.select)
-    return [{k: v for k, v in r.model_dump(mode="json").items() if k in wanted} for r in runs]
+    return project_runs(runs, request.select)
 
 
 @router.post("/runs/count", response_model=int)
@@ -773,7 +657,7 @@ async def count_runs(
     ctx = build_auth_context(user, "runs", "search")
     auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
 
-    where = _run_search_filters(request, user, auth_filters, cross_user=cross_user)
+    where = build_run_filters(request, user, auth_filters, cross_user=cross_user)
     stmt = select(func.count()).select_from(RunORM).where(*where)
     return await session.scalar(stmt) or 0
 
@@ -802,25 +686,12 @@ async def cancel_runs_bulk(
         raise HTTPException(404, "No runs found to cancel")
 
     run_ids = [row.run_id for row in rows]
-    # Persist the cancel intent (durable, cross-instance) before the pub/sub
-    # accelerator, then let each executor finalize its own run.
-    await _mark_cancel_requested(session, run_ids)
-    for rid in run_ids:
-        if action == "interrupt":
-            await streaming_service.interrupt_run(rid)
-        else:
-            await streaming_service.cancel_run(rid)
-    # Pending (unclaimed) runs have no executor to settle them; the API does.
-    await _interrupt_pending(session, run_ids)
+    await signal_cancel(session, run_ids, action)
 
     if action == "rollback":
-        # Settle before deleting checkpoints so a finalizing executor cannot
-        # write rows back afterwards. Keyed off the executor's settle signal
-        # (terminal status + released lease), not an API pre-write.
-        await _wait_for_settle(session, run_ids)
-        await db_manager.get_checkpointer().adelete_for_runs(run_ids)
-        await session.execute(delete(RunORM).where(RunORM.run_id.in_(run_ids)))
-        await session.commit()
+        # Settle before deleting so a finalizing executor cannot write rows back.
+        await wait_for_settle(session, run_ids)
+        await rollback_runs(session, run_ids)
     return Response(status_code=204)
 
 
@@ -846,7 +717,6 @@ async def delete_run(
     ctx = build_auth_context(user, "runs", "delete")
     value = {"run_id": run_id, "thread_id": thread_id}
     await handle_event(ctx, value)
-    logger.info(f"[delete_run] fetch run run_id={run_id} thread_id={thread_id} user={user.identity}")
     run_orm = await session.scalar(
         select(RunORM).where(
             RunORM.run_id == str(run_id),
@@ -866,13 +736,12 @@ async def delete_run(
 
     # If forcing and active, cancel first
     if force and run_orm.status in ["pending", "running"]:
-        logger.info(f"[delete_run] force-cancelling active run run_id={run_id}")
+        logger.info("force-cancelling active run before delete", run_id=run_id, thread_id=thread_id)
         await streaming_service.cancel_run(run_id)
         # Best-effort: wait for bg task to settle
         task = active_runs.get(run_id)
         if task:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+            await drain_task(task, run_id)
 
     # Delete the record
     await session.execute(

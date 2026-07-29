@@ -15,7 +15,7 @@ import structlog
 from sqlalchemy import select
 
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.models.enums import TERMINAL_RUN_STATUSES
 from aegra_api.services.executor import executor
 from aegra_api.settings import settings
@@ -46,7 +46,7 @@ async def read_run_output(
     user_id: str,
 ) -> dict[str, Any]:
     """Open a short-lived DB session and read the run's terminal wait/join payload."""
-    maker = _get_session_maker()
+    maker = get_session_maker()
     async with maker() as session:
         run_orm = await session.scalar(
             select(RunORM).where(

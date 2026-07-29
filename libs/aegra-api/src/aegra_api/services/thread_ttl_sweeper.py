@@ -18,7 +18,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.settings import settings
 
 logger = structlog.getLogger(__name__)
@@ -85,7 +85,7 @@ class ThreadTTLSweeper:
             .exists()
         )
         checkpointer = db_manager.get_checkpointer()
-        maker = _get_session_maker()
+        maker = get_session_maker()
         # Claim + delete in one transaction: FOR UPDATE SKIP LOCKED holds the row
         # locks to commit, so concurrent replicas sweep disjoint threads.
         async with maker() as session:

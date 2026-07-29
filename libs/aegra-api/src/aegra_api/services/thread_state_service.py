@@ -1,14 +1,50 @@
-"""Thread state conversion service"""
+"""Thread state services: snapshot conversion, and materializing state onto the row."""
 
-from datetime import datetime
-from typing import Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from aegra_api.core.serializers import LangGraphSerializer
+from aegra_api.core.orm import Thread as ThreadORM
+from aegra_api.core.serializers import GeneralSerializer, LangGraphSerializer
+from aegra_api.models.auth import User
 from aegra_api.models.threads import ThreadCheckpoint, ThreadState
+from aegra_api.services.run_status import materialize_thread_state
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 logger = structlog.getLogger(__name__)
+
+
+async def refresh_materialized_state(session: AsyncSession, thread: ThreadORM, user: User) -> None:
+    """Best-effort refresh of the thread row's materialized values/interrupts.
+
+    Feeds thread search's ``values`` filter and ``select``. A read failure must
+    not fail the state update that triggered it, so errors are swallowed.
+    """
+    graph_id = (thread.metadata_json or {}).get("graph_id")
+    if not graph_id:
+        return
+    from aegra_api.services.langgraph_service import create_thread_config, get_langgraph_service
+
+    serializer = GeneralSerializer()
+    service = get_langgraph_service()
+    raw_config = create_thread_config(thread.thread_id, user)
+    config = cast("RunnableConfig", raw_config)
+    try:
+        async with service.get_graph(graph_id, config=raw_config, access_context="threads.read", user=user) as agent:
+            state = await agent.aget_state(config)
+        values = serializer.serialize(state.values) if state.values is not None else None
+        interrupts = LangGraphSerializer().build_interrupts_map(state)
+    except Exception as exc:
+        logger.warning("Could not materialize thread state", thread_id=thread.thread_id, error=str(exc))
+        return
+    if isinstance(values, dict):
+        await materialize_thread_state(session, thread.thread_id, values, interrupts)
+    thread.updated_at = datetime.now(UTC)
+    await session.commit()
 
 
 class ThreadStateService:

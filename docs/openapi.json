@@ -3,7 +3,7 @@
   "info": {
     "title": "Aegra",
     "description": "Production-ready Agent Protocol server",
-    "version": "0.13.0"
+    "version": "0.13.1"
   },
   "paths": {
     "/info": {
@@ -543,7 +543,7 @@
           "Assistants"
         ],
         "summary": "List Assistant Versions",
-        "description": "List all versions of an assistant.\n\nReturns versions ordered from newest to oldest. Each version captures the\nassistant's configuration at the time of creation or update.",
+        "description": "List versions of an assistant.\n\nReturns versions ordered from newest to oldest, paginated by `limit` and\n`offset`. Each version captures the assistant's configuration at the time\nof creation or update.",
         "operationId": "list_assistant_versions_assistants__assistant_id__versions_post",
         "parameters": [
           {
@@ -556,6 +556,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AssistantVersionsRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -853,284 +870,6 @@
                   "type": "object",
                   "additionalProperties": true,
                   "title": "Response Get Assistant Subgraphs Namespace Assistants  Assistant Id  Subgraphs  Namespace  Get"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentProtocolError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/threads": {
-      "get": {
-        "tags": [
-          "Threads"
-        ],
-        "summary": "List Threads",
-        "description": "List all threads owned by the authenticated user.\n\nReturns every thread without filtering. Use the search endpoint for\nfiltered queries.",
-        "operationId": "list_threads_threads_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ThreadList"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "Threads"
-        ],
-        "summary": "Create Thread",
-        "description": "Create a new conversation thread.\n\nThreads hold conversation state and checkpoint history. Provide a\n`thread_id` for idempotent creation, or let the server generate one.\nSet `if_exists` to `\"do_nothing\"` to return the existing thread when the\nID already exists instead of raising a 409 conflict.",
-        "operationId": "create_thread_threads_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ThreadCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Thread"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Resource state conflict",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentProtocolError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/threads/{thread_id}": {
-      "get": {
-        "tags": [
-          "Threads"
-        ],
-        "summary": "Get Thread",
-        "description": "Get a thread by its ID.\n\nReturns 404 if the thread does not exist or does not belong to the\nauthenticated user.",
-        "operationId": "get_thread_threads__thread_id__get",
-        "parameters": [
-          {
-            "name": "thread_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Thread Id"
-            }
-          },
-          {
-            "name": "include",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Extra fields to include; supports 'ttl'.",
-              "title": "Include"
-            },
-            "description": "Extra fields to include; supports 'ttl'."
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Thread"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentProtocolError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "Threads"
-        ],
-        "summary": "Update Thread",
-        "description": "Update a thread's metadata.\n\nMerges the provided metadata with the existing metadata (shallow merge).\nSend `Prefer: return=minimal` to get a 204 with no body instead of the\nupdated thread (the SDK's `return_minimal=True`).",
-        "operationId": "update_thread_threads__thread_id__patch",
-        "parameters": [
-          {
-            "name": "thread_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Thread Id"
-            }
-          },
-          {
-            "name": "prefer",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Set to 'return=minimal' for a 204 with no body.",
-              "title": "Prefer"
-            },
-            "description": "Set to 'return=minimal' for a 204 with no body."
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ThreadUpdate"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "404": {
-            "description": "Resource not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentProtocolError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "Threads"
-        ],
-        "summary": "Delete Thread",
-        "description": "Delete a thread by its ID.\n\nPermanently removes everything the thread owns: its runs and materialized\nstate (via cascade) plus its checkpoints, blobs, and pending writes. Any\nactive runs are cancelled first.\n\nNo opt-out, matching the SDK's ``threads.delete(thread_id)`` \u2014 it takes no\ncascade flag, so the delete is all-or-nothing.",
-        "operationId": "delete_thread_threads__thread_id__delete",
-        "parameters": [
-          {
-            "name": "thread_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Thread Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Delete Thread Threads  Thread Id  Delete"
                 }
               }
             }
@@ -1654,6 +1393,284 @@
                     "$ref": "#/components/schemas/ThreadState"
                   },
                   "title": "Response Get Thread History Get Threads  Thread Id  History Get"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/threads": {
+      "get": {
+        "tags": [
+          "Threads"
+        ],
+        "summary": "List Threads",
+        "description": "List all threads owned by the authenticated user.\n\nReturns every thread without filtering. Use the search endpoint for\nfiltered queries.",
+        "operationId": "list_threads_threads_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Threads"
+        ],
+        "summary": "Create Thread",
+        "description": "Create a new conversation thread.\n\nThreads hold conversation state and checkpoint history. Provide a\n`thread_id` for idempotent creation, or let the server generate one.\nSet `if_exists` to `\"do_nothing\"` to return the existing thread when the\nID already exists instead of raising a 409 conflict.",
+        "operationId": "create_thread_threads_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource state conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/threads/{thread_id}": {
+      "get": {
+        "tags": [
+          "Threads"
+        ],
+        "summary": "Get Thread",
+        "description": "Get a thread by its ID.\n\nReturns 404 if the thread does not exist or does not belong to the\nauthenticated user.",
+        "operationId": "get_thread_threads__thread_id__get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Extra fields to include; supports 'ttl'.",
+              "title": "Include"
+            },
+            "description": "Extra fields to include; supports 'ttl'."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Threads"
+        ],
+        "summary": "Update Thread",
+        "description": "Update a thread's metadata.\n\nMerges the provided metadata with the existing metadata (shallow merge).\nSend `Prefer: return=minimal` to get a 204 with no body instead of the\nupdated thread (the SDK's `return_minimal=True`).",
+        "operationId": "update_thread_threads__thread_id__patch",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "prefer",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Set to 'return=minimal' for a 204 with no body.",
+              "title": "Prefer"
+            },
+            "description": "Set to 'return=minimal' for a 204 with no body."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Threads"
+        ],
+        "summary": "Delete Thread",
+        "description": "Delete a thread by its ID.\n\nPermanently removes everything the thread owns: its runs and materialized\nstate (via cascade) plus its checkpoints, blobs, and pending writes. Any\nactive runs are cancelled first.\n\nNo opt-out, matching the SDK's ``threads.delete(thread_id)`` \u2014 it takes no\ncascade flag, so the delete is all-or-nothing.",
+        "operationId": "delete_thread_threads__thread_id__delete",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Delete Thread Threads  Thread Id  Delete"
                 }
               }
             }
@@ -2518,7 +2535,7 @@
           "Thread Runs"
         ],
         "summary": "Stream Run",
-        "description": "Stream an existing run's execution via SSE.\n\nAttach to a run that was created without streaming (e.g. via the create\nendpoint) to receive its events in real time. If the run has already\nfinished, a single `end` event is emitted. Use the `Last-Event-ID`\nheader to resume from a specific event after a disconnect.\n\nA periodic SSE keepalive comment is sent every\n``KEEPALIVE_INTERVAL_SECS`` so idle proxies don't drop attached streams.",
+        "description": "Stream an existing run's execution via SSE.\n\nAttach to a run that was created without streaming (e.g. via the create\nendpoint) to receive its events in real time. If the run has already\nfinished, a single `end` event is emitted. Use the `Last-Event-ID`\nheader to resume from a specific event after a disconnect.\n\n`stream_mode` must be a subset of the modes the run was created with;\ncontrol events (`metadata`, `error`, `end`) are always delivered. By\ndefault a disconnect leaves the run alone \u2014 other consumers may still be\nattached via `/join` or another `/stream` \u2014 so pass\n`cancel_on_disconnect=true` to cancel it instead.\n\nA periodic SSE keepalive comment is sent every\n``KEEPALIVE_INTERVAL_SECS`` so idle proxies don't drop attached streams.",
         "operationId": "stream_run_threads__thread_id__runs__run_id__stream_get",
         "parameters": [
           {
@@ -2540,22 +2557,37 @@
             }
           },
           {
-            "name": "_stream_mode",
+            "name": "stream_mode",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Override the stream mode for this connection.",
-              "title": " Stream Mode"
+              "description": "Narrow this connection to a subset of the run's stream modes.",
+              "title": "Stream Mode"
             },
-            "description": "Override the stream mode for this connection."
+            "description": "Narrow this connection to a subset of the run's stream modes."
+          },
+          {
+            "name": "cancel_on_disconnect",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Cancel the run when this client disconnects.",
+              "default": false,
+              "title": "Cancel On Disconnect"
+            },
+            "description": "Cancel the run when this client disconnects."
           },
           {
             "name": "Last-Event-ID",
@@ -4326,7 +4358,7 @@
             "anyOf": [
               {
                 "type": "integer",
-                "maximum": 100.0,
+                "maximum": 1000.0,
                 "minimum": 1.0
               },
               {
@@ -4370,8 +4402,8 @@
                 "type": "string",
                 "enum": [
                   "assistant_id",
-                  "name",
                   "graph_id",
+                  "name",
                   "created_at",
                   "updated_at"
                 ]
@@ -4471,10 +4503,16 @@
             "description": "Configuration to use for the graph."
           },
           "graph_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Graph Id",
-            "description": "The ID of the graph",
-            "default": "agent"
+            "description": "The ID of the graph. Omit to keep the assistant's current graph."
           },
           "context": {
             "anyOf": [
@@ -4505,7 +4543,42 @@
         },
         "type": "object",
         "title": "AssistantUpdate",
-        "description": "Request model for creating assistants"
+        "description": "Request model for updating assistants \u2014 every field is an optional patch."
+      },
+      "AssistantVersionsRequest": {
+        "properties": {
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Only versions whose metadata contains these key/value pairs."
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "description": "Maximum versions to return.",
+            "default": 10
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "description": "Versions to skip, newest first.",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "AssistantVersionsRequest",
+        "description": "Request body for ``POST /assistants/{assistant_id}/versions``.\n\nThe SDK always sends limit/offset here; an unpaginated response would grow\nwithout bound on an assistant with a long edit history."
       },
       "Body_set_assistant_latest_assistants__assistant_id__latest_post": {
         "properties": {
@@ -5062,6 +5135,8 @@
                     "payload",
                     "next_run_date",
                     "metadata",
+                    "now",
+                    "on_run_completed",
                     "enabled"
                   ]
                 },
@@ -6777,7 +6852,7 @@
             "title": "Initial State",
             "description": "LangGraph initial state"
           },
-          "threadId": {
+          "thread_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -6786,19 +6861,23 @@
                 "type": "null"
               }
             ],
-            "title": "Threadid",
+            "title": "Thread Id",
             "description": "Optional client-provided thread ID for idempotent creation"
           },
-          "ifExists": {
+          "if_exists": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "enum": [
+                  "raise",
+                  "do_nothing"
+                ]
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Ifexists",
+            "title": "If Exists",
             "description": "Behavior when thread exists: 'raise' (default) or 'do_nothing'",
             "default": "raise"
           },

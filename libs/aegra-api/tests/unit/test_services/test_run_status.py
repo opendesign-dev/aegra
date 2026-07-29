@@ -39,7 +39,7 @@ class TestUpdateRunStatus:
         session = _make_mock_session()
         maker = _make_mock_session_maker(session)
 
-        with patch("aegra_api.services.run_status._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_status.get_session_maker", return_value=maker):
             await update_run_status("run-1", "running")
 
         session.execute.assert_awaited_once()
@@ -51,7 +51,7 @@ class TestUpdateRunStatus:
         maker = _make_mock_session_maker(session)
 
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status._safe_serialize", return_value=({"key": "val"}, True)) as mock_ser,
         ):
             await update_run_status("run-1", "success", output={"key": "val"})
@@ -64,7 +64,7 @@ class TestUpdateRunStatus:
         session = _make_mock_session()
         maker = _make_mock_session_maker(session)
 
-        with patch("aegra_api.services.run_status._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_status.get_session_maker", return_value=maker):
             await update_run_status("run-1", "error", error="something broke")
 
         session.execute.assert_awaited_once()
@@ -76,7 +76,7 @@ class TestUpdateRunStatus:
         maker = _make_mock_session_maker(session)
 
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status._safe_serialize") as mock_ser,
         ):
             await update_run_status("run-1", "running")
@@ -137,7 +137,7 @@ class TestFinalizeRunMaterialization:
         session = _make_mock_session()
         maker = _make_mock_session_maker(session)
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()) as mat,
         ):
             await finalize_run("run-1", "thread-1", status="error", thread_status="error", error="boom")
@@ -151,7 +151,7 @@ class TestFinalizeRunMaterialization:
         session = _make_mock_session()
         maker = _make_mock_session_maker(session)
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()) as mat,
         ):
             await finalize_run("run-1", "thread-1", status="success", thread_status="idle", output={"streamed": 1})
@@ -165,7 +165,7 @@ class TestFinalizeRunMaterialization:
         session = _make_mock_session()
         maker = _make_mock_session_maker(session)
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()) as mat,
         ):
             await finalize_run(
@@ -186,7 +186,7 @@ class TestFinalizeRunMaterialization:
         session = _make_mock_session()
         maker = _make_mock_session_maker(session)
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()) as mat,
         ):
             await finalize_run(
@@ -206,7 +206,7 @@ class TestFinalizeRunMaterialization:
         maker = _make_mock_session_maker(session)
         interrupts = {"t1": [{"value": "x", "id": "i1"}]}
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()) as mat,
         ):
             await finalize_run(
@@ -230,7 +230,7 @@ class TestFinalizeRunCompareAndSet:
         session = _make_mock_session(rowcount=1)
         maker = _make_mock_session_maker(session)
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()) as mat,
         ):
             won = await finalize_run("run-1", "thread-1", status="success", thread_status="idle", state_values={"v": 1})
@@ -246,7 +246,7 @@ class TestFinalizeRunCompareAndSet:
         session = _make_mock_session(rowcount=0)
         maker = _make_mock_session_maker(session)
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()) as mat,
         ):
             won = await finalize_run("run-1", "thread-1", status="success", thread_status="idle", state_values={"v": 1})
@@ -265,7 +265,7 @@ class TestFinalizeRunWebhookOutbox:
         session = _make_mock_session(rowcount=1)
         maker = _make_mock_session_maker(session)
         with (
-            patch("aegra_api.services.run_status._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_status.get_session_maker", return_value=maker),
             patch("aegra_api.services.run_status.materialize_thread_state", new=AsyncMock()),
         ):
             won = await finalize_run(
@@ -280,7 +280,7 @@ class TestFinalizeRunWebhookOutbox:
     async def test_no_delivery_row_when_lost(self) -> None:
         session = _make_mock_session(rowcount=0)
         maker = _make_mock_session_maker(session)
-        with patch("aegra_api.services.run_status._get_session_maker", return_value=maker):
+        with patch("aegra_api.services.run_status.get_session_maker", return_value=maker):
             won = await finalize_run(
                 "run-1", "thread-1", status="success", thread_status="idle", webhook="https://hook.example/x"
             )

@@ -70,7 +70,7 @@ class TestDeleteThreadByIdCleansCheckpoints:
         ctx.__aenter__ = AsyncMock(return_value=session)
         ctx.__aexit__ = AsyncMock(return_value=False)
         maker.return_value = ctx
-        monkeypatch.setattr(run_cleanup, "_get_session_maker", lambda: maker)
+        monkeypatch.setattr(run_cleanup, "get_session_maker", lambda: maker)
 
         await run_cleanup.delete_thread_by_id("t-1", "user-1")
 
@@ -98,7 +98,7 @@ class TestDeleteThreadByIdCleansCheckpoints:
         ctx.__aenter__ = AsyncMock(return_value=session)
         ctx.__aexit__ = AsyncMock(return_value=False)
         maker.return_value = ctx
-        monkeypatch.setattr(run_cleanup, "_get_session_maker", lambda: maker)
+        monkeypatch.setattr(run_cleanup, "get_session_maker", lambda: maker)
 
         await run_cleanup.delete_thread_by_id("t-1", "user-1")
 

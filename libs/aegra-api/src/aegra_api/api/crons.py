@@ -34,7 +34,7 @@ from aegra_api.models.crons import (
 from aegra_api.models.errors import NOT_FOUND
 from aegra_api.services.cron_service import (
     CronService,
-    _cron_to_response,
+    cron_to_response,
     get_cron_service,
 )
 
@@ -76,11 +76,6 @@ async def _authorize_cron_create(
         await handle_event(build_auth_context(user, "threads", "search"), {})
 
 
-# ---------------------------------------------------------------------------
-# Create (stateless) – POST /runs/crons → returns Cron
-# ---------------------------------------------------------------------------
-
-
 @router.post("/runs/crons", response_model=CronResponse)
 async def create_cron(
     request: CronCreate,
@@ -94,12 +89,7 @@ async def create_cron(
     """
     await _authorize_cron_create(user, request, thread_id=None)
     cron = await service.create_cron(request, user.identity)
-    return _cron_to_response(cron)
-
-
-# ---------------------------------------------------------------------------
-# Create for thread – POST /threads/{thread_id}/runs/crons → returns Cron
-# ---------------------------------------------------------------------------
+    return cron_to_response(cron)
 
 
 @router.post("/threads/{thread_id}/runs/crons", response_model=CronResponse)
@@ -125,12 +115,7 @@ async def create_cron_for_thread(
 
     await _authorize_cron_create(user, request, thread_id=thread_id)
     cron = await service.create_cron(request, user.identity, thread_id=thread_id)
-    return _cron_to_response(cron)
-
-
-# ---------------------------------------------------------------------------
-# Update – PATCH /runs/crons/{cron_id} → returns Cron
-# ---------------------------------------------------------------------------
+    return cron_to_response(cron)
 
 
 @router.get("/runs/crons/{cron_id}", response_model=CronResponse, responses={**NOT_FOUND})
@@ -168,11 +153,6 @@ async def update_cron(
     return await service.update_cron(cron_id, request, user.identity)
 
 
-# ---------------------------------------------------------------------------
-# Delete – DELETE /runs/crons/{cron_id} → 204
-# ---------------------------------------------------------------------------
-
-
 @router.delete("/runs/crons/{cron_id}", status_code=204, responses={**NOT_FOUND})
 async def delete_cron(
     cron_id: str,
@@ -186,11 +166,6 @@ async def delete_cron(
 
     await service.delete_cron(cron_id, user.identity)
     return Response(status_code=204)
-
-
-# ---------------------------------------------------------------------------
-# Search – POST /runs/crons/search → list[Cron]
-# ---------------------------------------------------------------------------
 
 
 # response_model=None: with `select` the items are partial dicts, so the
@@ -212,11 +187,6 @@ async def search_crons(
     return await service.search_crons(request, user.identity)
 
 
-# ---------------------------------------------------------------------------
-# Count – POST /runs/crons/count → int
-# ---------------------------------------------------------------------------
-
-
 @router.post("/runs/crons/count")
 async def count_crons(
     request: CronCountRequest,
@@ -229,8 +199,3 @@ async def count_crons(
     await handle_event(ctx, value)
 
     return await service.count_crons(request, user.identity)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------

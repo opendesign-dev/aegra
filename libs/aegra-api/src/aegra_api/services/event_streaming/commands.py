@@ -3,7 +3,7 @@
 Commands are JSON-RPC-style: ``{id, method, params}`` in, a success or
 error envelope out. They re-front the existing run machinery — ``run.start``
 and ``input.respond`` both build a ``RunCreate`` and go through the same
-``_prepare_run`` path the legacy endpoints use, so execution semantics are
+``prepare_run`` path the legacy endpoints use, so execution semantics are
 identical; only the transport differs.
 """
 
@@ -23,7 +23,7 @@ from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.models import User
 from aegra_api.models.runs import RunCreate
 from aegra_api.services.event_streaming.protocol import ErrorCode, build_error, build_success
-from aegra_api.services.run_preparation import _prepare_run
+from aegra_api.services.run_preparation import prepare_run
 
 logger = structlog.getLogger(__name__)
 
@@ -226,7 +226,7 @@ async def _thread_assistant_id(session: AsyncSession, thread_id: str, user: User
 
 async def _start(session: AsyncSession, thread_id: str, request: RunCreate, user: User) -> str:
     """Persist + enqueue a run via the shared preparation path (native v3 stream)."""
-    run_id, _run, _job = await _prepare_run(
+    run_id, _run, _job = await prepare_run(
         session, thread_id, request, user, initial_status="pending", event_streaming_v2=True
     )
     return run_id

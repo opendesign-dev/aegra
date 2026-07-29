@@ -73,10 +73,10 @@ class TestRunsStreamingEndpoints:
             patch("aegra_api.services.run_preparation.update_thread_metadata", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.set_thread_status", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.uuid4", return_value=run_id),
-            patch("aegra_api.api.runs.asyncio.create_task") as mock_create_task,
+            patch("aegra_api.services.run_preparation.asyncio.create_task") as mock_create_task,
             patch("aegra_api.api.runs.active_runs", {}),
             patch("aegra_api.api.runs.streaming_service.stream_run_execution") as mock_stream_exec,
-            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(mock_session)),
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
         ):
             mock_lg_service.return_value.list_graphs.return_value = ["test-graph"]
 
@@ -152,11 +152,11 @@ class TestRunsStreamingEndpoints:
             patch("aegra_api.services.run_preparation.update_thread_metadata", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.set_thread_status", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.uuid4", return_value=run_id),
-            patch("aegra_api.api.runs.asyncio.create_task"),
+            patch("aegra_api.services.run_preparation.asyncio.create_task"),
             patch("aegra_api.api.runs.active_runs", {}),
             patch("aegra_api.api.runs.streaming_service.stream_run_execution", return_value=_fake_stream()),
             patch("aegra_api.api.runs.broker_manager.request_cancel", new_callable=AsyncMock) as mock_cancel,
-            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(mock_session)),
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
         ):
             mock_lg_service.return_value.list_graphs.return_value = ["test-graph"]
             # First scalar = thread ownership check (None = new thread); second = assistant
@@ -203,7 +203,7 @@ class TestRunsStreamingEndpoints:
             patch("aegra_api.services.run_preparation.update_thread_metadata", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.set_thread_status", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.uuid4", return_value=run_id),
-            patch("aegra_api.api.runs.asyncio.create_task"),
+            patch("aegra_api.services.run_preparation.asyncio.create_task"),
             patch("aegra_api.api.runs.active_runs", {}),
             patch("aegra_api.api.runs.streaming_service.stream_run_execution", return_value=_fake_stream()),
             patch(
@@ -211,7 +211,7 @@ class TestRunsStreamingEndpoints:
                 new_callable=AsyncMock,
                 side_effect=RedisError("broker down"),
             ),
-            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(mock_session)),
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
         ):
             mock_lg_service.return_value.list_graphs.return_value = ["test-graph"]
             # First scalar = thread ownership check (None = new thread); second = assistant
@@ -244,7 +244,7 @@ class TestRunsStreamingEndpoints:
 
         with (
             patch("aegra_api.api.runs.streaming_service.stream_run_execution") as mock_stream_exec,
-            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(mock_session)),
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
         ):
             # Mock generator
             async def mock_generator() -> AsyncGenerator:
@@ -256,6 +256,8 @@ class TestRunsStreamingEndpoints:
                 thread_id,
                 run_id,
                 last_event_id="evt-1",
+                stream_mode=None,
+                cancel_on_disconnect=False,
                 user=mock_user,
             )
 
@@ -266,6 +268,7 @@ class TestRunsStreamingEndpoints:
             # First arg is run object, second is last_event_id
             assert call_args[0][0].run_id == run_id
             assert call_args[0][1] == "evt-1"
+            assert call_args.kwargs["stream_modes"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -275,20 +278,19 @@ class TestRunsStreamingEndpoints:
             ("success", None),  # terminal branch
         ],
     )
-    async def test_stream_run_never_wires_close_handler(
+    async def test_stream_run_omits_close_handler_by_default(
         self,
         mock_user: User,
         mock_session: AsyncMock,
         run_status: str,
         last_event_id: str | None,
     ) -> None:
-        """``stream_run`` (reconnect) must never wire ``client_close_handler_callable``.
+        """``stream_run`` (reconnect) must not wire a close handler unless asked.
 
-        The endpoint is a reconnect-style join: multiple clients can attach
-        to the same run. A single client disconnecting must NOT cancel the
-        shared run — hence the endpoint deliberately omits the close handler.
-        Covers both the terminal branch (early return with ``end`` event) and
-        the active branch (live streaming via broker).
+        The endpoint is a reconnect-style join: multiple clients can attach to
+        the same run, so one disconnecting must not cancel the shared run. Only
+        an explicit ``cancel_on_disconnect=true`` opts in. Covers both the
+        terminal branch (early ``end`` event) and the active broker branch.
         """
         thread_id = "test-thread"
         run_id = "run-42"
@@ -313,16 +315,113 @@ class TestRunsStreamingEndpoints:
                 "aegra_api.api.runs.streaming_service.stream_run_execution",
                 return_value=_fake_stream(),
             ),
-            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(mock_session)),
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
         ):
             response = await stream_run(
                 thread_id,
                 run_id,
                 last_event_id=last_event_id,
+                stream_mode=None,
+                cancel_on_disconnect=False,
                 user=mock_user,
             )
 
         assert response.client_close_handler_callable is None
+
+    @pytest.mark.asyncio
+    async def test_stream_run_wires_close_handler_when_cancel_on_disconnect(
+        self, mock_user: User, mock_session: AsyncMock
+    ) -> None:
+        """``cancel_on_disconnect=true`` is what the SDK sends to stop the run on drop."""
+        run_orm = RunORM(
+            run_id="run-42",
+            thread_id="test-thread",
+            assistant_id="agent",
+            user_id=mock_user.identity,
+            status="running",
+            input={},
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        mock_session.scalar.return_value = run_orm
+
+        async def _fake_stream() -> AsyncGenerator:
+            yield "data"
+
+        with (
+            patch(
+                "aegra_api.api.runs.streaming_service.stream_run_execution",
+                return_value=_fake_stream(),
+            ),
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
+            patch("aegra_api.api.runs.broker_manager.request_cancel", new=AsyncMock()) as mock_cancel,
+        ):
+            response = await stream_run(
+                "test-thread",
+                "run-42",
+                last_event_id=None,
+                stream_mode=None,
+                cancel_on_disconnect=True,
+                user=mock_user,
+            )
+            assert response.client_close_handler_callable is not None
+            await response.client_close_handler_callable({})
+
+        mock_cancel.assert_awaited_once_with("run-42", "cancel")
+
+    @pytest.mark.asyncio
+    async def test_stream_run_normalizes_requested_stream_modes(self, mock_user: User, mock_session: AsyncMock) -> None:
+        """``stream_mode`` narrows the connection; ``messages-tuple`` folds into ``messages``."""
+        run_orm = RunORM(
+            run_id="run-42",
+            thread_id="test-thread",
+            assistant_id="agent",
+            user_id=mock_user.identity,
+            status="running",
+            input={},
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        mock_session.scalar.return_value = run_orm
+
+        async def _fake_stream() -> AsyncGenerator:
+            yield "data"
+
+        with (
+            patch(
+                "aegra_api.api.runs.streaming_service.stream_run_execution",
+                return_value=_fake_stream(),
+            ) as mock_stream_exec,
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
+        ):
+            await stream_run(
+                "test-thread",
+                "run-42",
+                last_event_id=None,
+                stream_mode=["values", "messages-tuple"],
+                cancel_on_disconnect=False,
+                user=mock_user,
+            )
+
+        assert mock_stream_exec.call_args.kwargs["stream_modes"] == frozenset({"values", "messages"})
+
+    @pytest.mark.asyncio
+    async def test_stream_run_rejects_unknown_stream_mode(self, mock_user: User, mock_session: AsyncMock) -> None:
+        """An unknown mode is a client error, not a silently empty stream."""
+        with (
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await stream_run(
+                "t",
+                "r",
+                last_event_id=None,
+                stream_mode=["bogus"],
+                cancel_on_disconnect=False,
+                user=mock_user,
+            )
+
+        assert exc.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_run_not_found(self, mock_user: User, mock_session: AsyncMock) -> None:
@@ -330,10 +429,10 @@ class TestRunsStreamingEndpoints:
         mock_session.scalar.return_value = None
 
         with (
-            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(mock_session)),
+            patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(mock_session)),
             pytest.raises(HTTPException) as exc,
         ):
-            await stream_run("t", "r", user=mock_user)
+            await stream_run("t", "r", last_event_id=None, stream_mode=None, cancel_on_disconnect=False, user=mock_user)
 
         assert exc.value.status_code == 404
 

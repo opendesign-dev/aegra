@@ -403,7 +403,7 @@ class TestCreateCronForThreadOwnership:
 
     def test_returns_404_when_thread_missing(self, mock_cron_service: AsyncMock) -> None:
         # A thread-bound cron names an existing thread; a missing row must 404 at
-        # entry instead of letting _prepare_run silently create a ghost thread.
+        # entry instead of letting prepare_run silently create a ghost thread.
         app = create_test_app(include_runs=False, include_threads=False)
 
         from aegra_api.api import crons as crons_module

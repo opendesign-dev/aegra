@@ -17,7 +17,7 @@ import structlog
 from sqlalchemy import select, text
 
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.services.webhooks import deliver_webhook
 from aegra_api.settings import settings
 
@@ -110,7 +110,7 @@ class WebhookDeliverer:
 
     @staticmethod
     async def _claim() -> Sequence[Any]:
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             result = await session.execute(
                 _CLAIM_SQL,
@@ -133,7 +133,7 @@ class WebhookDeliverer:
 
     @staticmethod
     async def _build_payload(run_id: str) -> dict[str, object] | None:
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             run = await session.scalar(select(RunORM).where(RunORM.run_id == run_id))
         if run is None:
@@ -153,7 +153,7 @@ class WebhookDeliverer:
         }
 
     async def _finish(self, delivery_id: str, *, ok: bool, attempts: int, error: str | None) -> None:
-        maker = _get_session_maker()
+        maker = get_session_maker()
         async with maker() as session:
             if ok:
                 await session.execute(_MARK_DELIVERED_SQL, {"id": delivery_id})

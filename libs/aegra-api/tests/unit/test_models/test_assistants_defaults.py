@@ -57,3 +57,12 @@ def test_assistant_update_defaults_are_distinct_instances() -> None:
     assert a.config is not b.config
     assert a.context is not b.context
     assert a.metadata is not b.metadata
+
+
+def test_assistant_update_graph_id_defaults_to_none() -> None:
+    """PATCH is a partial update: omitting graph_id must not rebind the graph.
+
+    The field used to default to "agent", so any update that left it out
+    silently repointed the assistant at the "agent" graph.
+    """
+    assert AssistantUpdate().graph_id is None

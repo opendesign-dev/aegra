@@ -6,7 +6,12 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from aegra_api.models.enums import MultitaskStrategy
+from aegra_api.models.enums import (
+    CronSelectField,
+    CronSortBy,
+    MultitaskStrategy,
+    SortOrder,
+)
 from aegra_api.settings import settings
 
 # Field length caps. Keep these conservative; cron metadata is small by nature.
@@ -161,30 +166,9 @@ class CronSearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
     metadata: dict[str, Any] | None = None
-    sort_by: (
-        Literal["cron_id", "assistant_id", "thread_id", "created_at", "updated_at", "next_run_date", "end_time"] | None
-    ) = None
-    sort_order: Literal["asc", "desc"] | None = None
-    select: (
-        list[
-            Literal[
-                "cron_id",
-                "assistant_id",
-                "thread_id",
-                "end_time",
-                "schedule",
-                "timezone",
-                "created_at",
-                "updated_at",
-                "user_id",
-                "payload",
-                "next_run_date",
-                "metadata",
-                "enabled",
-            ]
-        ]
-        | None
-    ) = None
+    sort_by: CronSortBy | None = None
+    sort_order: SortOrder | None = None
+    select: list[CronSelectField] | None = None
 
 
 class CronCountRequest(BaseModel):

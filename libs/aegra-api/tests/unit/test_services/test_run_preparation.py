@@ -38,7 +38,7 @@ def _patch_fresh_sessions(monkeypatch: pytest.MonkeyPatch, *threads: object) -> 
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=fresh)
     ctx.__aexit__ = AsyncMock(return_value=False)
-    monkeypatch.setattr(mod, "_get_session_maker", lambda: MagicMock(return_value=ctx))
+    monkeypatch.setattr(mod, "get_session_maker", lambda: MagicMock(return_value=ctx))
 
 
 class TestValidateResumeCommand:

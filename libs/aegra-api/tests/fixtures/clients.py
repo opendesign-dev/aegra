@@ -34,8 +34,11 @@ def create_test_app(include_runs: bool = True, include_threads: bool = True) -> 
     app.include_router(health_router)
 
     if include_threads:
+        from aegra_api.api import thread_state as thread_state_module
         from aegra_api.api import threads as threads_module
 
+        # Same order as main._include_core_routers: state routes before the record routes.
+        app.include_router(thread_state_module.router)
         app.include_router(threads_module.router)
 
     if include_runs:

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
-from aegra_api.core.orm import _get_session_maker
+from aegra_api.core.orm import get_session_maker
 from aegra_api.models import Run, RunCreate, User
 from aegra_api.models.run_job import RunBehavior, RunExecution, RunIdentity, RunJob
 from aegra_api.services.executor import executor
@@ -60,7 +60,7 @@ async def _validate_resume_command(session: AsyncSession, thread_id: str, comman
 
     # Not interrupted on the request session's snapshot — poll fresh sessions in
     # case finalize_run's commit is still in flight.
-    maker = _get_session_maker()
+    maker = get_session_maker()
     for _ in range(_RESUME_SETTLE_ATTEMPTS):
         await asyncio.sleep(_RESUME_SETTLE_INTERVAL_SECONDS)
         async with maker() as fresh:
@@ -193,7 +193,7 @@ async def update_thread_metadata(
     )
 
 
-async def _prepare_run(
+async def prepare_run(
     session: AsyncSession,
     thread_id: str,
     request: RunCreate,

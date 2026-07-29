@@ -66,7 +66,7 @@ class TestThreadTTLSweeperTick:
         session = _session_with_stale(["t1", "t2"])
         checkpointer = AsyncMock()
         with (
-            patch(f"{MODULE}._get_session_maker", return_value=_maker_for(session)),
+            patch(f"{MODULE}.get_session_maker", return_value=_maker_for(session)),
             patch(f"{MODULE}.db_manager.get_checkpointer", return_value=checkpointer),
         ):
             await ThreadTTLSweeper()._tick()
@@ -81,7 +81,7 @@ class TestThreadTTLSweeperTick:
         session = _session_with_stale([])
         checkpointer = AsyncMock()
         with (
-            patch(f"{MODULE}._get_session_maker", return_value=_maker_for(session)),
+            patch(f"{MODULE}.get_session_maker", return_value=_maker_for(session)),
             patch(f"{MODULE}.db_manager.get_checkpointer", return_value=checkpointer),
         ):
             await ThreadTTLSweeper()._tick()
@@ -96,7 +96,7 @@ class TestThreadTTLSweeperTick:
         checkpointer = AsyncMock()
         checkpointer.adelete_thread = AsyncMock(side_effect=RuntimeError("saver down"))
         with (
-            patch(f"{MODULE}._get_session_maker", return_value=_maker_for(session)),
+            patch(f"{MODULE}.get_session_maker", return_value=_maker_for(session)),
             patch(f"{MODULE}.db_manager.get_checkpointer", return_value=checkpointer),
         ):
             await ThreadTTLSweeper()._tick()

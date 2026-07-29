@@ -1,6 +1,7 @@
 """Run-related Pydantic models for Agent Protocol"""
 
 import json
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import Any, Literal, Self
 
@@ -12,7 +13,12 @@ from pydantic import (
     model_validator,
 )
 
-from aegra_api.models.enums import DisconnectMode, MultitaskStrategy
+from aegra_api.models.enums import (
+    DisconnectMode,
+    MultitaskStrategy,
+    RunSelectField,
+    SortOrder,
+)
 from aegra_api.models.filters import UtcDatetime, validate_time_range
 from aegra_api.utils.status_compat import validate_run_status
 
@@ -20,18 +26,8 @@ from aegra_api.utils.status_compat import validate_run_status
 # serialized-size cap to close the DoS surface; shape is unconstrained.
 _METADATA_MAX_BYTES = 64 * 1024
 
-# SDK RunSelectField values; fields Aegra does not store are omitted from rows.
-RunSelectField = Literal[
-    "run_id",
-    "thread_id",
-    "assistant_id",
-    "created_at",
-    "updated_at",
-    "status",
-    "metadata",
-    "kwargs",
-    "multitask_strategy",
-]
+# Aegra-only: /runs/search has no SDK counterpart, so this set is ours to define.
+RunSortBy = Literal["run_id", "thread_id", "assistant_id", "status", "created_at", "updated_at"]
 
 
 class RunCreate(BaseModel):
@@ -241,10 +237,8 @@ class RunSearchRequest(BaseModel):
     )
     limit: int = Field(default=20, ge=1, le=1000, description="Maximum results")
     offset: int = Field(default=0, ge=0, description="Results offset")
-    sort_by: Literal["run_id", "thread_id", "assistant_id", "status", "created_at", "updated_at"] | None = Field(
-        default=None, description="Field to sort by. Defaults to created_at."
-    )
-    sort_order: Literal["asc", "desc"] | None = Field(default=None, description="Sort direction. Defaults to 'desc'.")
+    sort_by: RunSortBy | None = Field(default=None, description="Field to sort by. Defaults to created_at.")
+    sort_order: SortOrder | None = Field(default=None, description="Sort direction. Defaults to 'desc'.")
     select: list[RunSelectField] | None = Field(default=None, description="Return only these run fields.")
 
     @field_validator("assistant_id", "thread_id", "status")
@@ -329,6 +323,27 @@ class Run(BaseModel):
     def default_multitask_strategy(cls, v: str | None) -> str:
         """Rows created before this column existed have NULL; treat as the default."""
         return v or "reject"
+
+
+def project_runs(runs: Sequence[Run], fields: Collection[str]) -> list[dict[str, Any]]:
+    """Project runs onto the ``select`` fields requested by the caller.
+
+    ``kwargs`` has no column of its own: the SDK carries a run's execution
+    params under that key, so rebuild it from the ones Aegra stores separately.
+    """
+    wanted = set(fields)
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        dumped = run.model_dump(mode="json")
+        if "kwargs" in wanted:
+            dumped["kwargs"] = {
+                "input": dumped["input"],
+                "config": dumped["config"],
+                "context": dumped["context"],
+                "multitask_strategy": dumped["multitask_strategy"],
+            }
+        rows.append({k: v for k, v in dumped.items() if k in wanted})
+    return rows
 
 
 class RunStatus(BaseModel):
