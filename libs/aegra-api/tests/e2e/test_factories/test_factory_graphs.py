@@ -257,8 +257,10 @@ async def test_factory_appears_in_assistants_search() -> None:
         if_exists="do_nothing",
     )
 
-    all_assistants = await client.assistants.search(limit=100)
-    graph_ids = {a["graph_id"] for a in all_assistants}
-    elog("All graph_ids in assistants", sorted(graph_ids))
+    # Filter server-side: scanning the first N assistants made this fail once the
+    # database accumulated more than one page of them.
+    matching = await client.assistants.search(graph_id="factory", limit=1)
+    elog("Assistants for graph_id=factory", matching)
 
-    assert "factory" in graph_ids, "factory not found in assistants"
+    assert matching, "factory not found in assistants"
+    assert matching[0]["graph_id"] == "factory"

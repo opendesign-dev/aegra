@@ -171,9 +171,7 @@ class OpenTelemetryProvider:
 
         if processors_count > 0:
             trace.set_tracer_provider(self._tracer_provider)
-            LangChainInstrumentor().instrument(
-                tracer_provider=self._tracer_provider, config=self._build_trace_config()
-            )
+            LangChainInstrumentor().instrument(tracer_provider=self._tracer_provider, config=self._build_trace_config())
             HTTPXClientInstrumentor().instrument(tracer_provider=self._tracer_provider)
             logger.info("Observability: Auto-instrumentation enabled (LangChain + HTTPX)")
 

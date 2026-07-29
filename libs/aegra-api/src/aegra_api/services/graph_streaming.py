@@ -106,6 +106,8 @@ async def stream_graph_events(
     subgraphs: bool = False,
     output_keys: list[str] | None = None,
     durability: str | None = None,
+    interrupt_before: str | list[str] | None = None,
+    interrupt_after: str | list[str] | None = None,
     on_checkpoint: Callable[[CheckpointPayload | None], None] = lambda _: None,
     on_task_result: Callable[[TaskResultPayload], None] = lambda _: None,
 ) -> AnyStream:
@@ -123,6 +125,8 @@ async def stream_graph_events(
         context: Optional context dictionary
         subgraphs: Whether to include subgraph namespaces in event types
         output_keys: Optional output channel keys for astream
+        interrupt_before: Nodes to pause before (static HITL breakpoints)
+        interrupt_after: Nodes to pause after (static HITL breakpoints)
         on_checkpoint: Callback invoked when checkpoint events are received
         on_task_result: Callback invoked when task result events are received
 
@@ -171,9 +175,17 @@ async def stream_graph_events(
     # Choose streaming method based on mode and graph type
     use_astream_events = "events" in stream_mode or is_js_graph
 
-    # Only forward durability when set, so None keeps langgraph's default and
-    # graph types that don't accept the kwarg (e.g. JS remote) are unaffected.
-    durability_kwargs: dict[str, Any] = {"durability": durability} if durability is not None else {}
+    # Each kwarg is forwarded only when set, so an unset one keeps langgraph's
+    # default and graph types that don't accept it (e.g. JS remote) are
+    # unaffected. Static breakpoints belong here, not in config: config is an
+    # allow-list and an unknown key there is silently dropped.
+    stream_kwargs: dict[str, Any] = {}
+    if durability is not None:
+        stream_kwargs["durability"] = durability
+    if interrupt_before:
+        stream_kwargs["interrupt_before"] = interrupt_before
+    if interrupt_after:
+        stream_kwargs["interrupt_after"] = interrupt_after
 
     # Yield metadata event
     yield (
@@ -191,7 +203,7 @@ async def stream_graph_events(
                 version="v2",
                 stream_mode=list(stream_modes_set),
                 subgraphs=subgraphs,
-                **durability_kwargs,
+                **stream_kwargs,
             )
         ) as stream:
             async for event in stream:
@@ -278,7 +290,7 @@ async def stream_graph_events(
                 stream_mode=list(stream_modes_set),
                 output_keys=output_keys,
                 subgraphs=subgraphs,
-                **durability_kwargs,
+                **stream_kwargs,
             )
         ) as stream:
             async for event in stream:

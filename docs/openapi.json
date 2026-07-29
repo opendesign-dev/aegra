@@ -96,6 +96,32 @@
         }
       }
     },
+    "/ok": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness Check",
+        "description": "Kubernetes liveness probe.\n\nAlways returns 200 to indicate the process is alive. Does not check\nbackend connectivity.",
+        "operationId": "liveness_check_ok_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Liveness Check Ok Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/live": {
       "get": {
         "tags": [
@@ -1004,7 +1030,7 @@
           "Threads"
         ],
         "summary": "Update Thread",
-        "description": "Update a thread's metadata.\n\nMerges the provided metadata with the existing metadata (shallow merge).",
+        "description": "Update a thread's metadata.\n\nMerges the provided metadata with the existing metadata (shallow merge).\nSend `Prefer: return=minimal` to get a 204 with no body instead of the\nupdated thread (the SDK's `return_minimal=True`).",
         "operationId": "update_thread_threads__thread_id__patch",
         "parameters": [
           {
@@ -1015,6 +1041,24 @@
               "type": "string",
               "title": "Thread Id"
             }
+          },
+          {
+            "name": "prefer",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Set to 'return=minimal' for a 204 with no body.",
+              "title": "Prefer"
+            },
+            "description": "Set to 'return=minimal' for a 204 with no body."
           }
         ],
         "requestBody": {
@@ -1032,9 +1076,7 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Thread"
-                }
+                "schema": {}
               }
             }
           },
@@ -3237,6 +3279,57 @@
       }
     },
     "/runs/crons/{cron_id}": {
+      "get": {
+        "tags": [
+          "Crons"
+        ],
+        "summary": "Get Cron",
+        "description": "Get a cron job by its ID.\n\nReturns 404 if the cron does not exist or belongs to another user.",
+        "operationId": "get_cron_runs_crons__cron_id__get",
+        "parameters": [
+          {
+            "name": "cron_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Cron Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CronResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "patch": {
         "tags": [
           "Crons"

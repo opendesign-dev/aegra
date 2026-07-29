@@ -1,9 +1,11 @@
 """Cron job endpoints for Agent Protocol.
 
-Implements the six endpoints consumed by the LangGraph SDK ``CronsClient``:
+Covers the LangGraph SDK ``CronsClient`` surface plus ``GET`` by id, which the
+Agent Server exposes but the pinned SDK does not yet call:
 
 * ``POST  /runs/crons``                  → create (stateless, returns Cron)
 * ``POST  /threads/{thread_id}/runs/crons`` → create for thread (returns Cron)
+* ``GET   /runs/crons/{cron_id}``         → read one (returns Cron)
 * ``PATCH /runs/crons/{cron_id}``         → update (returns Cron)
 * ``DELETE /runs/crons/{cron_id}``        → delete (204)
 * ``POST  /runs/crons/search``            → search (returns list[Cron])
@@ -131,6 +133,22 @@ async def create_cron_for_thread(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/runs/crons/{cron_id}", response_model=CronResponse, responses={**NOT_FOUND})
+async def get_cron(
+    cron_id: str,
+    user: User = Depends(get_current_user),
+    service: CronService = Depends(get_cron_service),
+) -> CronResponse:
+    """Get a cron job by its ID.
+
+    Returns 404 if the cron does not exist or belongs to another user.
+    """
+    ctx = build_auth_context(user, "crons", "read")
+    await handle_event(ctx, {"cron_id": cron_id})
+
+    return await service.get_cron(cron_id, user.identity)
+
+
 @router.patch("/runs/crons/{cron_id}", response_model=CronResponse, responses={**NOT_FOUND})
 async def update_cron(
     cron_id: str,
@@ -216,5 +234,3 @@ async def count_crons(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-

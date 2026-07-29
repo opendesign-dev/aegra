@@ -149,6 +149,7 @@ async def readiness_check(_request: Request) -> dict[str, str]:
 
 
 @router.get("/live")
+@router.get("/ok")
 async def liveness_check(_request: Request) -> dict[str, str]:
     """Kubernetes liveness probe.
 

@@ -247,13 +247,15 @@ class TestReadState:
         snapshot = MagicMock()
         snapshot.values = {"messages": ["hi"]}
         snapshot.tasks = ()
+        snapshot.next = ()
         graph = MagicMock()
         graph.aget_state = AsyncMock(return_value=snapshot)
 
-        values, interrupts = await _read_state(graph, {}, "run-1")
+        values, interrupts, pending = await _read_state(graph, {}, "run-1")
 
         assert values == {"messages": ["hi"]}
         assert interrupts == {}
+        assert pending == []
 
     @pytest.mark.asyncio
     async def test_returns_none_values_on_read_failure(self) -> None:
@@ -264,10 +266,11 @@ class TestReadState:
         graph = MagicMock()
         graph.aget_state = AsyncMock(side_effect=RuntimeError("checkpointer down"))
 
-        values, interrupts = await _read_state(graph, {}, "run-1")
+        values, interrupts, pending = await _read_state(graph, {}, "run-1")
 
         assert values is None
         assert interrupts == {}
+        assert pending == []
 
 
 class TestExecuteRunMaterializesFromCheckpointer:

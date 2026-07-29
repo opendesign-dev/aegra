@@ -196,16 +196,49 @@ interrupt_before="*"  # Pause before every node
 interrupt_after="*"   # Pause after every node
 ```
 
-## Checking interrupt status
+An unknown node name is ignored by LangGraph rather than rejected, so the run
+completes without pausing. Check the node names against
+`GET /assistants/{assistant_id}/graph` if a breakpoint appears not to fire.
+
+### Resuming a static breakpoint
+
+A static breakpoint carries no question, so there is no value to hand back —
+resume with a **checkpoint-only run** (`input=None`) and execution continues from
+the stored checkpoint:
 
 ```python
-# Get thread state to see interrupts
+import httpx
+
+async with httpx.AsyncClient(base_url="http://localhost:2026") as http:
+    await http.post(
+        f"/threads/{thread_id}/runs/wait",
+        json={"assistant_id": "agent", "input": None, "checkpoint": {}},
+    )
+```
+
+This differs from a dynamic `interrupt()`, which resumes with
+`command={"resume": ...}` because the graph is waiting on a specific answer.
+
+## Checking interrupt status
+
+Which field to read depends on how the run paused. Both kinds finalize the run as
+`interrupted`, but only a dynamic `interrupt()` produces interrupt objects:
+
+```python
 state = await client.threads.get_state(thread_id)
 
-if state["interrupts"]:
-    for interrupt_data in state["interrupts"]:
-        print(f"Interrupt: {interrupt_data}")
+# Dynamic interrupt(): the pending questions, keyed by task id on the thread.
+thread = await client.threads.get(thread_id)
+for task_id, interrupts in (thread.get("interrupts") or {}).items():
+    print(f"{task_id}: {interrupts}")
+
+# Static breakpoint: no interrupt objects — the evidence is the queued nodes.
+if state["next"]:
+    print(f"Paused before: {state['next']}")
 ```
+
+A run whose status is `interrupted` with an empty `interrupts` map and a non-empty
+`next` paused on a static breakpoint.
 
 ## Response types
 

@@ -9,11 +9,13 @@ surviving checkpoints still reference.
 """
 
 import os
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from typing import Any
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.base import SerializerProtocol
 from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
 
@@ -54,22 +56,97 @@ _GC_BLOBS_SQL = (
     ")"
 )
 
-# keep_latest prune: a checkpoint dies when a newer one exists in the same
-# namespace (checkpoint ids are time-ordered uuid6).
-_PRUNE_STALE_WRITES_SQL = (
-    "DELETE FROM checkpoint_writes cw USING checkpoints c "
-    "WHERE cw.thread_id = c.thread_id AND cw.checkpoint_ns = c.checkpoint_ns "
-    "AND cw.checkpoint_id = c.checkpoint_id AND c.thread_id = ANY(%s) AND EXISTS ("
-    " SELECT 1 FROM checkpoints newer WHERE newer.thread_id = c.thread_id"
-    " AND newer.checkpoint_ns = c.checkpoint_ns AND newer.checkpoint_id > c.checkpoint_id"
-    ")"
+# One row per checkpoint: parent link, which channels store a real value here,
+# and which are delta-backed.
+#
+# ``type <> 'empty'`` is langgraph's "populated" test — _dump_blobs writes
+# ('empty', NULL) for a channel absent from channel_values, and
+# DeltaChannel.checkpoint() returns MISSING on non-snapshot steps, so a delta
+# channel is populated only at its snapshot steps.
+#
+# ``metadata->counters_since_delta_snapshot`` is keyed by delta channel name.
+# Part of langgraph's beta DeltaChannel surface; if it ever disappears the keys
+# come back empty and prune degrades to keeping just the latest checkpoint.
+_CHECKPOINT_GRAPH_SQL = """
+SELECT c.checkpoint_ns,
+       c.checkpoint_id,
+       c.parent_checkpoint_id,
+       COALESCE(
+         (SELECT array_agg(b.channel)
+            FROM checkpoint_blobs b
+           WHERE b.thread_id = c.thread_id
+             AND b.checkpoint_ns = c.checkpoint_ns
+             AND b.version = c.checkpoint -> 'channel_versions' ->> b.channel
+             AND b.type <> 'empty'),
+         ARRAY[]::text[]
+       ) AS populated,
+       COALESCE(
+         (SELECT array_agg(key)
+            FROM jsonb_object_keys(
+                   COALESCE(c.metadata -> 'counters_since_delta_snapshot', '{}'::jsonb)
+                 ) AS key),
+         ARRAY[]::text[]
+       ) AS delta_channels
+  FROM checkpoints c
+ WHERE c.thread_id = %s
+ ORDER BY c.checkpoint_ns, c.checkpoint_id
+"""
+
+_PRUNE_WRITES_BY_ID_SQL = (
+    "DELETE FROM checkpoint_writes WHERE thread_id = %s AND checkpoint_ns = %s AND checkpoint_id = ANY(%s)"
 )
-_PRUNE_STALE_CHECKPOINTS_SQL = (
-    "DELETE FROM checkpoints c WHERE c.thread_id = ANY(%s) AND EXISTS ("
-    " SELECT 1 FROM checkpoints newer WHERE newer.thread_id = c.thread_id"
-    " AND newer.checkpoint_ns = c.checkpoint_ns AND newer.checkpoint_id > c.checkpoint_id"
-    ")"
+_PRUNE_CHECKPOINTS_BY_ID_SQL = (
+    "DELETE FROM checkpoints WHERE thread_id = %s AND checkpoint_ns = %s AND checkpoint_id = ANY(%s)"
 )
+
+
+def _keep_set(rows: Iterable[dict[str, Any]]) -> set[str]:
+    """Checkpoint ids that must survive a keep_latest prune, for one namespace.
+
+    Keeps the newest checkpoint, then walks the parent chain keeping every
+    ancestor until each delta channel the newest one does not store itself has
+    been seeded. A delta channel stores a value only at its snapshot steps and
+    rebuilds from ancestor writes, so dropping that stretch would leave it
+    reconstructing as empty with no error raised.
+
+    Scoped to delta channels on purpose: plain channels carry their value in the
+    kept checkpoint, and transient ones (``__start__``, ``branch:to:*``) are empty
+    in every checkpoint — treating those as unseeded would walk to the root and
+    keep the entire chain, defeating the prune.
+    """
+    ordered = list(rows)
+    if not ordered:
+        return set()
+
+    by_id = {str(r["checkpoint_id"]): r for r in ordered}
+    latest = ordered[-1]  # checkpoint ids are time-ordered uuid6
+    keep = {str(latest["checkpoint_id"])}
+
+    populated = set(latest["populated"] or ())
+    unseeded = {str(c) for c in (latest["delta_channels"] or ())} - populated
+
+    cursor = latest.get("parent_checkpoint_id")
+    while unseeded and cursor:
+        parent = by_id.get(str(cursor))
+        if parent is None:
+            break
+        keep.add(str(parent["checkpoint_id"]))
+        unseeded -= set(parent["populated"] or ())
+        cursor = parent.get("parent_checkpoint_id")
+    return keep
+
+
+def _doomed_by_namespace(rows: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
+    """Group checkpoint rows per namespace and return the ids safe to delete."""
+    per_ns: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        per_ns.setdefault(str(row["checkpoint_ns"]), []).append(row)
+
+    doomed: dict[str, list[str]] = {}
+    for namespace, ns_rows in per_ns.items():
+        keep = _keep_set(ns_rows)
+        doomed[namespace] = [str(r["checkpoint_id"]) for r in ns_rows if str(r["checkpoint_id"]) not in keep]
+    return doomed
 
 
 class AegraPostgresSaver(AsyncPostgresSaver):
@@ -104,14 +181,16 @@ class AegraPostgresSaver(AsyncPostgresSaver):
             await conn.execute(_GC_BLOBS_SQL, (thread_ids,))
 
     async def aprune_keep_latest(self, thread_ids: Sequence[str]) -> None:
-        """Keep only the latest checkpoint per namespace for the given threads.
+        """Keep the latest checkpoint per namespace, plus the ancestors it needs.
 
-        Deletes every superseded checkpoint plus its writes, then GCs blobs no
+        Deletes superseded checkpoints and their writes, then GCs blobs no
         surviving checkpoint references, in one transaction.
 
-        Delta channels: dropping ancestor checkpoints can sever ``DeltaChannel``
-        reconstruction (per the base saver's ``prune`` contract) — threads whose
-        graphs use delta channels should not be pruned with this strategy.
+        ``DeltaChannel``-aware per the base saver's ``prune`` contract: a delta
+        channel stores a value only at its snapshot steps and reconstructs by
+        replaying ancestor writes, so ancestors between the kept checkpoint and
+        each channel's nearest seed are preserved. Dropping them would leave the
+        channel reconstructing as empty with no error raised.
         """
         ids = [str(tid) for tid in thread_ids]
         if not ids:
@@ -120,6 +199,12 @@ class AegraPostgresSaver(AsyncPostgresSaver):
         if not isinstance(pool, AsyncConnectionPool):
             raise TypeError("AegraPostgresSaver requires a connection pool")
         async with pool.connection() as conn, conn.transaction():
-            await conn.execute(_PRUNE_STALE_WRITES_SQL, (ids,))
-            await conn.execute(_PRUNE_STALE_CHECKPOINTS_SQL, (ids,))
+            for thread_id in ids:
+                cur = await conn.cursor(row_factory=dict_row).execute(_CHECKPOINT_GRAPH_SQL, (thread_id,))
+                rows = await cur.fetchall()
+                for namespace, doomed in _doomed_by_namespace(rows).items():
+                    if not doomed:
+                        continue
+                    await conn.execute(_PRUNE_WRITES_BY_ID_SQL, (thread_id, namespace, doomed))
+                    await conn.execute(_PRUNE_CHECKPOINTS_BY_ID_SQL, (thread_id, namespace, doomed))
             await conn.execute(_GC_BLOBS_SQL, (ids,))

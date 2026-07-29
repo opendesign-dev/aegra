@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -350,16 +350,19 @@ async def get_thread(
     return _serialize_thread(thread, include_ttl="ttl" in include_parts, state=state)
 
 
-@router.patch("/threads/{thread_id}", response_model=Thread, responses={**NOT_FOUND})
+@router.patch("/threads/{thread_id}", response_model=None, responses={**NOT_FOUND})
 async def update_thread(
     thread_id: str,
     request: ThreadUpdate,
+    prefer: str | None = Header(None, description="Set to 'return=minimal' for a 204 with no body."),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> Thread:
+) -> Thread | Response:
     """Update a thread's metadata.
 
     Merges the provided metadata with the existing metadata (shallow merge).
+    Send `Prefer: return=minimal` to get a 204 with no body instead of the
+    updated thread (the SDK's `return_minimal=True`).
     """
     # Authorization check
     ctx = build_auth_context(user, "threads", "update")
@@ -393,9 +396,19 @@ async def update_thread(
         thread.ttl = request.ttl
 
     await session.commit()
-    await session.refresh(thread)
 
+    if _wants_minimal(prefer):
+        return Response(status_code=204)
+
+    await session.refresh(thread)
     return _serialize_thread(thread, include_ttl=request.ttl is not None)
+
+
+def _wants_minimal(prefer: str | None) -> bool:
+    """Whether a Prefer header asks for the no-body form (RFC 7240)."""
+    if not prefer:
+        return False
+    return any(token.strip().replace(" ", "").lower() == "return=minimal" for token in prefer.split(","))
 
 
 @router.get("/threads/{thread_id}/state", response_model=ThreadState, responses={**NOT_FOUND})

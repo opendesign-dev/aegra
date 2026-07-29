@@ -31,10 +31,11 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Thread state inspection | Supported | Get current state, values, and next nodes for any thread. |
 | Thread history | Supported | Full checkpoint history with replay capability. |
 | Thread copy | Supported | `POST /threads/{id}/copy` forks a thread with its full checkpoint history into a new thread. |
-| Thread prune | Supported | `POST /threads/prune` deletes threads by id, or `keep_latest` drops all but the newest checkpoint per namespace. |
+| Thread prune | Supported | `POST /threads/prune` deletes threads by id, or `keep_latest` drops all but the newest checkpoint per namespace. `DeltaChannel`-aware: ancestors a delta channel needs to reconstruct are preserved, so pruning never empties one. |
 | Thread search projection | Supported | `select` projects fields, `extract` pulls dot/bracket paths, and `values`/`ids` filter on the latest state. Latest state is materialized into a 1:1 `thread_state` table (not the wide thread row), so list/search omit `values`/`interrupts` unless `select`ed; the checkpointer stays the source of truth. |
 | Thread search time window | Supported | `created_after` / `created_before` narrow `/threads/search` and `/threads/count` to a creation window (inclusive, ISO 8601, naive means UTC). |
 | Per-thread TTL | Supported | `ttl` on create/update sets retention; `include=ttl` returns it. |
+| `Prefer: return=minimal` | Supported | `PATCH /threads/{id}` returns 204 with no body when the header is sent (the SDK's `return_minimal=True`). |
 | Thread supersteps | Supported | `supersteps` on create seeds the thread's state (Studio initial state). |
 
 ### Runs and execution
@@ -47,7 +48,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Sync wait | Supported | Block until run completes and return final output. |
 | Subgraph streaming | Supported | Stream events from nested subgraphs. |
 | Stateless runs | Supported | Execute without persisting thread state. |
-| Cron / scheduled jobs | Supported | Trigger runs on a schedule. Standard and seconds-level cron expressions. IANA timezone support. |
+| Cron / scheduled jobs | Supported | Trigger runs on a schedule. Standard and seconds-level cron expressions. IANA timezone support. `GET /runs/crons/{cron_id}` fetches one by id. |
 | Double-texting | Supported | `multitask_strategy`: `reject` (default) / `interrupt` / `rollback` / `enqueue`. At most one run executes per thread at a time. |
 | Cancel | Supported | `POST .../cancel` with `action`: `interrupt` / `cancel` / `rollback` (rollback deletes the run and its checkpoints). |
 | Bulk cancel | Supported | `POST /runs/cancel` cancels by `status` (pending/running/all) or `thread_id` + `run_ids`. |
@@ -76,7 +77,8 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 
 | Feature | Status | Notes |
 |:--|:--|:--|
-| Interrupt before / after | Supported | Pause execution at specific nodes. |
+| Dynamic interrupt | Supported | `interrupt()` inside a node. Resume with `command={"resume": ...}`; the interrupt id comes from `thread.interrupts`. |
+| Interrupt before / after | Supported | `interrupt_before` / `interrupt_after` on run create pause at named nodes; `"*"` means every node. The run finalizes as `interrupted` with the queued nodes in `state.next`. Resume with a checkpoint-only run (`input: null`, `checkpoint: {}`) — there is no value to hand back. Unknown node names are ignored by LangGraph rather than rejected. |
 | User approval gates | Supported | Resume or reject interrupted runs. |
 | State editing | Supported | Modify thread state before resuming. |
 
