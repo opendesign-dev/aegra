@@ -72,6 +72,18 @@ The `@auth.authenticate` decorator registers your authentication function. It re
 
 Any additional fields you return (like `role`, `team_id`, etc.) are preserved and accessible via `ctx.user` in authorization handlers and via the `User` model in custom routes.
 
+### Recognized permissions
+
+`permissions` is free-form — your authorization handlers decide what the strings
+mean. One string is interpreted by the server itself:
+
+| Permission | Effect |
+|------------|--------|
+| `runs:search:all` | Lets `POST /runs/search` and `POST /runs/count` span the whole deployment instead of the caller's own runs. Without it those endpoints are pinned to the caller at the SQL layer; there is no request field that can widen the scope. |
+
+Grant it only to operator or admin identities: it lifts per-user isolation on run
+metadata, which includes run inputs and outputs.
+
 ### Denying access
 
 Raise any exception to deny authentication:

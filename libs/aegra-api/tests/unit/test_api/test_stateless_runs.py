@@ -104,11 +104,21 @@ class TestDeleteThreadById:
         mock_maker.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_maker.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker):
+        # The delete now also drops the thread's checkpoints; without a real
+        # db_manager the checkpointer lookup would raise "Database not initialized".
+        checkpointer = AsyncMock()
+        manager = MagicMock()
+        manager.get_checkpointer.return_value = checkpointer
+
+        with (
+            patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_cleanup.db_manager", manager),
+        ):
             await _delete_thread_by_id(thread_id, user_id)
 
         mock_session.delete.assert_called_once_with(thread_orm)
         mock_session.commit.assert_called_once()
+        checkpointer.adelete_thread.assert_awaited_once_with(thread_id)
 
     @pytest.mark.asyncio
     async def test_cancels_active_runs_before_delete(self, mock_session: AsyncMock) -> None:

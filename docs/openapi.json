@@ -3,7 +3,7 @@
   "info": {
     "title": "Aegra",
     "description": "Production-ready Agent Protocol server",
-    "version": "0.12.1"
+    "version": "0.13.0"
   },
   "paths": {
     "/info": {
@@ -1107,7 +1107,7 @@
           "Threads"
         ],
         "summary": "Delete Thread",
-        "description": "Delete a thread by its ID.\n\nPermanently removes the thread and its metadata. Any active runs on the\nthread are automatically cancelled before deletion. Checkpoint history\nstored in the graph backend is not affected.",
+        "description": "Delete a thread by its ID.\n\nPermanently removes everything the thread owns: its runs and materialized\nstate (via cascade) plus its checkpoints, blobs, and pending writes. Any\nactive runs are cancelled first.\n\nNo opt-out, matching the SDK's ``threads.delete(thread_id)`` \u2014 it takes no\ncascade flag, so the delete is all-or-nothing.",
         "operationId": "delete_thread_threads__thread_id__delete",
         "parameters": [
           {
@@ -2799,7 +2799,7 @@
           "Thread Runs"
         ],
         "summary": "Search Runs",
-        "description": "Search runs across every thread the caller owns.\n\nFilter by assistant, thread, status, metadata, or a `created_after` /\n`created_before` window. Results are paginated via `limit`/`offset`,\nordered by `sort_by`/`sort_order` (default `created_at` descending), and\n`select` projects fields.",
+        "description": "Search runs across every thread the caller owns.\n\nFilter by assistant, thread, run id, status, metadata, or a `created_after` /\n`created_before` window; each filter takes a scalar or a list. Results are\npaginated via `limit`/`offset`, ordered by `sort_by`/`sort_order` (default\n`created_at` descending), and `select` projects fields.\n\nCallers holding `runs:search:all` search every user's runs instead, narrowed\nby `user_ids` \u2014 for platforms aggregating runs they don't own.",
         "operationId": "search_runs_runs_search_post",
         "requestBody": {
           "content": {
@@ -5906,11 +5906,17 @@
                 "type": "string"
               },
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               }
             ],
             "title": "Assistant Id",
-            "description": "Assistant that executed the run. Accepts a graph id, which resolves to its canonical assistant id."
+            "description": "Assistant(s) that executed the run. Accepts one id or a list; a graph id resolves to its canonical assistant id."
           },
           "thread_id": {
             "anyOf": [
@@ -5918,11 +5924,33 @@
                 "type": "string"
               },
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               }
             ],
             "title": "Thread Id",
-            "description": "Restrict to a single thread."
+            "description": "Restrict to one thread or any of several."
+          },
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ids",
+            "description": "Match any of these run ids. Use to fetch a known batch in one call."
           },
           "status": {
             "anyOf": [
@@ -5930,11 +5958,17 @@
                 "type": "string"
               },
               {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
                 "type": "null"
               }
             ],
             "title": "Status",
-            "description": "Run status filter (pending, running, success, error, timeout, interrupted)."
+            "description": "Run status(es): pending, running, success, error, timeout, interrupted."
           },
           "metadata": {
             "anyOf": [
@@ -6055,7 +6089,7 @@
         },
         "type": "object",
         "title": "RunSearchRequest",
-        "description": "Request body for ``POST /runs/search`` and ``POST /runs/count``.\n\nQueries the ``runs`` table across every thread the caller owns, so assistant\nattribution comes from the run's own ``assistant_id`` column rather than the\nlast-writer-wins ``assistant_id`` in thread metadata."
+        "description": "Request body for ``POST /runs/search`` and ``POST /runs/count``.\n\nQueries the ``runs`` table across threads, so assistant attribution comes from\nthe run's own ``assistant_id`` column rather than the last-writer-wins\n``assistant_id`` in thread metadata.\n\nField shape follows the SDK's own search requests: one field per concept,\naccepting a scalar or a list, and ``ids`` (not ``run_ids``) for an id set \u2014\nmatching ``threads.search``. Scope is never a request field; it comes from the\ncaller's identity and permissions."
       },
       "RunStatus": {
         "properties": {

@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, MutableMapping
+from collections.abc import AsyncGenerator, Callable, MutableMapping
 from datetime import UTC, datetime
 from typing import Any, get_args
 
@@ -46,6 +46,10 @@ logger = structlog.getLogger(__name__)
 
 # Default stream modes for background run execution
 DEFAULT_STREAM_MODES = ["values"]
+
+# Grants /runs/search and /runs/count the whole deployment instead of the caller's
+# own runs. Empty by default under noop auth, so the widened scope stays opt-in.
+SEARCH_ALL_USERS_PERMISSION = "runs:search:all"
 
 
 async def _authorize_run_creation(user: User, request: RunCreate, thread_id: str) -> None:
@@ -678,15 +682,36 @@ def _resolve_search_assistant_id(assistant_id: str) -> str:
     return resolve_assistant_id(assistant_id, get_langgraph_service().list_graphs())
 
 
-def _run_search_filters(request: RunSearchRequest, user: User, auth_filters: dict[str, Any] | None) -> list[Any]:
-    """Shared WHERE predicates for /runs/search and /runs/count."""
-    where: list[Any] = [RunORM.user_id == user.identity]
+def _match(column: Any, value: str | list[str], transform: Callable[[str], str] | None = None) -> Any:
+    """Equality for a scalar, IN for a list — one filter field, either shape."""
+    if isinstance(value, list):
+        return column.in_([transform(v) for v in value] if transform else value)
+    return column == (transform(value) if transform else value)
+
+
+def _run_search_filters(
+    request: RunSearchRequest,
+    user: User,
+    auth_filters: dict[str, Any] | None,
+    *,
+    cross_user: bool,
+) -> list[Any]:
+    """Shared WHERE predicates for /runs/search and /runs/count.
+
+    ``cross_user`` comes from the caller's permissions, never from the request —
+    there is no field a client can send to widen its own scope.
+    """
+    where: list[Any] = []
+    if not cross_user:
+        where.append(RunORM.user_id == user.identity)
     if request.assistant_id is not None:
-        where.append(RunORM.assistant_id == _resolve_search_assistant_id(request.assistant_id))
+        where.append(_match(RunORM.assistant_id, request.assistant_id, _resolve_search_assistant_id))
     if request.thread_id is not None:
-        where.append(RunORM.thread_id == request.thread_id)
+        where.append(_match(RunORM.thread_id, request.thread_id))
+    if request.ids is not None:
+        where.append(RunORM.run_id.in_(request.ids))
     if request.status is not None:
-        where.append(RunORM.status == request.status)
+        where.append(_match(RunORM.status, request.status))
     if request.metadata:
         where.append(RunORM.metadata_dict.op("@>")(request.metadata))
     if request.created_after is not None:
@@ -708,11 +733,15 @@ async def search_runs(
 ) -> list[Run] | list[dict[str, Any]]:
     """Search runs across every thread the caller owns.
 
-    Filter by assistant, thread, status, metadata, or a `created_after` /
-    `created_before` window. Results are paginated via `limit`/`offset`,
-    ordered by `sort_by`/`sort_order` (default `created_at` descending), and
-    `select` projects fields.
+    Filter by assistant, thread, run id, status, metadata, or a `created_after` /
+    `created_before` window; each filter takes a scalar or a list. Results are
+    paginated via `limit`/`offset`, ordered by `sort_by`/`sort_order` (default
+    `created_at` descending), and `select` projects fields.
+
+    Callers holding `runs:search:all` search every user's runs instead, narrowed
+    by `user_ids` — for platforms aggregating runs they don't own.
     """
+    cross_user = SEARCH_ALL_USERS_PERMISSION in user.permissions
     ctx = build_auth_context(user, "runs", "search")
     auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
 
@@ -720,7 +749,7 @@ async def search_runs(
     direction = sort_column.asc() if request.sort_order == "asc" else sort_column.desc()
     stmt = (
         select(RunORM)
-        .where(*_run_search_filters(request, user, auth_filters))
+        .where(*_run_search_filters(request, user, auth_filters, cross_user=cross_user))
         # Secondary sort keeps offset pagination stable when the primary key ties.
         .order_by(direction, RunORM.run_id.asc())
         .offset(request.offset)
@@ -740,10 +769,12 @@ async def count_runs(
     session: AsyncSession = Depends(get_session),
 ) -> int:
     """Count runs matching the same filters as `/runs/search`."""
+    cross_user = SEARCH_ALL_USERS_PERMISSION in user.permissions
     ctx = build_auth_context(user, "runs", "search")
     auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
 
-    stmt = select(func.count()).select_from(RunORM).where(*_run_search_filters(request, user, auth_filters))
+    where = _run_search_filters(request, user, auth_filters, cross_user=cross_user)
+    stmt = select(func.count()).select_from(RunORM).where(*where)
     return await session.scalar(stmt) or 0
 
 

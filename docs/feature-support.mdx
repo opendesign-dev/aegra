@@ -17,7 +17,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 
 | Feature | Status | Notes |
 |:--|:--|:--|
-| Assistants CRUD | Supported | Create, read, update, delete, and search assistants. |
+| Assistants CRUD | Supported | Create, read, update, delete, and search assistants. `DELETE /assistants/{id}?delete_threads=true` also deletes the caller's threads bound to it, checkpoints included; the default (`false`) leaves them. |
 | Assistant versioning | Supported | Each update creates a new version. Pin or roll back. |
 | Graph schemas | Supported | Input, output, state, and config schemas exposed via API. |
 | Graph visualization | Supported | Mermaid graph structure returned by the API. |
@@ -26,7 +26,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 
 | Feature | Status | Notes |
 |:--|:--|:--|
-| Thread CRUD | Supported | Create, read, update, delete, and search threads. |
+| Thread CRUD | Supported | Create, read, update, delete, and search threads. `DELETE /threads/{id}` removes everything the thread owns — runs and materialized state by cascade, plus its checkpoints, blobs, and pending writes. No opt-out, matching the SDK's flagless `threads.delete()`. |
 | State persistence | Supported | PostgreSQL checkpoints via LangGraph. |
 | Thread state inspection | Supported | Get current state, values, and next nodes for any thread. |
 | Thread history | Supported | Full checkpoint history with replay capability. |
@@ -58,7 +58,8 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Webhook callbacks | Supported | POST the final Run payload to a `webhook` URL on terminal state. Bounded retry with jitter (tenacity), optional HMAC signing, SSRF guard. |
 | `if_not_exists` | Supported | Run creation on a missing thread: `reject` (default, 404) or `create`. |
 | Thread count | Supported | `POST /threads/count` returns the number of threads matching the search filters. |
-| Run search | Supported | `POST /runs/search` queries runs across every thread you own, filtered by `assistant_id` (graph id accepted), `thread_id`, `status`, `metadata`, and a `created_after` / `created_before` window. `POST /runs/count` returns the matching total. |
+| Run search | Supported | `POST /runs/search` queries runs across threads. Each filter takes a scalar or a list: `assistant_id` (graph ids accepted), `thread_id`, `status`, plus `ids` for a run-id set, `metadata`, and a `created_after` / `created_before` window. Paginated with `limit` / `offset`, sorted by `sort_by` / `sort_order`, projected with `select`. `POST /runs/count` returns the matching total. Aegra extension — the SDK has no `runs.search`, so call it over HTTP. |
+| Cross-user run search | Supported | Callers holding the `runs:search:all` permission search the whole deployment; everyone else is pinned to their own runs at the SQL layer. Scope comes from the permission alone — there is no request field that can widen it. |
 | Run list time window | Supported | `created_after` / `created_before` narrow `GET /threads/{id}/runs` to a creation window. |
 
 ### Scaling and reliability

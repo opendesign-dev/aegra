@@ -276,6 +276,107 @@ async def test_search_status_filter_e2e() -> None:
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
+async def test_search_ids_filter_e2e() -> None:
+    """`ids` fetches a known batch in one call instead of one request per run."""
+    tag = f"ids-{uuid.uuid4().hex[:8]}"
+    created = await _seed_runs_on_one_thread(tag, 3)
+
+    rows = await _search({"ids": created[:2], "limit": 100})
+    elog("Search by ids", rows)
+    assert sorted(r["run_id"] for r in rows) == sorted(created[:2])
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_thread_id_list_spans_threads_e2e() -> None:
+    """thread_id takes a list, spanning several threads in one query."""
+    tag_a = f"thread-list-a-{uuid.uuid4().hex[:8]}"
+    tag_b = f"thread-list-b-{uuid.uuid4().hex[:8]}"
+    a = await _seed_run(tag_a, f"marker-{tag_a}")
+    b = await _seed_run(tag_b, f"marker-{tag_b}")
+
+    rows = await _search({"thread_id": [a["thread_id"], b["thread_id"]], "limit": 100})
+    ids = {r["run_id"] for r in rows}
+    elog("Search by thread_id list", sorted(ids))
+    assert {a["run_id"], b["run_id"]} <= ids
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_assistant_id_list_unions_assistants_e2e() -> None:
+    """assistant_id as a list unions two assistants' runs; a third stays out."""
+    tag_a = f"assistant-list-a-{uuid.uuid4().hex[:8]}"
+    tag_b = f"assistant-list-b-{uuid.uuid4().hex[:8]}"
+    tag_c = f"assistant-list-c-{uuid.uuid4().hex[:8]}"
+    a = await _seed_run(tag_a, f"marker-{tag_a}")
+    b = await _seed_run(tag_b, f"marker-{tag_b}")
+    c = await _seed_run(tag_c, f"marker-{tag_c}")
+
+    rows = await _search({"assistant_id": [a["assistant_id"], b["assistant_id"]], "limit": 100})
+    ids = {r["run_id"] for r in rows}
+    elog("Search by assistant_id list", sorted(ids))
+    assert {a["run_id"], b["run_id"]} <= ids
+    assert c["run_id"] not in ids
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_status_list_filter_e2e() -> None:
+    """status as a list matches any listed state and excludes unlisted ones."""
+    tag = f"status-list-{uuid.uuid4().hex[:8]}"
+    created = await _seed_runs_on_one_thread(tag, 1)
+    body = {"metadata": {"runs_search_tag": tag}, "limit": 100}
+
+    terminal = await _search({**body, "status": ["success", "error"]})
+    elog("Terminal statuses", terminal)
+    assert [r["run_id"] for r in terminal] == created
+
+    unstarted = await _search({**body, "status": ["pending"]})
+    assert unstarted == []
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_count_matches_list_filtered_search_e2e() -> None:
+    """/runs/count agrees with /runs/search on the list forms too."""
+    tag = f"count-list-{uuid.uuid4().hex[:8]}"
+    created = await _seed_runs_on_one_thread(tag, 3)
+
+    body = {"ids": created[:2]}
+    total = await _count(body)
+    rows = await _search({**body, "limit": 100})
+    elog("Count vs search on ids", {"count": total, "rows": len(rows)})
+    assert total == len(rows) == 2
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_empty_list_returns_422_e2e() -> None:
+    """An empty list would compile to a never-true IN; rejected at the boundary."""
+    async with AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http_client:
+        resp = await http_client.post("/runs/search", json={"thread_id": []})
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_is_caller_scoped_by_default_e2e() -> None:
+    """No request field can widen scope — the surface carries no user filter.
+
+    Under noop auth every request is the same identity, so this asserts the
+    contract rather than isolation: sending a user filter is simply ignored, and
+    the caller-scoped predicate stays in the query either way.
+    """
+    tag = f"scope-{uuid.uuid4().hex[:8]}"
+    created = await _seed_runs_on_one_thread(tag, 1)
+
+    rows = await _search({"metadata": {"runs_search_tag": tag}, "user_ids": ["someone-else"], "limit": 100})
+    elog("Search with an unknown user filter", rows)
+    assert [r["run_id"] for r in rows] == created
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
 async def test_search_inverted_window_returns_422_e2e() -> None:
     """An inverted window is a 422, not a silently empty result."""
     async with AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http_client:

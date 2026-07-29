@@ -205,7 +205,30 @@ for run in runs:
     history = await client.threads.get_history(run["thread_id"])
 ```
 
-Available filters: `assistant_id`, `thread_id`, `status`, `metadata` (JSONB containment), `created_after`, `created_before`. Results are paginated with `limit` (max 1000) / `offset`, sorted by `sort_by` / `sort_order` (default `created_at` descending), and `select` projects fields.
+Available filters, all optional and ANDed together. Each takes a scalar or a list:
+
+| Filter | Matches |
+|:--|:--|
+| `assistant_id` | One assistant or any of several; a graph id resolves to its canonical assistant |
+| `thread_id` | One thread or any of several |
+| `ids` | Specific run ids |
+| `status` | One status or any of several |
+| `metadata` | JSONB containment against the run's metadata |
+| `created_after` / `created_before` | Inclusive creation window |
+
+Results are paginated with `limit` (max 1000) / `offset`, sorted by `sort_by` / `sort_order` (default `created_at` descending), and `select` projects fields.
+
+### Searching other users' runs
+
+By default a search only ever returns the caller's own runs — the ownership
+predicate is applied at the SQL layer, not as a filter the request can lift. A
+caller holding the `runs:search:all` permission searches the whole deployment
+instead.
+
+There is deliberately no `user_ids` field: scope is decided entirely by the
+permission, so an unpermitted client cannot even express "other users' runs".
+Grant it from your auth handler by putting `runs:search:all` in the user's
+`permissions` — see [Authentication](/guides/authentication).
 
 `POST /runs/count` accepts the same body and returns the matching total. `GET /threads/{id}/runs` takes the same `created_after` / `created_before` window when you already know the thread.
 
@@ -219,11 +242,49 @@ for thread in threads:
 
 ## Deleting threads
 
-Deleting a thread cancels any active runs and removes all state:
+Deleting a thread cancels any active runs and removes everything it owns — the
+thread record, its runs, its materialized state, and its checkpoints (including
+the blobs holding the conversation itself):
 
 ```python
 await client.threads.delete(thread_id)
 ```
+
+There is no partial form: `threads.delete()` takes no cascade flag, so the delete
+is all-or-nothing. To drop checkpoint history while keeping the thread, use
+[prune](#pruning-threads) instead.
+
+Deleting an assistant does **not** touch its threads unless you ask:
+
+```python
+# Assistant only; threads and their state survive
+await client.assistants.delete(assistant_id)
+
+# Assistant plus the caller's threads bound to it, checkpoints included
+await client.assistants.delete(assistant_id, delete_threads=True)
+```
+
+## Pruning threads
+
+`POST /threads/prune` trims checkpoint history without deleting the thread. Use
+it when you want the conversation to stay usable but the history to stop growing:
+
+```python
+async with httpx.AsyncClient(base_url="http://localhost:2026") as http:
+    # Keep only the newest checkpoint per namespace
+    await http.post("/threads/prune", json={"thread_ids": [thread_id], "strategy": "keep_latest"})
+
+    # Or remove the threads entirely (same effect as threads.delete on each)
+    await http.post("/threads/prune", json={"thread_ids": [thread_id], "strategy": "delete"})
+```
+
+`keep_latest` is `DeltaChannel`-aware: a delta channel stores a value only at its
+snapshot steps and rebuilds from ancestor writes, so the ancestors it needs are
+preserved. Threads too short to have reached a snapshot keep their whole chain —
+pruning them would leave the channel reconstructing as empty.
+
+Threads that are missing or owned by another caller are skipped rather than
+erroring; the response reports how many were pruned.
 
 ## Thread metadata
 

@@ -377,9 +377,17 @@ class TestDeleteThread:
         app.dependency_overrides[core_get_session] = override_get_session_dep(Session)
         client = make_client(app)
 
-        resp = client.delete("/threads/test-123")
+        # The route also drops the thread's checkpoints, which needs a checkpointer.
+        checkpointer = AsyncMock()
+        manager = MagicMock()
+        manager.get_checkpointer.return_value = checkpointer
+
+        with patch("aegra_api.services.run_cleanup.db_manager", manager):
+            resp = client.delete("/threads/test-123")
+
         assert resp.status_code == 200
         assert resp.json()["status"] == "deleted"
+        checkpointer.adelete_thread.assert_awaited_once_with("test-123")
 
 
 class TestSearchThreads:

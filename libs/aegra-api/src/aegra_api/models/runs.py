@@ -205,19 +205,32 @@ class RunsCancelRequest(BaseModel):
 class RunSearchRequest(BaseModel):
     """Request body for ``POST /runs/search`` and ``POST /runs/count``.
 
-    Queries the ``runs`` table across every thread the caller owns, so assistant
-    attribution comes from the run's own ``assistant_id`` column rather than the
-    last-writer-wins ``assistant_id`` in thread metadata.
+    Queries the ``runs`` table across threads, so assistant attribution comes from
+    the run's own ``assistant_id`` column rather than the last-writer-wins
+    ``assistant_id`` in thread metadata.
+
+    Field shape follows the SDK's own search requests: one field per concept,
+    accepting a scalar or a list, and ``ids`` (not ``run_ids``) for an id set —
+    matching ``threads.search``. Scope is never a request field; it comes from the
+    caller's identity and permissions.
     """
 
-    assistant_id: str | None = Field(
+    assistant_id: str | list[str] | None = Field(
         default=None,
-        description="Assistant that executed the run. Accepts a graph id, which resolves to its canonical assistant id.",
+        description=(
+            "Assistant(s) that executed the run. Accepts one id or a list; a graph id "
+            "resolves to its canonical assistant id."
+        ),
     )
-    thread_id: str | None = Field(default=None, description="Restrict to a single thread.")
-    status: str | None = Field(
+    thread_id: str | list[str] | None = Field(default=None, description="Restrict to one thread or any of several.")
+    ids: list[str] | None = Field(
         default=None,
-        description="Run status filter (pending, running, success, error, timeout, interrupted).",
+        min_length=1,
+        description="Match any of these run ids. Use to fetch a known batch in one call.",
+    )
+    status: str | list[str] | None = Field(
+        default=None,
+        description="Run status(es): pending, running, success, error, timeout, interrupted.",
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Metadata filters (JSONB containment).")
     created_after: UtcDatetime | None = Field(
@@ -234,12 +247,22 @@ class RunSearchRequest(BaseModel):
     sort_order: Literal["asc", "desc"] | None = Field(default=None, description="Sort direction. Defaults to 'desc'.")
     select: list[RunSelectField] | None = Field(default=None, description="Return only these run fields.")
 
+    @field_validator("assistant_id", "thread_id", "status")
+    @classmethod
+    def reject_empty_list(cls, v: str | list[str] | None) -> str | list[str] | None:
+        """An empty list would match nothing; that is a query bug, not a filter."""
+        if isinstance(v, list) and not v:
+            raise ValueError("filter list must not be empty")
+        return v
+
     @field_validator("status")
     @classmethod
-    def validate_status_filter(cls, v: str | None) -> str | None:
-        """Validate the status filter against the API's status vocabulary."""
+    def validate_status_filter(cls, v: str | list[str] | None) -> str | list[str] | None:
+        """Validate against the API's status vocabulary, scalar or list."""
         if v is None:
             return v
+        if isinstance(v, list):
+            return [validate_run_status(status) for status in v]
         return validate_run_status(v)
 
     @model_validator(mode="after")

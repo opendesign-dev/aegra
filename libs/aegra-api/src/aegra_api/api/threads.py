@@ -41,7 +41,7 @@ from aegra_api.models import (
 )
 from aegra_api.models.errors import CONFLICT, NOT_FOUND
 from aegra_api.models.threads import ThreadPruneRequest
-from aegra_api.services.run_cleanup import delete_thread_by_id
+from aegra_api.services.run_cleanup import delete_thread_by_id, delete_thread_checkpoints
 from aegra_api.services.run_status import materialize_thread_state
 from aegra_api.services.streaming_service import streaming_service
 from aegra_api.services.thread_state_service import ThreadStateService
@@ -905,9 +905,12 @@ async def delete_thread(
 ) -> dict[str, str]:
     """Delete a thread by its ID.
 
-    Permanently removes the thread and its metadata. Any active runs on the
-    thread are automatically cancelled before deletion. Checkpoint history
-    stored in the graph backend is not affected.
+    Permanently removes everything the thread owns: its runs and materialized
+    state (via cascade) plus its checkpoints, blobs, and pending writes. Any
+    active runs are cancelled first.
+
+    No opt-out, matching the SDK's ``threads.delete(thread_id)`` — it takes no
+    cascade flag, so the delete is all-or-nothing.
     """
     # Authorization check
     ctx = build_auth_context(user, "threads", "delete")
@@ -939,6 +942,10 @@ async def delete_thread(
 
     await session.delete(thread)
     await session.commit()
+
+    # After the commit: the checkpointer tables have no FK to thread, so cascade
+    # never reaches them and the blobs would keep the conversation state alive.
+    await delete_thread_checkpoints(thread_id)
 
     return {"status": "deleted"}
 

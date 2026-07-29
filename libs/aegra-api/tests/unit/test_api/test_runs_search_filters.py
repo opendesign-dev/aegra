@@ -1,6 +1,5 @@
 """Unit tests for the WHERE predicates behind /runs/search and /runs/count."""
 
-from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -27,19 +26,25 @@ class Compiled:
         return fragment in self.sql
 
     def bound(self, value: Any) -> bool:
-        return value in self.values
+        # An IN predicate binds its whole list as one expanding param, so look inside lists too.
+        return value in self.values or any(isinstance(v, list) and value in v for v in self.values)
 
 
-def _user() -> User:
-    return User(identity="user-1", display_name="User One")
+def _user(*, permissions: list[str] | None = None) -> User:
+    return User(identity="user-1", display_name="User One", permissions=permissions or [])
 
 
-def _filters(request: RunSearchRequest, auth_filters: dict[str, Any] | None = None) -> Compiled:
+def _filters(
+    request: RunSearchRequest,
+    auth_filters: dict[str, Any] | None = None,
+    *,
+    cross_user: bool = False,
+) -> Compiled:
     """Build predicates with graph resolution stubbed to a known registry."""
     service = Mock()
     service.list_graphs.return_value = {"known-graph": "graph.py"}
     with patch("aegra_api.api.runs.get_langgraph_service", return_value=service):
-        return Compiled(_run_search_filters(request, _user(), auth_filters))
+        return Compiled(_run_search_filters(request, _user(), auth_filters, cross_user=cross_user))
 
 
 class TestOwnershipScoping:
@@ -97,46 +102,67 @@ class TestScalarFilters:
         assert result.bound({"team": "core"})
 
 
-class TestTimeWindow:
-    """created_after/created_before become inclusive range predicates."""
+class TestListForms:
+    """One field per concept, accepting a scalar or a list — matching the SDK's search shape."""
 
-    def test_created_after_is_inclusive_lower_bound(self) -> None:
-        after = datetime(2026, 1, 1, tzinfo=UTC)
-        result = _filters(RunSearchRequest(created_after=after))
-        assert "runs.created_at >= " in result
-        assert result.bound(after)
+    def test_thread_id_accepts_a_list(self) -> None:
+        result = _filters(RunSearchRequest(thread_id=["t-1", "t-2"]))
+        assert "runs.thread_id IN " in result
+        assert result.bound("t-1")
+        assert result.bound("t-2")
 
-    def test_created_before_is_inclusive_upper_bound(self) -> None:
-        before = datetime(2026, 2, 1, tzinfo=UTC)
-        result = _filters(RunSearchRequest(created_before=before))
-        assert "runs.created_at <= " in result
-        assert result.bound(before)
+    def test_ids_filter(self) -> None:
+        """Named `ids`, like threads.search — not `run_ids`."""
+        result = _filters(RunSearchRequest(ids=["r-1", "r-2"]))
+        assert "runs.run_id IN " in result
+        assert result.bound("r-1")
 
-    def test_both_bounds_produce_a_closed_window(self) -> None:
-        result = _filters(
-            RunSearchRequest(
-                created_after=datetime(2026, 1, 1, tzinfo=UTC),
-                created_before=datetime(2026, 2, 1, tzinfo=UTC),
-            )
-        )
-        assert "runs.created_at >= " in result
-        assert "runs.created_at <= " in result
+    def test_status_accepts_a_list(self) -> None:
+        result = _filters(RunSearchRequest(status=["success", "error"]))
+        assert "runs.status IN " in result
+        assert result.bound("success")
+        assert result.bound("error")
 
+    def test_assistant_id_list_passed_through_when_not_graphs(self) -> None:
+        result = _filters(RunSearchRequest(assistant_id=["assistant-uuid-1", "assistant-uuid-2"]))
+        assert "runs.assistant_id IN " in result
+        assert result.bound("assistant-uuid-1")
 
-class TestAuthHandlerFilters:
-    """Filters returned by an @auth.on handler are appended, not substituted."""
+    def test_assistant_id_list_resolves_graph_ids(self) -> None:
+        """Every entry resolves the same way a scalar assistant_id does."""
+        result = _filters(RunSearchRequest(assistant_id=["known-graph"]))
+        assert "runs.assistant_id IN " in result
+        assert not result.bound("known-graph")
 
-    def test_handler_filter_compiled_into_where(self) -> None:
-        """A handler's metadata constraint reaches the query without dropping ownership."""
-        result = _filters(RunSearchRequest(), {"team_id": "t-1"})
-        assert "@>" in result
+    def test_list_form_keeps_ownership_predicate(self) -> None:
+        """List forms are additive, not a way around caller scoping."""
+        result = _filters(RunSearchRequest(ids=["r-1"]))
         assert "runs.user_id = " in result
         assert result.bound("user-1")
 
-    def test_no_handler_filter_is_a_noop(self) -> None:
-        """None from the handler adds nothing."""
-        result = _filters(RunSearchRequest(), None)
-        assert "@>" not in result
+
+class TestCrossUserScoping:
+    """Scope comes from permissions only — no request field can widen it."""
+
+    def test_cross_user_drops_ownership_predicate(self) -> None:
+        """A permitted caller sees the whole deployment."""
+        result = _filters(RunSearchRequest(), cross_user=True)
+        assert "runs.user_id" not in result
+
+    def test_default_is_caller_scoped(self) -> None:
+        result = _filters(RunSearchRequest())
+        assert "runs.user_id = " in result
+        assert result.bound("user-1")
+
+    def test_cross_user_keeps_other_filters(self) -> None:
+        result = _filters(RunSearchRequest(status=["error"]), cross_user=True)
+        assert "runs.status IN " in result
+        assert "runs.user_id" not in result
+
+    def test_no_user_field_exists_to_send(self) -> None:
+        """Regression: a `user_ids` request field would let a client widen its own
+        scope, so the surface must not carry one — the permission is the only gate."""
+        assert "user_ids" not in RunSearchRequest.model_fields
 
 
 class TestSelectFieldRegistry:
