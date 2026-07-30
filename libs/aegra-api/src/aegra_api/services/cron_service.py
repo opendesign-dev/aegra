@@ -354,6 +354,10 @@ class CronService:
             timezone = existing_payload.get("timezone")
             values["next_run_date"] = _compute_next_run(schedule, timezone=timezone)
 
+        # A patch is the owner intervening, so the auto-disable counter starts over —
+        # otherwise a cron fixed at 9 failures gets exactly one more attempt.
+        values["failure_count"] = 0
+
         # SQLAlchemy's execute() stub returns Result for every statement kind, but a
         # DML statement yields a CursorResult at runtime — the only shape carrying
         # ``.rowcount``. The stub cannot express that, hence the cast.
@@ -441,7 +445,7 @@ class CronService:
         total = await self.session.scalar(stmt)
         return total or 0
 
-    async def get_due_crons(self, now: datetime | None = None) -> list[CronORM]:
+    async def claim_due_crons(self, now: datetime | None = None) -> list[CronORM]:
         """Atomically claim enabled cron jobs whose ``next_run_date`` is in the past.
 
         The claim writes ``claimed_until = now + CRON_CLAIM_DURATION_SECONDS``
@@ -493,32 +497,76 @@ class CronService:
         await self.session.commit()
         return list(result.scalars().all())
 
-    async def advance_next_run(self, cron: CronORM) -> None:
-        """Advance ``next_run_date`` to the next occurrence after *now*.
+    async def advance_next_run(self, cron_id: str, *, failed: bool = False) -> None:
+        """Move a fired cron to its next occurrence, or disable it once spent.
 
-        If the cron has an ``end_time`` that has passed, disable it instead.
-        Releases the in-flight claim by clearing ``claimed_until``.
+        Re-reads the row ``FOR UPDATE`` instead of trusting the claimed snapshot: an
+        API patch may have changed the schedule or timezone since the claim, and
+        advancing from the stale copy would silently undo it.
         """
+        cron = await self.session.scalar(select(CronORM).where(CronORM.cron_id == cron_id).with_for_update())
+        if cron is None:
+            return
+
         now = datetime.now(UTC)
         if cron.end_time and now >= cron.end_time:
-            await self.session.execute(
-                update(CronORM)
-                .where(CronORM.cron_id == cron.cron_id)
-                .values(enabled=False, claimed_until=None, updated_at=now)
-            )
-        else:
-            timezone = (cron.payload or {}).get("timezone")
-            next_run = _compute_next_run(cron.schedule, now=now, timezone=timezone)
-            await self.session.execute(
-                update(CronORM)
-                .where(CronORM.cron_id == cron.cron_id)
-                .values(next_run_date=next_run, claimed_until=None, updated_at=now)
-            )
-        await self.session.commit()
+            await self.disable_cron(cron_id)
+            logger.info("Disabled cron past its end_time", cron_id=cron_id)
+            return
+
+        values = self._settle_values(failed=failed, now=now)
+        values["next_run_date"] = _compute_next_run(cron.schedule, now=now, timezone=(cron.payload or {}).get("timezone"))
+        await self._settle(cron_id, values, failed=failed)
+
+    async def release_claim(self, cron_id: str, *, failed: bool = False) -> None:
+        """Drop the claim without advancing, so the next tick retries this occurrence."""
+        await self._settle(cron_id, self._settle_values(failed=failed, now=datetime.now(UTC)), failed=failed)
+
+    async def disable_cron(self, cron_id: str) -> None:
+        """Stop a cron from firing without deleting it; the record stays queryable."""
+        values = {"enabled": False, "claimed_until": None, "updated_at": datetime.now(UTC)}
+        await self._settle(cron_id, values, failed=False)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _settle_values(*, failed: bool, now: datetime) -> dict[str, Any]:
+        """Claim release plus failure accounting, shared by every settle path.
+
+        The counter moves in SQL so concurrent settles cannot lose an increment, and
+        ``enabled`` is ANDed rather than assigned so hitting the cap can only ever
+        turn a cron off — never resurrect one an API call just paused.
+        """
+        if not failed:
+            return {"claimed_until": None, "failure_count": 0, "updated_at": now}
+        values: dict[str, Any] = {
+            "claimed_until": None,
+            "failure_count": CronORM.failure_count + 1,
+            "updated_at": now,
+        }
+        cap = settings.cron.CRON_MAX_CONSECUTIVE_FAILURES
+        if cap > 0:
+            values["enabled"] = CronORM.enabled & (CronORM.failure_count + 1 < cap)
+        return values
+
+    async def _settle(self, cron_id: str, values: dict[str, Any], *, failed: bool) -> None:
+        """Apply one settle write and report an auto-disable the caller didn't ask for."""
+        result = await self.session.execute(
+            update(CronORM)
+            .where(CronORM.cron_id == cron_id)
+            .values(**values)
+            .returning(CronORM.enabled, CronORM.failure_count)
+        )
+        row = result.first()
+        await self.session.commit()
+        if failed and row is not None and not row.enabled:
+            logger.warning(
+                "Disabled cron after consecutive failed firings",
+                cron_id=cron_id,
+                failure_count=row.failure_count,
+            )
 
     async def _get_cron_or_404(
         self,

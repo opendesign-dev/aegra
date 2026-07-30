@@ -409,7 +409,7 @@ class CronSettings(EnvBase):
     CRON_ENABLED: bool = True
     CRON_POLL_INTERVAL_SECONDS: int = 60
     # Maximum lease duration for an in-flight cron firing. Once a cron is
-    # claimed by ``get_due_crons`` its ``claimed_until`` is set to
+    # claimed by ``claim_due_crons`` its ``claimed_until`` is set to
     # ``now + CRON_CLAIM_DURATION_SECONDS`` so concurrent pollers and
     # subsequent ticks don't double-fire it. Should comfortably exceed the
     # worst-case ``_fire_cron`` duration. Defaults to 5 minutes.
@@ -422,35 +422,51 @@ class CronSettings(EnvBase):
     # Cap on how many crons a single tick will fire (prevents one slow
     # poll from queuing up unbounded work).
     CRON_TICK_BATCH_SIZE: int = 100
-    # Soft cap on JSONB payload size (input + config + context + checkpoint
-    # + metadata combined) accepted on create/update.
+    # How many of a tick's crons are fired at once. Firing serially lets one slow
+    # ``prepare_run`` push the batch past CRON_CLAIM_DURATION_SECONDS, at which point
+    # another poller re-claims the tail and double-fires it.
+    CRON_FIRE_CONCURRENCY: int = 8
+    # Soft cap on JSONB payload size (input + config + context + metadata
+    # combined) accepted on create/update.
     CRON_MAX_PAYLOAD_BYTES: int = 64 * 1024
+    # How late an occurrence may be and still fire. Past this the occurrence is
+    # written off and the schedule jumps to the next one, so a cron that was due
+    # during a long outage doesn't fire at restart hours off-schedule. 0 always
+    # fires, however overdue.
+    CRON_MISFIRE_GRACE_SECONDS: int = 0
+    # Consecutive failed firings before the cron is disabled. Without a cap a cron
+    # whose graph or payload is permanently broken retries every poll interval
+    # forever. 0 retries indefinitely.
+    CRON_MAX_CONSECUTIVE_FAILURES: int = 10
 
     # How long a thread-bound cron waits for a human decision before giving up.
     # While a fired run sits interrupted the schedule is held: firing again would
     # advance the checkpoint and discard the context the approver is looking at.
-    # Past this, those runs are failed with a reason and the schedule is released, so
-    # one unattended approval cannot silently stop the cron forever. The checkpoint
-    # still holds the interrupt, so the next firing re-asks. 0 waits.
+    # Past this the pause is answered with a rejection where the graph declares one
+    # is allowed, and written off otherwise, so one unattended approval cannot
+    # silently stop the cron forever. 0 waits.
     CRON_APPROVAL_TIMEOUT_SECONDS: int = 86_400
 
     @model_validator(mode="after")
-    def _validate_poll_interval(self) -> "CronSettings":
-        """Reject non-positive cron poll intervals during settings validation."""
-        if self.CRON_POLL_INTERVAL_SECONDS <= 0:
-            raise ValueError(
-                f"CRON_POLL_INTERVAL_SECONDS must be greater than 0, got {self.CRON_POLL_INTERVAL_SECONDS}"
-            )
-        if self.CRON_CLAIM_DURATION_SECONDS <= 0:
-            raise ValueError(
-                f"CRON_CLAIM_DURATION_SECONDS must be greater than 0, got {self.CRON_CLAIM_DURATION_SECONDS}"
-            )
-        if self.CRON_MAX_PER_USER < 0:
-            raise ValueError(f"CRON_MAX_PER_USER must be >= 0, got {self.CRON_MAX_PER_USER}")
-        if self.CRON_TICK_BATCH_SIZE <= 0:
-            raise ValueError(f"CRON_TICK_BATCH_SIZE must be greater than 0, got {self.CRON_TICK_BATCH_SIZE}")
-        if self.CRON_MAX_PAYLOAD_BYTES <= 0:
-            raise ValueError(f"CRON_MAX_PAYLOAD_BYTES must be greater than 0, got {self.CRON_MAX_PAYLOAD_BYTES}")
+    def _validate_bounds(self) -> "CronSettings":
+        """Reject out-of-range cron settings; a new knob is one entry, not one branch."""
+        for name in (
+            "CRON_POLL_INTERVAL_SECONDS",
+            "CRON_CLAIM_DURATION_SECONDS",
+            "CRON_TICK_BATCH_SIZE",
+            "CRON_FIRE_CONCURRENCY",
+            "CRON_MAX_PAYLOAD_BYTES",
+        ):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be greater than 0, got {getattr(self, name)}")
+        for name in (
+            "CRON_MAX_PER_USER",
+            "CRON_MISFIRE_GRACE_SECONDS",
+            "CRON_MAX_CONSECUTIVE_FAILURES",
+            "CRON_APPROVAL_TIMEOUT_SECONDS",
+        ):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be >= 0, got {getattr(self, name)}")
         return self
 
 

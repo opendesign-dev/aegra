@@ -1,8 +1,7 @@
-"""Additional unit tests added during PR review.
+"""Guards a cron has to enforce before it is ever allowed to fire.
 
-These cover behaviours introduced for the cron PR fix-ups: per-user quota,
-6-field schedule gating, ownership enforcement on update/delete, and the
-``advance_next_run`` claim release.
+Per-user quota, the 6-field schedule gate, cross-tenant ownership on update/delete,
+webhook credential masking, and next_run recomputation on re-enable.
 """
 
 from __future__ import annotations
@@ -185,28 +184,6 @@ class TestOwnershipEnforcement:
             await cron_service.delete_cron("cron-x", "tenant-B")
         assert exc.value.status_code == 404
         mock_session.delete.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# advance_next_run releases the claim
-# ---------------------------------------------------------------------------
-
-
-class TestAdvanceClearsClaim:
-    @pytest.mark.asyncio
-    async def test_advance_sets_claimed_until_to_null(
-        self,
-        cron_service: CronService,
-        mock_session: AsyncMock,
-    ) -> None:
-        cron = _make_cron_orm()
-        cron.end_time = None
-        await cron_service.advance_next_run(cron)
-        # Inspect the UPDATE statement we issued and assert claimed_until is set.
-        stmt = mock_session.execute.call_args[0][0]
-        compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
-        assert "claimed_until" in compiled
-        assert "next_run_date" in compiled
 
 
 # ---------------------------------------------------------------------------

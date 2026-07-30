@@ -1001,12 +1001,12 @@ class TestSearchCronsExtended:
 
 
 # ---------------------------------------------------------------------------
-# CronService.get_due_crons
+# CronService.claim_due_crons
 # ---------------------------------------------------------------------------
 
 
-class TestGetDueCrons:
-    """Test CronService.get_due_crons."""
+class TestClaimDueCrons:
+    """Test CronService.claim_due_crons."""
 
     @pytest.mark.asyncio
     async def test_returns_due_crons(
@@ -1023,7 +1023,7 @@ class TestGetDueCrons:
         update_result.scalars.return_value.all.return_value = due
         mock_session.execute.side_effect = [ids_result, update_result]
 
-        result = await cron_service.get_due_crons()
+        result = await cron_service.claim_due_crons()
         assert len(result) == 2
         assert mock_session.execute.await_count == 2
         mock_session.commit.assert_awaited_once()
@@ -1038,7 +1038,7 @@ class TestGetDueCrons:
         ids_result.all.return_value = []
         mock_session.execute.return_value = ids_result
 
-        result = await cron_service.get_due_crons()
+        result = await cron_service.claim_due_crons()
         assert result == []
         # Only the SELECT runs; UPDATE is skipped when no IDs are claimable.
         mock_session.execute.assert_awaited_once()
@@ -1054,14 +1054,31 @@ class TestGetDueCrons:
         mock_session.execute.return_value = ids_result
 
         custom_now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC)
-        result = await cron_service.get_due_crons(now=custom_now)
+        result = await cron_service.claim_due_crons(now=custom_now)
         assert result == []
         mock_session.execute.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# CronService.advance_next_run
+# CronService settle paths: advance / release / disable
 # ---------------------------------------------------------------------------
+
+
+def _settle_result(*, enabled: bool = True, failure_count: int = 0) -> Mock:
+    """The ``UPDATE ... RETURNING`` result of one settle write."""
+    result = Mock()
+    result.first.return_value = Mock(enabled=enabled, failure_count=failure_count)
+    return result
+
+
+def _settle_sql(mock_session: AsyncMock) -> str:
+    """The single settle statement's SET clause, rendered for assertions.
+
+    RETURNING names every settle column, so assertions about which columns are *written*
+    have to stop at it.
+    """
+    mock_session.execute.assert_awaited_once()
+    return str(mock_session.execute.await_args.args[0]).split("RETURNING")[0]
 
 
 class TestAdvanceNextRun:
@@ -1074,12 +1091,44 @@ class TestAdvanceNextRun:
         mock_session: AsyncMock,
     ) -> None:
         cron = _make_cron_orm(schedule="*/5 * * * *", end_time=None)
-        cron.end_time = None
+        mock_session.scalar.return_value = cron
+        mock_session.execute.return_value = _settle_result()
 
-        await cron_service.advance_next_run(cron)
+        await cron_service.advance_next_run(cron.cron_id)
 
-        mock_session.execute.assert_awaited_once()
+        sql = _settle_sql(mock_session)
+        assert "next_run_date" in sql
+        assert "claimed_until" in sql
         mock_session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reads_the_schedule_back_under_a_lock(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        """An API patch may have changed schedule or timezone since the claim, so the
+        advance recomputes from the row — locked, so the patch cannot land mid-advance."""
+        cron = _make_cron_orm(schedule="*/5 * * * *", end_time=None)
+        mock_session.scalar.return_value = cron
+        mock_session.execute.return_value = _settle_result()
+
+        await cron_service.advance_next_run(cron.cron_id)
+
+        assert "FOR UPDATE" in str(mock_session.scalar.await_args.args[0])
+
+    @pytest.mark.asyncio
+    async def test_deleted_cron_is_a_no_op(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        """The row can be gone by the time a claimed firing settles."""
+        mock_session.scalar.return_value = None
+
+        await cron_service.advance_next_run("cron-gone")
+
+        mock_session.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_disables_when_past_end_time(
@@ -1089,11 +1138,14 @@ class TestAdvanceNextRun:
     ) -> None:
         past = datetime.now(UTC) - timedelta(hours=1)
         cron = _make_cron_orm(schedule="*/5 * * * *", end_time=past)
+        mock_session.scalar.return_value = cron
+        mock_session.execute.return_value = _settle_result(enabled=False)
 
-        await cron_service.advance_next_run(cron)
+        await cron_service.advance_next_run(cron.cron_id)
 
-        mock_session.execute.assert_awaited_once()
-        mock_session.commit.assert_awaited_once()
+        sql = _settle_sql(mock_session)
+        assert "enabled" in sql
+        assert "next_run_date" not in sql
 
     @pytest.mark.asyncio
     async def test_does_not_disable_when_end_time_is_future(
@@ -1103,11 +1155,12 @@ class TestAdvanceNextRun:
     ) -> None:
         future = datetime.now(UTC) + timedelta(days=30)
         cron = _make_cron_orm(schedule="*/5 * * * *", end_time=future)
+        mock_session.scalar.return_value = cron
+        mock_session.execute.return_value = _settle_result()
 
-        await cron_service.advance_next_run(cron)
+        await cron_service.advance_next_run(cron.cron_id)
 
-        mock_session.execute.assert_awaited_once()
-        mock_session.commit.assert_awaited_once()
+        assert "next_run_date" in _settle_sql(mock_session)
 
     @pytest.mark.asyncio
     async def test_uses_timezone_from_payload(
@@ -1116,18 +1169,114 @@ class TestAdvanceNextRun:
         mock_session: AsyncMock,
     ) -> None:
         """advance_next_run must respect the timezone stored in the payload JSONB."""
-        cron = _make_cron_orm(
-            schedule="0 9 * * *",
-            payload={"timezone": "America/New_York"},
-            end_time=None,
-        )
+        cron = _make_cron_orm(schedule="0 9 * * *", payload={"timezone": "America/New_York"}, end_time=None)
+        mock_session.scalar.return_value = cron
+        mock_session.execute.return_value = _settle_result()
 
-        await cron_service.advance_next_run(cron)
+        with patch(
+            "aegra_api.services.cron_service._compute_next_run",
+            return_value=datetime.now(UTC) + timedelta(hours=1),
+        ) as mock_compute:
+            await cron_service.advance_next_run(cron.cron_id)
 
-        mock_session.execute.assert_awaited_once()
-        # Verify the next_run passed to execute is in UTC (timezone-aware)
-        call_args = mock_session.execute.call_args
-        assert call_args is not None
+        assert mock_compute.call_args.kwargs.get("timezone") == "America/New_York"
+
+
+class TestSettleFailures:
+    """A failed firing counts toward the auto-disable cap; a successful one resets it."""
+
+    @pytest.mark.asyncio
+    async def test_success_resets_the_counter(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        mock_session.execute.return_value = _settle_result()
+
+        await cron_service.release_claim("cron-001")
+
+        sql = _settle_sql(mock_session)
+        assert "failure_count" in sql
+        # Not the AND expression: a clean settle must never touch enabled.
+        assert "enabled" not in sql
+
+    @pytest.mark.asyncio
+    async def test_failure_increments_and_can_disable(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        """``enabled`` is ANDed rather than assigned, so hitting the cap can only turn a
+        cron off — never resurrect one an API call just paused."""
+        mock_session.execute.return_value = _settle_result()
+
+        with patch("aegra_api.services.cron_service.settings") as cfg:
+            cfg.cron.CRON_MAX_CONSECUTIVE_FAILURES = 3
+            await cron_service.release_claim("cron-001", failed=True)
+
+        sql = _settle_sql(mock_session)
+        assert "failure_count + " in sql
+        assert "enabled AND" in sql
+
+    @pytest.mark.asyncio
+    async def test_zero_cap_never_disables(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        mock_session.execute.return_value = _settle_result()
+
+        with patch("aegra_api.services.cron_service.settings") as cfg:
+            cfg.cron.CRON_MAX_CONSECUTIVE_FAILURES = 0
+            await cron_service.release_claim("cron-001", failed=True)
+
+        assert "enabled" not in _settle_sql(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_auto_disable_is_reported(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        """An operator has to be able to find out why a cron stopped firing."""
+        mock_session.execute.return_value = _settle_result(enabled=False, failure_count=10)
+
+        with (
+            patch("aegra_api.services.cron_service.settings") as cfg,
+            patch("aegra_api.services.cron_service.logger") as log,
+        ):
+            cfg.cron.CRON_MAX_CONSECUTIVE_FAILURES = 10
+            await cron_service.release_claim("cron-001", failed=True)
+
+        log.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_release_keeps_the_occurrence(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        """A retry must not advance the schedule, or the occurrence is silently lost."""
+        mock_session.execute.return_value = _settle_result()
+
+        await cron_service.release_claim("cron-001", failed=True)
+
+        assert "next_run_date" not in _settle_sql(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_disable_cron_clears_the_claim(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        mock_session.execute.return_value = _settle_result(enabled=False)
+
+        await cron_service.disable_cron("cron-001")
+
+        sql = _settle_sql(mock_session)
+        assert "enabled" in sql
+        assert "claimed_until" in sql
+        mock_session.commit.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
