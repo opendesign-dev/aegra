@@ -4,6 +4,7 @@ import importlib.util
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,16 +15,11 @@ pytestmark = pytest.mark.unit
 _NOW = datetime(2026, 7, 19, tzinfo=UTC)
 
 
-class _Session:
-    def __init__(self, current_hash: str | None):
-        self._hash = current_hash
-        self.executed: list = []
-
-    async def scalar(self, _stmt):
-        return self._hash
-
-    async def execute(self, stmt):
-        self.executed.append(stmt)
+def _session(current_hash: str | None) -> AsyncMock:
+    """Stand-in AsyncSession whose ``scalar`` returns the stored values-hash."""
+    session = AsyncMock()
+    session.scalar.return_value = current_hash
+    return session
 
 
 def test_values_hash_is_order_independent_and_distinct() -> None:
@@ -45,18 +41,18 @@ def test_update_columns_include_values_when_changed() -> None:
     assert set(cols) == {"values", "interrupts", "values_hash", "updated_at"}
 
 
-async def test_gate_off_skips_write(monkeypatch) -> None:
+async def test_gate_off_skips_write(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(run_status.settings.checkpointer, "THREAD_STATE_MATERIALIZE", False)
-    session = _Session(None)
+    session = _session(None)
     await run_status.materialize_thread_state(session, "t1", {"x": 1}, {})
-    assert session.executed == []
+    session.execute.assert_not_awaited()
 
 
-async def test_gate_on_upserts(monkeypatch) -> None:
+async def test_gate_on_upserts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(run_status.settings.checkpointer, "THREAD_STATE_MATERIALIZE", True)
-    session = _Session(None)
+    session = _session(None)
     await run_status.materialize_thread_state(session, "t1", {"x": 1}, {})
-    assert len(session.executed) == 1
+    session.execute.assert_awaited_once()
 
 
 # The runtime-alignment schema has been squashed more than once, so locate it by
