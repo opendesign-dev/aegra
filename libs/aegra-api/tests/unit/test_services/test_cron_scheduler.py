@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi import HTTPException
 
-from aegra_api.services.cron_scheduler import CronScheduler
+from aegra_api.services.cron_scheduler import CronScheduler, _hold_for_approval
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -588,3 +588,66 @@ class TestSchedulerLoop:
             await scheduler._loop()
 
         assert call_count == 2
+
+
+class TestApprovalHold:
+    """A thread awaiting a human decision holds its schedule, then times out."""
+
+    @staticmethod
+    def _session(thread_status: str | None, waited_seconds: float | None = None) -> AsyncMock:
+        """Two scalar() reads: the thread's status, then when its run paused."""
+        paused_at = None if waited_seconds is None else datetime.now(UTC) - timedelta(seconds=waited_seconds)
+        session = AsyncMock()
+        session.scalar = AsyncMock(side_effect=[thread_status, paused_at])
+        return session
+
+    @pytest.mark.asyncio
+    async def test_stateless_cron_is_never_held(self) -> None:
+        """No bound thread means no approval to wait on."""
+        cron = _make_cron_orm(thread_id=None)
+        assert await _hold_for_approval(self._session(None), cron) is False
+
+    @pytest.mark.asyncio
+    async def test_idle_thread_is_not_held(self) -> None:
+        """A user cancel leaves the thread idle; only a HITL pause marks it interrupted."""
+        cron = _make_cron_orm(thread_id="t1")
+        assert await _hold_for_approval(self._session("idle"), cron) is False
+
+    @pytest.mark.asyncio
+    async def test_interrupted_thread_holds_the_firing(self) -> None:
+        """Firing anyway would advance the checkpoint out from under the approver."""
+        cron = _make_cron_orm(thread_id="t1")
+        session = self._session("interrupted", 60)
+        with patch("aegra_api.services.cron_scheduler.settings") as cfg:
+            cfg.cron.CRON_APPROVAL_TIMEOUT_SECONDS = 86_400
+            assert await _hold_for_approval(session, cron) is True
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stale_approval_is_failed_and_released(self) -> None:
+        """Past the timeout the run is failed with a reason so the schedule resumes."""
+        cron = _make_cron_orm(thread_id="t1")
+        session = self._session("interrupted", 100_000)
+        with patch("aegra_api.services.cron_scheduler.settings") as cfg:
+            cfg.cron.CRON_APPROVAL_TIMEOUT_SECONDS = 86_400
+            assert await _hold_for_approval(session, cron) is False
+        # One UPDATE fails the runs, one releases the thread.
+        assert session.execute.await_count == 2
+        session.commit.assert_awaited_once()
+        stamped = str(session.execute.await_args_list[0].args[0])
+        assert "error_message" in stamped
+
+    @pytest.mark.asyncio
+    async def test_no_paused_run_is_not_held(self) -> None:
+        """Thread says interrupted but no run is: a race, not something to wait on."""
+        cron = _make_cron_orm(thread_id="t1")
+        assert await _hold_for_approval(self._session("interrupted", None), cron) is False
+
+    @pytest.mark.asyncio
+    async def test_zero_timeout_waits_forever(self) -> None:
+        """0 opts out of the timeout: the hold never expires on its own."""
+        cron = _make_cron_orm(thread_id="t1")
+        session = self._session("interrupted", 10_000_000)
+        with patch("aegra_api.services.cron_scheduler.settings") as cfg:
+            cfg.cron.CRON_APPROVAL_TIMEOUT_SECONDS = 0
+            assert await _hold_for_approval(session, cron) is True

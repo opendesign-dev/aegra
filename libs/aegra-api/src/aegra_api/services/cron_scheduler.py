@@ -19,10 +19,12 @@ from uuid import uuid4
 
 import structlog
 from fastapi import HTTPException
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aegra_api.core.orm import Cron as CronORM
+from aegra_api.core.orm import Run as RunORM
+from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session_maker
 from aegra_api.models import RunCreate, User
 from aegra_api.services.cron_service import (
@@ -70,6 +72,62 @@ def _build_run_create(cron: CronORM) -> RunCreate:
         # forwarded onto fired runs. Re-wire here if run-level tagging is needed.
         metadata=None,
     )
+
+
+# Reason stamped on runs failed by the approval timeout, so an operator reading the
+# run (or its webhook) can tell this apart from a graph error.
+APPROVAL_TIMEOUT_REASON = "Approval timed out: no human decision within CRON_APPROVAL_TIMEOUT_SECONDS"
+
+
+async def _hold_for_approval(session: AsyncSession, cron: CronORM) -> bool:
+    """Whether this firing must be held because the thread is awaiting a decision.
+
+    A HITL pause sets ``thread.status = 'interrupted'`` (a user cancel leaves it
+    ``idle``), so that is the signal. Firing anyway would append input and advance
+    the checkpoint, discarding the very context the approver is looking at.
+
+    Once the wait exceeds ``CRON_APPROVAL_TIMEOUT_SECONDS`` the pending runs are
+    failed with :data:`APPROVAL_TIMEOUT_REASON` and the thread is released, so an
+    unattended approval cannot stop the schedule forever. Returns False then.
+    """
+    if cron.thread_id is None:
+        return False
+    owned = (ThreadORM.thread_id == cron.thread_id, ThreadORM.user_id == cron.user_id)
+    if await session.scalar(select(ThreadORM.status).where(*owned)) != "interrupted":
+        return False
+
+    # Clock from when the run paused, not thread.updated_at: any later touch of the
+    # thread (a metadata patch, a state refresh) would reset that and push the
+    # timeout out indefinitely.
+    paused = (RunORM.thread_id == cron.thread_id, RunORM.user_id == cron.user_id, RunORM.status == "interrupted")
+    paused_at = await session.scalar(select(func.min(RunORM.updated_at)).where(*paused))
+    if paused_at is None:
+        return False
+
+    now = datetime.now(UTC)
+    timeout = settings.cron.CRON_APPROVAL_TIMEOUT_SECONDS
+    waited = (now - paused_at).total_seconds()
+    if timeout <= 0 or waited < timeout:
+        logger.info(
+            "Holding cron firing while thread awaits approval",
+            cron_id=cron.cron_id,
+            thread_id=cron.thread_id,
+            waited_seconds=int(waited),
+        )
+        return True
+
+    await session.execute(
+        update(RunORM).where(*paused).values(status="error", error_message=APPROVAL_TIMEOUT_REASON, updated_at=now)
+    )
+    await session.execute(update(ThreadORM).where(*owned).values(status="idle", updated_at=now))
+    await session.commit()
+    logger.warning(
+        "Failed stale approval and released the cron thread",
+        cron_id=cron.cron_id,
+        thread_id=cron.thread_id,
+        waited_seconds=int(waited),
+    )
+    return False
 
 
 async def _validate_cron_user(user_id: str) -> bool:
@@ -172,6 +230,15 @@ class CronScheduler:
         now = datetime.now(UTC)
         should_delete_thread = should_delete_stateless_thread(cron)
         run_created = False
+
+        if await _hold_for_approval(session, cron):
+            # Release the claim but leave next_run_date alone: the next tick re-checks,
+            # so the cron resumes on its own once the decision lands.
+            await session.execute(
+                update(CronORM).where(CronORM.cron_id == cron.cron_id).values(claimed_until=None, updated_at=now)
+            )
+            await session.commit()
+            return
 
         # Liveness check: refuse to forge a User for a deleted/revoked identity.
         if not await _validate_cron_user(cron.user_id):

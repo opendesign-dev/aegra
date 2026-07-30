@@ -426,6 +426,13 @@ class CronSettings(EnvBase):
     # + metadata combined) accepted on create/update.
     CRON_MAX_PAYLOAD_BYTES: int = 64 * 1024
 
+    # How long a thread-bound cron waits for a human decision before giving up.
+    # While a fired run sits interrupted the schedule is held: firing again would
+    # advance the checkpoint and discard the context the approver is looking at.
+    # Past this, those runs are failed with a reason and the schedule resumes, so
+    # one unattended approval cannot silently stop the cron forever. 0 waits.
+    CRON_APPROVAL_TIMEOUT_SECONDS: int = 86_400
+
     @model_validator(mode="after")
     def _validate_poll_interval(self) -> "CronSettings":
         """Reject non-positive cron poll intervals during settings validation."""
