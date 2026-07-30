@@ -220,7 +220,13 @@ async def prepare_run(
         except WebhookValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    run_id = str(uuid4())
+    run_id = request.run_id or str(uuid4())
+    if request.run_id is not None:
+        # Checked rather than left to the PK violation so the caller gets a 409
+        # instead of a 500 from the failed INSERT.
+        taken = await session.scalar(select(RunORM.run_id).where(RunORM.run_id == run_id))
+        if taken is not None:
+            raise HTTPException(409, f"Run '{run_id}' already exists")
     langgraph_service = get_langgraph_service()
     logger.info(
         "Scheduling run",

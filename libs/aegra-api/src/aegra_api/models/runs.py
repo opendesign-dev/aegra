@@ -37,6 +37,11 @@ RunSortBy = Literal["run_id", "thread_id", "assistant_id", "status", "created_at
 class RunCreate(BaseModel):
     """Request model for creating runs"""
 
+    run_id: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Client-supplied id for idempotent creation. Generated when omitted; 409 if taken.",
+    )
     assistant_id: str = Field(..., description="Assistant to execute")
     input: dict[str, Any] | None = Field(
         default=None,

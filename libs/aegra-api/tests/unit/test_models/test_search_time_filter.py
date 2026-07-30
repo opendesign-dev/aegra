@@ -5,7 +5,8 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from aegra_api.models import Run, RunSearchRequest, ThreadSearchRequest
+from aegra_api.models import Run, RunCreate, RunSearchRequest, ThreadSearchRequest
+from aegra_api.models.crons import CronCreate
 from aegra_api.models.filters import assume_utc, validate_time_range
 from aegra_api.models.runs import project_runs
 
@@ -214,3 +215,28 @@ class TestPluralAliases:
         props = set(RunSearchRequest.model_json_schema()["properties"])
         assert {"thread_id", "assistant_id", "ids", "status"} <= props
         assert not props & {"thread_ids", "assistant_ids", "run_ids", "statuses"}
+
+
+class TestClientSuppliedIds:
+    """Every create accepts an optional client id; omitting it means "generate one"."""
+
+    def test_run_id_defaults_to_none(self) -> None:
+        assert RunCreate(assistant_id="a", input={}).run_id is None
+
+    def test_run_id_is_carried(self) -> None:
+        assert RunCreate(assistant_id="a", input={}, run_id="my-run").run_id == "my-run"
+
+    def test_cron_id_defaults_to_none(self) -> None:
+        assert CronCreate(assistant_id="a", schedule="0 9 * * *").cron_id is None
+
+    def test_cron_id_is_carried(self) -> None:
+        assert CronCreate(assistant_id="a", schedule="0 9 * * *", cron_id="my-cron").cron_id == "my-cron"
+
+    @pytest.mark.parametrize(
+        "model, kwargs",
+        [(RunCreate, {"assistant_id": "a", "input": {}}), (CronCreate, {"assistant_id": "a", "schedule": "0 9 * * *"})],
+    )
+    def test_overlong_id_rejected(self, model: type, kwargs: dict) -> None:
+        """A capped length keeps an unbounded id out of a Text primary key."""
+        with pytest.raises(ValidationError):
+            model(**kwargs, **{("run_id" if model is RunCreate else "cron_id"): "x" * 300})

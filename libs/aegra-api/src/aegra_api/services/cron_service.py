@@ -260,8 +260,16 @@ class CronService:
         now = datetime.now(UTC)
         next_run = _compute_next_run(request.schedule, now=now, timezone=request.timezone)
 
+        cron_id = request.cron_id or str(uuid4())
+        if request.cron_id is not None:
+            # Checked rather than left to the PK violation so the caller gets a 409
+            # instead of a 500 from the failed INSERT.
+            taken = await self.session.scalar(select(CronORM.cron_id).where(CronORM.cron_id == cron_id))
+            if taken is not None:
+                raise HTTPException(409, f"Cron '{cron_id}' already exists")
+
         cron_orm = CronORM(
-            cron_id=str(uuid4()),
+            cron_id=cron_id,
             assistant_id=resolved_assistant_id,
             thread_id=thread_id,
             user_id=user_identity,

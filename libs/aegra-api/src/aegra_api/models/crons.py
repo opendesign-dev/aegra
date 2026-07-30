@@ -57,6 +57,11 @@ def _validate_payload_size(model: BaseModel) -> None:
 class CronCreate(BaseModel):
     """Request body for creating a cron job (stateless or thread-bound)."""
 
+    cron_id: str | None = Field(
+        default=None,
+        max_length=_STR_FIELD_MAX_LEN,
+        description="Client-supplied id for idempotent creation. Generated when omitted; 409 if taken.",
+    )
     assistant_id: str = Field(..., max_length=_STR_FIELD_MAX_LEN)
     schedule: str = Field(..., max_length=_SCHEDULE_MAX_LEN)
     input: dict[str, Any] | None = None

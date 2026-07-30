@@ -106,6 +106,32 @@ class TestCreateCron:
         assert "run_id" not in resp.json()
         mock_cron_service.create_cron.assert_called_once()
 
+    def test_forwards_client_supplied_cron_id(self, client, mock_cron_service: AsyncMock) -> None:
+        """A client id reaches the service so a caller can create idempotently.
+
+        Regression: the field did not exist, so pydantic dropped it and the caller's
+        id was silently replaced by a generated one.
+        """
+        mock_cron_service.create_cron.return_value = make_cron_row()
+
+        resp = client.post(
+            "/runs/crons",
+            json={"cron_id": "my-cron", "assistant_id": "asst-001", "schedule": "*/5 * * * *"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        request = mock_cron_service.create_cron.call_args.args[0]
+        assert request.cron_id == "my-cron"
+
+    def test_cron_id_is_optional(self, client, mock_cron_service: AsyncMock) -> None:
+        """Omitting it means "generate one" — the service sees None."""
+        mock_cron_service.create_cron.return_value = make_cron_row()
+
+        resp = client.post("/runs/crons", json={"assistant_id": "asst-001", "schedule": "*/5 * * * *"})
+
+        assert resp.status_code == 200, resp.text
+        assert mock_cron_service.create_cron.call_args.args[0].cron_id is None
+
     def test_passes_metadata(self, client, mock_cron_service: AsyncMock) -> None:
         mock_cron_service.create_cron.return_value = make_cron_row()
 
