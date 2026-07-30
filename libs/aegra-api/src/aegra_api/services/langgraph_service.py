@@ -310,29 +310,11 @@ class LangGraphService:
         user: User | BaseUser | None = None,
         context: dict[str, Any] | None = None,
     ) -> AsyncIterator[Pregel]:
-        """Get a graph instance for execution with checkpointer/store injected.
+        """Yield a per-request graph copy with checkpointer/store injected.
 
-        For factory graphs, the factory is invoked per-request with the
-        appropriate ``ServerRuntime`` and config. For static graphs, the cached
-        base graph is returned with checkpointer/store injected.
-
-        This is a context manager that yields a fresh graph copy per-request.
-        Thread-safe without locks since each request gets its own instance.
-
-        Usage::
-
-            async with langgraph_service.get_graph(
-                "react_agent",
-                config=run_config,
-                access_context="threads.create_run",
-                user=user,
-                context=context,
-            ) as graph:
-                async for event in graph.astream(input, config):
-                    ...
-
-        Raises:
-            ValueError: If *graph_id* not found or loading fails.
+        Factory graphs are invoked per request with a ``ServerRuntime``; static graphs reuse
+        the cached base. A fresh instance per request makes this thread-safe without locks.
+        Raises ValueError when *graph_id* is unknown or fails to load.
         """
         from aegra_api.core.database import db_manager
 
@@ -423,25 +405,11 @@ class LangGraphService:
         access_context: AccessContext = "assistants.read",
         user: User | BaseUser | None = None,
     ) -> Pregel:
-        """Get a graph instance for validation/schema extraction only.
+        """Return a graph for schema/structure introspection only.
 
-        For factory graphs, the factory is invoked with the given access context
-        (default ``assistants.read``) to produce a fresh graph. For static graphs,
-        returns the cached base graph.
-
-        Does NOT include checkpointer/store — use ``get_graph()`` for execution.
-
-        Args:
-            graph_id: The graph identifier from aegra.json.
-            config: Optional ``RunnableConfig`` dict (passed to factory).
-            access_context: Why the graph is being accessed (default: schema read).
-            user: The authenticated user (or ``None`` for anonymous access).
-
-        Returns:
-            Compiled ``Pregel`` graph (without checkpointer/store).
-
-        Raises:
-            ValueError: If *graph_id* not found or loading fails.
+        Carries **no** checkpointer or store — use ``get_graph()`` to execute. Factory graphs
+        are invoked with *access_context* (default ``assistants.read``); static ones reuse the
+        cache. Raises ValueError when *graph_id* is unknown or fails to load.
         """
         if graph_id in self._graph_factories:
             factory = self._graph_factories[graph_id]
@@ -466,28 +434,12 @@ class LangGraphService:
         return await self._get_base_graph(graph_id)
 
     async def _load_graph_from_file(self, graph_id: str, graph_info: dict[str, str]) -> Pregel | StateGraph | None:
-        """Load graph from filesystem.
+        """Load a graph export, resolving paths relative to the config file's directory.
 
-        Paths are resolved relative to the config file's directory.
-
-        For callable exports, the function inspects the signature to detect
-        factory patterns. 0-arg factories are called once at load time.
-        Config/runtime factories are registered in ``_graph_factories`` for
-        per-request invocation and ``None`` is returned — no default-args
-        call is made here, so factory graphs are never compiled with
-        ``user=None`` at startup.
-
-        Args:
-            graph_id: The graph identifier from aegra.json.
-            graph_info: Dict with ``file_path`` and ``export_name`` keys.
-
-        Returns:
-            A compiled ``Pregel`` or uncompiled ``StateGraph`` for static
-            graphs, or ``None`` for factory graphs (the factory is stored
-            in ``_graph_factories`` instead).
-
-        Raises:
-            ValueError: If the file or export is not found.
+        Callable exports are inspected for factory patterns: 0-arg factories run once here,
+        while config/runtime factories are registered in ``_graph_factories`` and ``None`` is
+        returned — never called with default args, so a factory graph is never compiled with
+        ``user=None`` at startup. Raises ValueError if the file or export is missing.
         """
         raw_path = graph_info["file_path"]
         file_path = Path(raw_path)
@@ -545,18 +497,11 @@ class LangGraphService:
         return graph
 
     async def _call_factory_with_defaults(self, fn: Callable, graph_id: str) -> Pregel | StateGraph:
-        """Call a factory with minimal args to get a base graph for schema extraction.
+        """Call a factory with minimal args for introspection — never on the execution path.
 
-        Intended **only** for introspection (schema extraction, graph
-        structure discovery) — never for the hot execution path. Uses
-        ``assistants.read`` access context and ``user=None``.
-
-        .. note::
-
-            ``build_server_runtime(user=None)`` may fall back to
-            ``get_auth_ctx()`` if called within an HTTP request context,
-            so the runtime may carry a real user. This is incidental,
-            not guaranteed — callers must not rely on it.
+        Uses ``assistants.read`` and ``user=None``. Note that ``build_server_runtime(user=None)``
+        may still pick up a real user via ``get_auth_ctx()`` inside a request; that is incidental
+        and callers must not rely on it.
         """
         empty_config: dict[str, Any] = {"configurable": {}}
         runtime = build_server_runtime(

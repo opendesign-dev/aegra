@@ -111,27 +111,10 @@ async def stream_graph_events(
     on_checkpoint: Callable[[CheckpointPayload | None], None] = lambda _: None,
     on_task_result: Callable[[TaskResultPayload], None] = lambda _: None,
 ) -> AnyStream:
-    """Stream events from a graph execution.
+    """Stream a graph execution as (mode, payload) tuples.
 
-    Handles both standard streaming (astream) and event-based streaming (astream_events)
-    depending on the graph type and requested stream modes. Automatically accumulates
-    message chunks and yields appropriate partial/complete events.
-
-    Args:
-        graph: The graph instance to execute
-        input_data: Input data for graph execution
-        config: RunnableConfig for execution
-        stream_mode: List of stream modes (e.g., ["messages", "values", "debug"])
-        context: Optional context dictionary
-        subgraphs: Whether to include subgraph namespaces in event types
-        output_keys: Optional output channel keys for astream
-        interrupt_before: Nodes to pause before (static HITL breakpoints)
-        interrupt_after: Nodes to pause after (static HITL breakpoints)
-        on_checkpoint: Callback invoked when checkpoint events are received
-        on_task_result: Callback invoked when task result events are received
-
-    Yields:
-        Tuples of (mode, payload) where mode is the stream mode and payload is the event data
+    Picks ``astream_events`` over ``astream`` for JS graphs and when "events" is requested;
+    accumulates message chunks into partial/complete events on the way out.
     """
     run_id = str(config.get("configurable", {}).get("run_id", uuid.uuid4()))
 
@@ -339,24 +322,10 @@ def _process_stream_event(
     on_checkpoint: Callable[[CheckpointPayload | None], None],
     on_task_result: Callable[[TaskResultPayload], None],
 ) -> list[tuple[str, Any]] | None:
-    """Process a single stream event and generate output events.
+    """Turn one raw stream event into the (mode, payload) tuples to emit, or None.
 
-    Handles message accumulation, debug events, and stream mode routing.
-    Used by both astream and astream_events execution paths.
-
-    Args:
-        mode: The stream mode (e.g., "messages", "values", "debug")
-        chunk: The event chunk data
-        namespace: Optional namespace for subgraph events
-        subgraphs: Whether subgraph namespaces should be included
-        stream_mode: List of requested stream modes
-        messages: Dictionary for accumulating message chunks by ID
-        only_interrupt_updates: Whether to filter non-interrupt updates
-        on_checkpoint: Callback for checkpoint events
-        on_task_result: Callback for task result events
-
-    Returns:
-        List of (mode, payload) tuples to yield, or None if nothing to yield
+    Shared by the astream and astream_events paths; handles message accumulation,
+    debug normalization, and stream-mode routing.
     """
     results: list[tuple[str, Any]] = []
 

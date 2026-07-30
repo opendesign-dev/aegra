@@ -248,15 +248,10 @@ def is_for_execution(access_context: AccessContext) -> bool:
 
 
 def coerce_context(context: dict[str, Any] | None, graph_id: str) -> Any:
-    """Coerce a raw context dict to the factory's declared context type ``T``.
+    """Coerce a raw context dict into the factory's declared ``ServerRuntime[T]`` type.
 
-    If the factory declared ``ServerRuntime[T]``, the raw dict is converted
-    to an instance of ``T``:
-    - Pydantic ``BaseModel`` → ``T.model_validate(context)``
-    - ``dataclass`` → ``T(**context)``
-
-    On failure (e.g., validation error or missing fields), logs a warning
-    and returns the raw dict for graceful degradation.
+    Pydantic models go through ``model_validate``, dataclasses through ``T(**context)``.
+    A validation failure logs a warning and returns the raw dict rather than failing the run.
     """
     if context is None:
         return None
@@ -302,23 +297,11 @@ def build_server_runtime(
     user: User | BaseUser | None = None,
     context: Any = None,
 ) -> ServerRuntime:
-    """Construct the appropriate ``ServerRuntime`` variant for the access context.
+    """Build the ``ServerRuntime`` variant that *access_context* calls for.
 
-    For ``threads.create_run``, returns an ``_ExecutionRuntime`` (which has
-    a ``context`` field populated with the coerced request context).
-    For all other contexts, returns a ``_ReadRuntime`` (no ``context`` field).
-
-    If *user* is ``None``, falls back to the current request's auth context.
-
-    Args:
-        access_context: Why the graph factory is being called.
-        store: The persistence store for the graph run.
-        user: The authenticated user, or ``None`` to auto-detect from auth context.
-        context: The (optionally coerced) request context for the factory.
-            Only used for ``_ExecutionRuntime``.
-
-    Returns:
-        A ``ServerRuntime`` instance (either ``_ExecutionRuntime`` or ``_ReadRuntime``).
+    ``threads.create_run`` gets an ``_ExecutionRuntime`` carrying the coerced request
+    context; every other context gets a ``_ReadRuntime``, which has no context field.
+    A ``None`` *user* falls back to the current request's auth context.
     """
     if user is None:
         auth_ctx = get_auth_ctx()

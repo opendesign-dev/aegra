@@ -85,18 +85,11 @@ auth_dependency = [Depends(require_auth)]
 
 
 def get_current_user(request: Request) -> User:
-    """Legacy: Extract current user from request context set by middleware or dependency.
+    """Legacy: read the user from ``request.scope["user"]``, raising 401 when absent.
 
-    This function reads from request.scope["user"] which is set by either:
-    - The new require_auth() dependency (preferred)
-    - The old AuthenticationMiddleware (for backward compatibility)
-
-    This function passes ALL fields from auth handlers through to the User model,
-    allowing custom auth handlers to return extra fields (e.g., subscription_tier,
-    team_id) that will be accessible on the User object.
-
-    Raises:
-        HTTPException: If user is not authenticated
+    Set by either ``require_auth()`` (preferred) or the older AuthenticationMiddleware.
+    Every field an auth handler returned is passed through to the User model, so custom
+    fields (``team_id``, ``subscription_tier``, ...) stay reachable on the object.
     """
     # Try reading from request.scope first (set by require_auth dependency)
     user = request.scope.get("user")
