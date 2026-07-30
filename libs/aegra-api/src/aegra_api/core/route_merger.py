@@ -15,13 +15,6 @@ def merge_lifespans(user_app: FastAPI, core_lifespan: Callable) -> FastAPI:
     Both lifespans will run, with core lifespan wrapping user lifespan.
     This ensures Aegra's initialization (database, services) happens before
     user initialization, and cleanup happens in reverse order.
-
-    Args:
-        user_app: User's FastAPI/Starlette application
-        core_lifespan: Aegra's core lifespan context manager
-
-    Returns:
-        Modified user_app with merged lifespan
     """
     user_lifespan = user_app.router.lifespan_context
 
@@ -52,13 +45,6 @@ def merge_exception_handlers(user_app: FastAPI, core_exception_handlers: dict[ty
 
     Core handlers are added only if user hasn't defined a handler for that exception type.
     User handlers take precedence.
-
-    Args:
-        user_app: User's FastAPI/Starlette application
-        core_exception_handlers: Aegra's core exception handlers
-
-    Returns:
-        Modified user_app with merged exception handlers
     """
     for exc_type, handler in core_exception_handlers.items():
         if exc_type not in user_app.exception_handlers:

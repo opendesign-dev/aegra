@@ -13,13 +13,7 @@ class BaseRunBroker(ABC):
 
     @abstractmethod
     async def put(self, event_id: str, payload: Any, *, resumable: bool = True) -> None:
-        """Publish an event to live subscribers and optionally store for replay.
-
-        Args:
-            event_id: Unique event identifier (format: {run_id}_event_{seq}).
-            payload: The event data (typically a tuple like ("values", {...})).
-            resumable: If True, store the event for replay on reconnect.
-        """
+        """Publish an event to live subscribers and optionally store for replay."""
 
     @abstractmethod
     def aiter(self) -> AsyncIterator[tuple[str, Any]]:
@@ -28,15 +22,7 @@ class BaseRunBroker(ABC):
 
     @abstractmethod
     async def replay(self, last_event_id: str | None) -> list[tuple[str, Any]]:
-        """Return stored events for replay on reconnect.
-
-        Args:
-            last_event_id: If provided, return events after this ID.
-                           If None, return all stored events.
-
-        Returns:
-            List of (event_id, payload) tuples in order.
-        """
+        """Return stored events for replay on reconnect."""
 
     @abstractmethod
     def mark_finished(self) -> None:

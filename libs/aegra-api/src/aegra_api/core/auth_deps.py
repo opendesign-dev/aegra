@@ -12,12 +12,6 @@ def _extract_user_data(user_obj: Any) -> dict[str, Any]:
     """Extract user data from various object types.
 
     Handles dict, objects with to_dict(), and objects with dict() methods.
-
-    Args:
-        user_obj: User object from authentication middleware
-
-    Returns:
-        Dictionary containing user data
     """
     if isinstance(user_obj, dict):
         return user_obj
@@ -33,14 +27,7 @@ def _extract_user_data(user_obj: Any) -> dict[str, Any]:
 
 
 def _to_user_model(user: Any) -> User:
-    """Convert auth result to User model.
-
-    Args:
-        user: User object from auth backend (LangGraphUser, dict, etc.)
-
-    Returns:
-        User model instance with all fields preserved
-    """
+    """Convert auth result to User model."""
     user_data = _extract_user_data(user)
 
     # Ensure identity exists
@@ -60,12 +47,6 @@ async def require_auth(request: Request) -> User:
 
     Replaces Starlette AuthenticationMiddleware by calling the auth backend directly.
     This allows FastAPI to properly track dependencies for OpenAPI generation.
-
-    Args:
-        request: FastAPI request object
-
-    Returns:
-        User object with authentication context including any extra fields
 
     Raises:
         HTTPException: If user is not authenticated
@@ -104,8 +85,7 @@ auth_dependency = [Depends(require_auth)]
 
 
 def get_current_user(request: Request) -> User:
-    """
-    Legacy: Extract current user from request context set by middleware or dependency.
+    """Legacy: Extract current user from request context set by middleware or dependency.
 
     This function reads from request.scope["user"] which is set by either:
     - The new require_auth() dependency (preferred)
@@ -114,12 +94,6 @@ def get_current_user(request: Request) -> User:
     This function passes ALL fields from auth handlers through to the User model,
     allowing custom auth handlers to return extra fields (e.g., subscription_tier,
     team_id) that will be accessible on the User object.
-
-    Args:
-        request: FastAPI request object
-
-    Returns:
-        User object with authentication context including any extra fields
 
     Raises:
         HTTPException: If user is not authenticated
@@ -140,27 +114,12 @@ def get_current_user(request: Request) -> User:
 
 
 def get_user_id(user: User = Depends(get_current_user)) -> str:
-    """
-    Helper dependency to get user ID safely.
-
-    Args:
-        user: User object from get_current_user dependency
-
-    Returns:
-        User identity string
-    """
+    """Helper dependency to get user ID safely."""
     return user.identity
 
 
 def require_permission(permission: str):
-    """
-    Create a dependency that requires a specific permission.
-
-    Args:
-        permission: Required permission string
-
-    Returns:
-        Dependency function that checks for the permission
+    """Create a dependency that requires a specific permission.
 
     Example:
         @app.get("/admin")

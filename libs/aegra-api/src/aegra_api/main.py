@@ -352,9 +352,6 @@ def _include_core_routers(app: FastAPI) -> None:
     Order matters only for health (no auth) going first; the rest are disjoint
     path sets. Thread state routes register before the thread record routes so
     ``/threads/{id}/state`` is never shadowed by a broader pattern.
-
-    Args:
-        app: FastAPI application instance
     """
     app.include_router(health_router)
     app.include_router(assistants_router)
@@ -397,11 +394,7 @@ def _instrument_fastapi(app: FastAPI) -> None:
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application.
-
-    Returns:
-        Configured FastAPI application instance
-    """
+    """Create and configure the FastAPI application."""
     http_config: HttpConfig | None = load_http_config()
     cors_config: CorsConfig | None = http_config.get("cors") if http_config else None
 

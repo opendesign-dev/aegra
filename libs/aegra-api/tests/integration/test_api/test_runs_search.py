@@ -228,3 +228,32 @@ class TestListRunsTimeWindow:
     def test_malformed_timestamp_returns_422(self) -> None:
         resp = _client([]).get("/threads/t-1/runs", params={"created_after": "yesterday"})
         assert resp.status_code == 422
+
+
+class TestRunSearchPagination:
+    """Same pagination contract as /assistants/search: total header, next when more."""
+
+    def test_total_header_is_always_set(self) -> None:
+        resp = _client([DummyRun("r1"), DummyRun("r2")]).post("/runs/search", json={})
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["X-Pagination-Total"] == "2"
+
+    def test_next_header_absent_on_the_last_page(self) -> None:
+        """offset+limit covers the total, so there is nothing to page to."""
+        resp = _client([DummyRun("r1")]).post("/runs/search", json={"limit": 20})
+        assert "X-Pagination-Next" not in resp.headers
+
+    def test_next_header_present_when_more_remain(self) -> None:
+        """The stub reports 3 matches while limit=1, so offset 1 is the next page."""
+        runs = [DummyRun("r1"), DummyRun("r2"), DummyRun("r3")]
+        resp = _client(runs).post("/runs/search", json={"limit": 1, "offset": 0})
+        assert resp.headers["X-Pagination-Total"] == "3"
+        assert resp.headers["X-Pagination-Next"] == "1"
+
+    def test_plural_filter_names_are_accepted(self) -> None:
+        """A batching client may send thread_ids/run_ids/statuses instead of the singular."""
+        resp = _client([DummyRun("r1")]).post(
+            "/runs/search",
+            json={"thread_ids": ["t1"], "run_ids": ["r1"], "statuses": ["success"]},
+        )
+        assert resp.status_code == 200, resp.text

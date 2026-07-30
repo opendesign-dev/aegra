@@ -42,11 +42,7 @@ class AuthContextWrapper:
         self.permissions = user.permissions or []
 
     def to_langgraph_context(self) -> LangGraphAuthContext:
-        """Convert to LangGraph AuthContext.
-
-        Returns:
-            AuthContext instance compatible with @auth.on handlers
-        """
+        """Convert to LangGraph AuthContext."""
         return LangGraphAuthContext(
             # BaseUser.__iter__ is declared unannotated in the SDK, so Pyright
             # infers `-> None` and rejects any real iterator — the SDK's own
@@ -62,42 +58,18 @@ async def handle_event(
     ctx: AuthContextWrapper | None,
     value: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Call the appropriate @auth.on.* handler for authorization.
+    """Call the most specific ``@auth.on.*`` handler and interpret its result.
 
-    This function resolves the most specific handler for the given resource
-    and action, calls it with the auth context and value, and interprets
-    the result.
+    **Default-allow**: no auth configured, no matching handler, or a None/True return
+    all allow the request. Only ``False`` or a raised exception denies — so raw Aegra
+    works out of the box, and a tenant-scoped deployment must register a handler
+    (see GHSA-m98r-6667-4wq7). A dict return is a query filter; ``value`` may be
+    mutated in place to inject metadata.
 
-    **Default Behavior (Non-Interruptive):**
-    - If no auth is configured → allows by default (returns None)
-    - If no handlers are defined → allows by default (returns None)
-    - If handler returns None/True → allows (returns None)
-    - If handler returns dict → allows with filters applied (returns dict)
-    - **Only interrupts if handler returns False or raises exception**
+    Resolution order: (resource, action) → (resource, "*") → ("*", action) → ("*", "*").
 
-    This ensures that developers using raw Aegra without custom authorization
-    handlers will have a working system out-of-the-box. Handlers are purely
-    additive - they can inject metadata, apply filters, or deny access, but
-    they don't interrupt the flow unless explicitly configured to do so.
-
-    Handler resolution priority (most specific first):
-    1. Resource+action specific (e.g., "threads", "create")
-    2. Resource-specific (e.g., "threads", "*")
-    3. Action-specific (e.g., "*", "create")
-    4. Global handler ("*", "*")
-
-    Args:
-        ctx: Auth context wrapper with user, resource, and action
-        value: The data being authorized (request body, search filters, etc.)
-               This dict may be modified by the handler (e.g., injecting metadata)
-
-    Returns:
-        None: Request allowed, no filters to apply
-        dict: Filter dict to apply to queries (e.g., {"user_id": "123"})
-
-    Raises:
-        HTTPException(403): If handler returns False or raises AssertionError
-        HTTPException(500): If handler raises unexpected exception or returns invalid type
+    Raises HTTPException 403 on deny (False / AssertionError), 500 on an unexpected
+    exception or an invalid return type.
     """
     if ctx is None:
         # No auth context means no authorization check needed
@@ -214,32 +186,7 @@ def build_auth_context(
     resource: str,
     action: str,
 ) -> AuthContextWrapper:
-    """Build AuthContextWrapper from user and operation info.
-
-    This is a convenience function to create an AuthContextWrapper with
-    the correct resource and action for a given operation.
-
-    Args:
-        user: Authenticated user from require_auth dependency
-        resource: Resource being accessed (e.g., "threads", "assistants")
-        action: Action being performed (e.g., "create", "read", "update")
-
-    Returns:
-        AuthContextWrapper instance ready to pass to handle_event()
-
-    Example:
-        ```python
-        @router.post("/threads")
-        async def create_thread(
-            request: ThreadCreate,
-            user: User = Depends(require_auth),
-        ):
-            ctx = build_auth_context(user, "threads", "create")
-            value = request.model_dump()
-            filters = await handle_event(ctx, value)
-            # Use filters or modified value...
-        ```
-    """
+    """Wrap *user* with the resource/action pair that ``handle_event`` dispatches on."""
     return AuthContextWrapper(
         user=user,
         resource=resource,

@@ -34,9 +34,6 @@ def find_alembic_ini() -> Path:
     this module, so CWD is irrelevant — including Docker, where the package
     branch wins regardless of workdir.
 
-    Returns:
-        Absolute path to alembic.ini
-
     Raises:
         FileNotFoundError: If alembic.ini cannot be found
     """
@@ -64,9 +61,6 @@ def get_alembic_config() -> Config:
     Works in both development (repo) and production (pip install) environments.
     Resolves relative script_location to absolute path so migrations work
     regardless of CWD.
-
-    Returns:
-        Configured Alembic Config object
     """
     ini_path = find_alembic_ini()
     cfg = Config(str(ini_path))

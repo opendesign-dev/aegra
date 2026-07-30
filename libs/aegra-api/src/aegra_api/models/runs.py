@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Literal, Self
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -214,22 +215,32 @@ class RunSearchRequest(BaseModel):
     caller's identity and permissions.
     """
 
+    # Each id/status filter takes a scalar or a list, under either its singular or
+    # plural name — clients that batch naturally reach for the plural. The singular
+    # is canonical: it is what OpenAPI advertises and what the SDK sends.
     assistant_id: str | list[str] | None = Field(
         default=None,
+        validation_alias=AliasChoices("assistant_id", "assistant_ids"),
         description=(
             "Assistant(s) that executed the run. Accepts one id or a list; a graph id "
-            "resolves to its canonical assistant id."
+            "resolves to its canonical assistant id. Alias: assistant_ids."
         ),
     )
-    thread_id: str | list[str] | None = Field(default=None, description="Restrict to one thread or any of several.")
+    thread_id: str | list[str] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("thread_id", "thread_ids"),
+        description="Restrict to one thread or any of several. Alias: thread_ids.",
+    )
     ids: list[str] | None = Field(
         default=None,
         min_length=1,
-        description="Match any of these run ids. Use to fetch a known batch in one call.",
+        validation_alias=AliasChoices("ids", "run_ids", "run_id"),
+        description="Match any of these run ids. Use to fetch a known batch in one call. Aliases: run_ids, run_id.",
     )
     status: str | list[str] | None = Field(
         default=None,
-        description="Run status(es): pending, running, success, error, timeout, interrupted.",
+        validation_alias=AliasChoices("status", "statuses"),
+        description="Run status(es): pending, running, success, error, timeout, interrupted. Alias: statuses.",
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Metadata filters (JSONB containment).")
     created_after: UtcDatetime | None = Field(

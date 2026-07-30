@@ -331,18 +331,6 @@ class LangGraphService:
                 async for event in graph.astream(input, config):
                     ...
 
-        Args:
-            graph_id: The graph identifier from aegra.json.
-            config: The ``RunnableConfig`` dict for this request.
-            access_context: Why the graph is being accessed.
-            user: The authenticated user (or ``None`` for anonymous access).
-            context: The raw request context dict. For factories with
-                ``ServerRuntime[T]``, this is coerced to ``T`` and passed
-                to ``_ExecutionRuntime.context``.
-
-        Yields:
-            Compiled ``Pregel`` graph with Postgres checkpointer/store attached.
-
         Raises:
             ValueError: If *graph_id* not found or loading fails.
         """
@@ -569,13 +557,6 @@ class LangGraphService:
             ``get_auth_ctx()`` if called within an HTTP request context,
             so the runtime may carry a real user. This is incidental,
             not guaranteed — callers must not rely on it.
-
-        Args:
-            fn: The factory callable.
-            graph_id: The graph identifier.
-
-        Returns:
-            A compiled ``Pregel`` or uncompiled ``StateGraph``.
         """
         empty_config: dict[str, Any] = {"configurable": {}}
         runtime = build_server_runtime(
@@ -607,9 +588,6 @@ class LangGraphService:
         which re-discovers and re-classifies the factory, then retries via
         the factory path — so callers do not need to re-run
         ``_load_all_graph_modules`` after invalidation.
-
-        Args:
-            graph_id: Specific graph to invalidate, or ``None`` to clear all.
         """
         if graph_id:
             self._base_graph_cache.pop(graph_id, None)
@@ -638,11 +616,7 @@ class LangGraphService:
         return self.config.get("dependencies", [])
 
     def get_http_config(self) -> dict[str, Any] | None:
-        """Get HTTP configuration from loaded config file.
-
-        Returns:
-            HTTP configuration dict or None if not configured
-        """
+        """Get HTTP configuration from loaded config file."""
         if self.config is None:
             return None
         return self.config.get("http")
@@ -666,13 +640,6 @@ def inject_user_context(user: Any | None, base_config: dict[str, Any] | None = N
     Passes ALL user fields (including custom auth handler fields like
     subscription_tier, team_id, etc.) to the graph config under
     'langgraph_auth_user'.
-
-    Args:
-        user: User object with identity and optional extra fields
-        base_config: Base configuration to extend
-
-    Returns:
-        Configuration dict with user context injected
     """
     config: dict[str, Any] = (base_config or {}).copy()
     config["configurable"] = config.get("configurable", {})

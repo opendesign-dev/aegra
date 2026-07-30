@@ -187,3 +187,30 @@ class TestRunProjection:
 
     def test_kwargs_absent_when_not_selected(self) -> None:
         assert "kwargs" not in project_runs([self._run()], ["run_id"])[0]
+
+
+class TestPluralAliases:
+    """Batching clients reach for the plural; both spellings hit the same field."""
+
+    @pytest.mark.parametrize(
+        "payload, field, expected",
+        [
+            ({"thread_id": "t1"}, "thread_id", "t1"),
+            ({"thread_ids": ["t1", "t2"]}, "thread_id", ["t1", "t2"]),
+            ({"assistant_id": "a1"}, "assistant_id", "a1"),
+            ({"assistant_ids": ["a1"]}, "assistant_id", ["a1"]),
+            ({"ids": ["r1"]}, "ids", ["r1"]),
+            ({"run_ids": ["r1"]}, "ids", ["r1"]),
+            ({"run_id": ["r1"]}, "ids", ["r1"]),
+            ({"status": "success"}, "status", "success"),
+            ({"statuses": ["success", "error"]}, "status", ["success", "error"]),
+        ],
+    )
+    def test_alias_maps_to_canonical_field(self, payload: dict, field: str, expected: object) -> None:
+        assert getattr(RunSearchRequest(**payload), field) == expected
+
+    def test_openapi_advertises_only_the_singular(self) -> None:
+        """The plural is accepted, not documented: one canonical name on the wire."""
+        props = set(RunSearchRequest.model_json_schema()["properties"])
+        assert {"thread_id", "assistant_id", "ids", "status"} <= props
+        assert not props & {"thread_ids", "assistant_ids", "run_ids", "statuses"}

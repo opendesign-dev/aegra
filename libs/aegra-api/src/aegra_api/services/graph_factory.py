@@ -96,10 +96,6 @@ def classify_factory(fn: Callable, graph_id: str) -> None:
     Also extracts the ``T`` from ``ServerRuntime[T]`` annotations and stores
     it in ``_FACTORY_CONTEXT_TYPES`` so that ``coerce_context()`` can coerce
     the raw request context dict to ``T`` at invocation time.
-
-    Args:
-        fn: The callable graph export (factory function).
-        graph_id: The graph identifier from the configuration file.
     """
     if graph_id in _FACTORY_KWARGS:
         return
@@ -143,13 +139,7 @@ def _is_runtime_annotation(annotation: Any) -> bool:
 
 
 def _extract_context_type(annotation: Any) -> type | None:
-    """Extract ``T`` from a ``ServerRuntime[T]`` annotation.
-
-    Returns:
-        The context type ``T`` if the annotation is ``ServerRuntime[T]``
-        (including ``None | ServerRuntime[T]``), or ``None`` if the
-        annotation is plain ``ServerRuntime`` or not a runtime annotation.
-    """
+    """Extract ``T`` from a ``ServerRuntime[T]`` annotation."""
     if annotation is inspect.Parameter.empty or annotation is ServerRuntime:
         return None
 
@@ -267,13 +257,6 @@ def coerce_context(context: dict[str, Any] | None, graph_id: str) -> Any:
 
     On failure (e.g., validation error or missing fields), logs a warning
     and returns the raw dict for graceful degradation.
-
-    Args:
-        context: The raw context dict from the request, or ``None``.
-        graph_id: The graph identifier (used to look up the context type).
-
-    Returns:
-        A coerced ``T`` instance, the raw dict, or ``None``.
     """
     if context is None:
         return None
@@ -366,18 +349,7 @@ def invoke_factory(
     config: _RunnableConfig,
     server_runtime: ServerRuntime,
 ) -> Any:
-    """Call a graph factory with the correct arguments based on its classification.
-
-    Args:
-        fn: The graph factory callable.
-        graph_id: The graph identifier (used to look up the dispatch hook).
-        config: The ``RunnableConfig`` dict for this request.
-        server_runtime: The ``ServerRuntime`` for this request.
-
-    Returns:
-        Whatever the factory returns (``Pregel``, ``StateGraph``, coroutine,
-        async context manager, etc.).
-    """
+    """Call a graph factory with the correct arguments based on its classification."""
     hook = _FACTORY_KWARGS.get(graph_id)
     if not hook:
         return fn()
@@ -400,13 +372,6 @@ async def generate_graph(value: Any, graph_id: str) -> AsyncIterator[Pregel | St
     - Sync context manager — ``with value as graph: yield graph``.
     - Coroutine — ``yield await value``.
     - Other — yield as-is (likely a ``StateGraph`` or ``Pregel``).
-
-    Args:
-        value: The raw return value from a graph factory or a static graph.
-        graph_id: The graph identifier (used for logging).
-
-    Yields:
-        A graph object (``Pregel`` or ``StateGraph``).
     """
     if isinstance(value, Pregel | StateGraph):
         yield value
@@ -432,11 +397,7 @@ async def generate_graph(value: Any, graph_id: str) -> AsyncIterator[Pregel | St
 
 
 def clear_factory_registry(graph_id: str | None = None) -> None:
-    """Remove factory dispatch hooks and context type registrations.
-
-    Args:
-        graph_id: Specific graph to clear, or ``None`` to clear all.
-    """
+    """Remove factory dispatch hooks and context type registrations."""
     if graph_id is not None:
         _FACTORY_KWARGS.pop(graph_id, None)
         _FACTORY_CONTEXT_TYPES.pop(graph_id, None)

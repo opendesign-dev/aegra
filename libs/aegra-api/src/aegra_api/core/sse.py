@@ -121,14 +121,7 @@ def format_sse_message(
     event_id: str | None = None,
     serializer: Callable[[Any], Any] | None = None,
 ) -> str:
-    """Format a message as Server-Sent Event following SSE standard
-
-    Args:
-        event: SSE event type
-        data: Data to serialize and send
-        event_id: Optional event ID
-        serializer: Optional custom serializer function
-    """
+    """Format a message as Server-Sent Event following SSE standard"""
     lines = []
 
     lines.append(f"event: {event}")
@@ -205,14 +198,6 @@ def create_error_event(error: str | dict[str, Any], event_id: str | None = None)
 
     Error format: {"error": str, "message": str}
     This format ensures compatibility with standard SSE error event consumers.
-
-    Args:
-        error: Either a simple error string, or a dict with structured error info.
-               Dict format: {"error": "ErrorType", "message": "detailed message"}
-        event_id: Optional SSE event ID for reconnection support.
-
-    Returns:
-        SSE-formatted error event string with standard error format.
     """
     if isinstance(error, dict):
         # Structured error format - standard format: {error: str, message: str}

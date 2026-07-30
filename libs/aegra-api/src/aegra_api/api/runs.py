@@ -613,15 +613,19 @@ async def cancel_run_endpoint(
 @router.post("/runs/search", response_model=None)
 async def search_runs(
     request: RunSearchRequest,
+    response: Response,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[Run] | list[dict[str, Any]]:
     """Search runs across every thread the caller owns.
 
     Filter by assistant, thread, run id, status, metadata, or a `created_after` /
-    `created_before` window; each filter takes a scalar or a list. Results are
-    paginated via `limit`/`offset`, ordered by `sort_by`/`sort_order` (default
-    `created_at` descending), and `select` projects fields.
+    `created_before` window; each filter takes a scalar or a list, under either its
+    singular or plural name. Results are paginated via `limit`/`offset`, ordered by
+    `sort_by`/`sort_order` (default `created_at` descending), and `select` projects
+    fields. The match total is returned in `X-Pagination-Total`, plus
+    `X-Pagination-Next` when more results exist — same contract as
+    `/assistants/search`.
 
     Callers holding `runs:search:all` search every user's runs instead — for
     platforms aggregating runs they don't own. Scope comes from the permission
@@ -630,16 +634,21 @@ async def search_runs(
     ctx = build_auth_context(user, "runs", "search")
     auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
 
+    where = build_run_filters(request, user, auth_filters)
+    total = await session.scalar(select(func.count()).select_from(RunORM).where(*where)) or 0
     sort_column = getattr(RunORM, request.sort_by) if request.sort_by else RunORM.created_at
     direction = sort_column.asc() if request.sort_order == "asc" else sort_column.desc()
     stmt = (
         select(RunORM)
-        .where(*build_run_filters(request, user, auth_filters))
+        .where(*where)
         # Secondary sort keeps offset pagination stable when the primary key ties.
         .order_by(direction, RunORM.run_id.asc())
         .offset(request.offset)
         .limit(request.limit)
     )
+    response.headers["X-Pagination-Total"] = str(total)
+    if request.offset + request.limit < total:
+        response.headers["X-Pagination-Next"] = str(request.offset + request.limit)
     runs = [Run.model_validate(row) for row in (await session.scalars(stmt)).all()]
     if not request.select:
         return runs
