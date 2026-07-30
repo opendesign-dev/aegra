@@ -1,6 +1,7 @@
 """Unit tests for thread_state materialization (gate + values-hash skip)."""
 
 import importlib.util
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -64,8 +65,11 @@ _SCHEMA_REVISION = "d1f7b3a9c5e2"
 
 
 def _schema_migration() -> Path:
+    # Anchored to the line start: an unanchored match also hits the ``down_revision``
+    # of every migration later chained onto this one.
+    defines = re.compile(rf'^revision = "{_SCHEMA_REVISION}"', re.MULTILINE)
     versions = Path(__file__).resolve().parents[3] / "alembic" / "versions"
-    matches = [p for p in versions.glob("*.py") if f'revision = "{_SCHEMA_REVISION}"' in p.read_text(encoding="utf-8")]
+    matches = [p for p in versions.glob("*.py") if defines.search(p.read_text(encoding="utf-8"))]
     assert len(matches) == 1, f"expected exactly one file defining {_SCHEMA_REVISION}, found {matches}"
     return matches[0]
 

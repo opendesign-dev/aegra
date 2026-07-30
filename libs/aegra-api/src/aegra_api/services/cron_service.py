@@ -515,7 +515,9 @@ class CronService:
             return
 
         values = self._settle_values(failed=failed, now=now)
-        values["next_run_date"] = _compute_next_run(cron.schedule, now=now, timezone=(cron.payload or {}).get("timezone"))
+        values["next_run_date"] = _compute_next_run(
+            cron.schedule, now=now, timezone=(cron.payload or {}).get("timezone")
+        )
         await self._settle(cron_id, values, failed=failed)
 
     async def release_claim(self, cron_id: str, *, failed: bool = False) -> None:
