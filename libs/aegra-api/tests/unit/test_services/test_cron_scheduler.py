@@ -4,6 +4,7 @@ All external dependencies (database, run preparation) are mocked.
 """
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -595,11 +596,32 @@ class TestApprovalHold:
 
     @staticmethod
     def _session(thread_status: str | None, waited_seconds: float | None = None) -> AsyncMock:
-        """Two scalar() reads: the thread's status, then when its run paused."""
+        """Two scalar() reads: the thread's status, then when its newest run paused.
+
+        Each statement is recorded in ``session.queries`` so the predicates themselves
+        can be asserted — with the reads mocked, the SQL is the only place the
+        cancel/pause distinction is visible.
+        """
         paused_at = None if waited_seconds is None else datetime.now(UTC) - timedelta(seconds=waited_seconds)
+        reads = [thread_status, paused_at]
         session = AsyncMock()
-        session.scalar = AsyncMock(side_effect=[thread_status, paused_at])
+        session.queries = []
+
+        def scalar(stmt: Any) -> Any:
+            session.queries.append(str(stmt))
+            return reads.pop(0)
+
+        session.scalar = AsyncMock(side_effect=scalar)
         return session
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _settings(timeout: int) -> Any:
+        """Patch cron settings; the poll interval gates the hold's log level."""
+        with patch("aegra_api.services.cron_scheduler.settings") as cfg:
+            cfg.cron.CRON_APPROVAL_TIMEOUT_SECONDS = timeout
+            cfg.cron.CRON_POLL_INTERVAL_SECONDS = 60
+            yield cfg
 
     @pytest.mark.asyncio
     async def test_stateless_cron_is_never_held(self) -> None:
@@ -609,7 +631,7 @@ class TestApprovalHold:
 
     @pytest.mark.asyncio
     async def test_idle_thread_is_not_held(self) -> None:
-        """A user cancel leaves the thread idle; only a HITL pause marks it interrupted."""
+        """A cancel leaves the thread idle; only a HITL pause marks it interrupted."""
         cron = _make_cron_orm(thread_id="t1")
         assert await _hold_for_approval(self._session("idle"), cron) is False
 
@@ -618,24 +640,39 @@ class TestApprovalHold:
         """Firing anyway would advance the checkpoint out from under the approver."""
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 60)
-        with patch("aegra_api.services.cron_scheduler.settings") as cfg:
-            cfg.cron.CRON_APPROVAL_TIMEOUT_SECONDS = 86_400
+        with self._settings(86_400):
             assert await _hold_for_approval(session, cron) is True
         session.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_cancelled_runs_are_excluded_from_the_wait(self) -> None:
+        """A cancel also settles as ``interrupted``. If cancelled runs counted, one old
+        cancel would make the wait look days long and fail the approval that just
+        paused — and get rewritten with APPROVAL_TIMEOUT_REASON itself."""
+        cron = _make_cron_orm(thread_id="t1")
+        session = self._session("interrupted", 60)
+        with self._settings(86_400):
+            await _hold_for_approval(session, cron)
+        paused_query = session.queries[1]
+        assert "cancel_requested" in paused_query
+        # Newest pause, not oldest: earlier rows are prior cycles already abandoned.
+        assert "max(" in paused_query
+
+    @pytest.mark.asyncio
     async def test_stale_approval_is_failed_and_released(self) -> None:
-        """Past the timeout the run is failed with a reason so the schedule resumes."""
+        """Past the timeout the run is failed with a reason so the schedule is released."""
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 100_000)
-        with patch("aegra_api.services.cron_scheduler.settings") as cfg:
-            cfg.cron.CRON_APPROVAL_TIMEOUT_SECONDS = 86_400
+        with self._settings(86_400):
             assert await _hold_for_approval(session, cron) is False
         # One UPDATE fails the runs, one releases the thread.
         assert session.execute.await_count == 2
         session.commit.assert_awaited_once()
         stamped = str(session.execute.await_args_list[0].args[0])
         assert "error_message" in stamped
+        # Same predicate as the clock: a cancelled run must not be relabelled as a
+        # timed-out approval.
+        assert "cancel_requested" in stamped
 
     @pytest.mark.asyncio
     async def test_no_paused_run_is_not_held(self) -> None:
@@ -648,6 +685,17 @@ class TestApprovalHold:
         """0 opts out of the timeout: the hold never expires on its own."""
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 10_000_000)
-        with patch("aegra_api.services.cron_scheduler.settings") as cfg:
-            cfg.cron.CRON_APPROVAL_TIMEOUT_SECONDS = 0
+        with self._settings(0):
             assert await _hold_for_approval(session, cron) is True
+
+    @pytest.mark.asyncio
+    async def test_ongoing_hold_stops_logging_at_info(self) -> None:
+        """A hold is re-checked every tick; INFO only on the first tick that sees it,
+        else a day-long wait buys ~1.4k identical lines per cron."""
+        cron = _make_cron_orm(thread_id="t1")
+        with patch("aegra_api.services.cron_scheduler.logger") as log, self._settings(86_400):
+            await _hold_for_approval(self._session("interrupted", 5), cron)
+            assert log.info.called and not log.debug.called
+            log.reset_mock()
+            await _hold_for_approval(self._session("interrupted", 3_600), cron)
+            assert log.debug.called and not log.info.called

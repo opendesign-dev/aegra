@@ -82,13 +82,15 @@ APPROVAL_TIMEOUT_REASON = "Approval timed out: no human decision within CRON_APP
 async def _hold_for_approval(session: AsyncSession, cron: CronORM) -> bool:
     """Whether this firing must be held because the thread is awaiting a decision.
 
-    A HITL pause sets ``thread.status = 'interrupted'`` (a user cancel leaves it
-    ``idle``), so that is the signal. Firing anyway would append input and advance
-    the checkpoint, discarding the very context the approver is looking at.
+    A HITL pause sets ``thread.status = 'interrupted'`` (a cancel leaves it ``idle``),
+    so that is the signal. Firing anyway would append input and advance the
+    checkpoint, discarding the very context the approver is looking at.
 
     Once the wait exceeds ``CRON_APPROVAL_TIMEOUT_SECONDS`` the pending runs are
     failed with :data:`APPROVAL_TIMEOUT_REASON` and the thread is released, so an
-    unattended approval cannot stop the schedule forever. Returns False then.
+    unattended approval cannot stop the schedule forever. Returns False then. The
+    checkpoint still holds the interrupt, so the next firing re-runs the paused node
+    and asks again — the schedule ticks on, the work still waits for a decision.
     """
     if cron.thread_id is None:
         return False
@@ -96,11 +98,24 @@ async def _hold_for_approval(session: AsyncSession, cron: CronORM) -> bool:
     if await session.scalar(select(ThreadORM.status).where(*owned)) != "interrupted":
         return False
 
-    # Clock from when the run paused, not thread.updated_at: any later touch of the
-    # thread (a metadata patch, a state refresh) would reset that and push the
-    # timeout out indefinitely.
-    paused = (RunORM.thread_id == cron.thread_id, RunORM.user_id == cron.user_id, RunORM.status == "interrupted")
-    paused_at = await session.scalar(select(func.min(RunORM.updated_at)).where(*paused))
+    # ``run.status = 'interrupted'`` is also how a *cancel* settles (see
+    # api.runs.update_run_status / run_executor's cancel path), so cancel_requested
+    # is what separates "paused for a human" from "someone stopped it". Without that
+    # filter one old cancelled run makes the wait look days long and the approval that
+    # just paused is failed on the first tick — and the cancel records get rewritten
+    # with APPROVAL_TIMEOUT_REASON.
+    paused = (
+        RunORM.thread_id == cron.thread_id,
+        RunORM.user_id == cron.user_id,
+        RunORM.status == "interrupted",
+        RunORM.cancel_requested.is_(False),
+    )
+    # Clock from the newest pause, not thread.updated_at: any later touch of the thread
+    # (a metadata patch, a state refresh) would reset that and push the timeout out
+    # indefinitely. Newest rather than oldest because the thread is interrupted *now*,
+    # so it is the latest pause the approver is looking at; earlier rows are prior
+    # cycles already abandoned by a re-fire.
+    paused_at = await session.scalar(select(func.max(RunORM.updated_at)).where(*paused))
     if paused_at is None:
         return False
 
@@ -108,7 +123,10 @@ async def _hold_for_approval(session: AsyncSession, cron: CronORM) -> bool:
     timeout = settings.cron.CRON_APPROVAL_TIMEOUT_SECONDS
     waited = (now - paused_at).total_seconds()
     if timeout <= 0 or waited < timeout:
-        logger.info(
+        # A hold is re-evaluated every tick, so INFO only on the first tick that sees
+        # it; a day-long wait would otherwise buy ~1.4k identical lines per cron.
+        log = logger.info if waited < settings.cron.CRON_POLL_INTERVAL_SECONDS else logger.debug
+        log(
             "Holding cron firing while thread awaits approval",
             cron_id=cron.cron_id,
             thread_id=cron.thread_id,
