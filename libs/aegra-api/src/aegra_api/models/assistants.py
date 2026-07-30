@@ -24,8 +24,10 @@ class AssistantCreate(BaseModel):
         description="Human-readable assistant name (auto-generated if not provided)",
     )
     description: str | None = Field(default=None, description="Assistant description")
-    config: dict[str, Any] | None = Field(default_factory=dict, description="Assistant configuration")
-    context: dict[str, Any] | None = Field(default_factory=dict, description="Assistant context")
+    # Not optional: create dereferences both, and default_factory already means
+    # "absent == empty". An explicit null now 422s instead of 500ing downstream.
+    config: dict[str, Any] = Field(default_factory=dict, description="Assistant configuration")
+    context: dict[str, Any] = Field(default_factory=dict, description="Assistant context")
     graph_id: str = Field(..., description="LangGraph graph ID from aegra.json")
     metadata: dict[str, Any] | None = Field(
         default_factory=dict, description="Metadata to use for searching and filtering assistants."
@@ -58,20 +60,27 @@ class Assistant(BaseModel):
 
 
 class AssistantUpdate(BaseModel):
-    """Request model for updating assistants — every field is an optional patch."""
+    """Request model for updating assistants — every field is an optional patch.
+
+    Every default is ``None``, never ``{}``: the service distinguishes "omitted"
+    (keep the stored value) from an explicit empty object (clear it). A dict
+    default would collapse the two and silently wipe config on any partial update.
+    """
 
     name: str | None = Field(default=None, description="The name of the assistant (auto-generated if not provided)")
     description: str | None = Field(default=None, description="The description of the assistant. Defaults to null.")
-    config: dict[str, Any] | None = Field(default_factory=dict, description="Configuration to use for the graph.")
+    config: dict[str, Any] | None = Field(
+        default=None, description="Configuration to use for the graph. Omit to keep the current one."
+    )
     graph_id: str | None = Field(
         default=None, description="The ID of the graph. Omit to keep the assistant's current graph."
     )
     context: dict[str, Any] | None = Field(
-        default_factory=dict,
-        description="The context to use for the graph. Useful when graph is configurable.",
+        default=None,
+        description="The context to use for the graph. Omit to keep the current one.",
     )
     metadata: dict[str, Any] | None = Field(
-        default_factory=dict, description="Metadata to use for searching and filtering assistants."
+        default=None, description="Metadata for searching and filtering. Omit to keep the current one."
     )
 
 

@@ -15,10 +15,13 @@ from croniter import croniter
 from fastapi import Depends, HTTPException
 from sqlalchemy import CursorResult, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
+from aegra_api.core.auth_filters import CRONS_SEARCH_ALL, build_metadata_filter, build_visibility_filters
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Cron as CronORM
 from aegra_api.core.orm import get_session
+from aegra_api.models.auth import User
 from aegra_api.models.crons import (
     CronCountRequest,
     CronCreate,
@@ -343,11 +346,15 @@ class CronService:
             timezone = existing_payload.get("timezone")
             values["next_run_date"] = _compute_next_run(schedule, timezone=timezone)
 
-        result: CursorResult[Any] = await self.session.execute(
-            update(CronORM).where(CronORM.cron_id == cron_id, CronORM.user_id == user_identity).values(**values)
+        # SQLAlchemy's execute() stub returns Result for every statement kind, but a
+        # DML statement yields a CursorResult at runtime — the only shape carrying
+        # ``.rowcount``. The stub cannot express that, hence the cast.
+        result = cast(
+            "CursorResult[Any]",
+            await self.session.execute(
+                update(CronORM).where(CronORM.cron_id == cron_id, CronORM.user_id == user_identity).values(**values)
+            ),
         )
-        # DML execute() returns CursorResult; the explicit annotation makes
-        # ``.rowcount`` reachable without a type: ignore.
         if result.rowcount == 0:
             raise HTTPException(404, f"Cron '{cron_id}' not found")
         await self.session.commit()
@@ -368,23 +375,39 @@ class CronService:
         await self.session.commit()
         logger.info("Deleted cron job", cron_id=cron_id)
 
+    def _build_cron_filters(
+        self,
+        request: CronSearchRequest | CronCountRequest,
+        user: User,
+        auth_filters: dict[str, Any] | None,
+    ) -> list[ColumnElement[bool]]:
+        """Shared WHERE predicates for /runs/crons/search and /runs/crons/count.
+
+        A count that filtered differently from the search it paginates would be a
+        silent correctness bug, so the clause is built once.
+        """
+        where: list[ColumnElement[bool]] = build_visibility_filters(CronORM.user_id, user, CRONS_SEARCH_ALL)
+        if request.assistant_id is not None:
+            where.append(CronORM.assistant_id == self._resolve_assistant_identifier(request.assistant_id))
+        if request.thread_id is not None:
+            where.append(CronORM.thread_id == request.thread_id)
+        if request.enabled is not None:
+            where.append(CronORM.enabled == request.enabled)
+        if request.metadata:
+            where.append(CronORM.metadata_dict.op("@>")(request.metadata))
+        auth_filter = build_metadata_filter(CronORM.metadata_dict, auth_filters)
+        if auth_filter is not None:
+            where.append(auth_filter)
+        return where
+
     async def search_crons(
         self,
         request: CronSearchRequest,
-        user_identity: str,
+        user: User,
+        auth_filters: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Search cron jobs with filters, pagination, sorting, and field selection."""
-        stmt = select(CronORM).where(CronORM.user_id == user_identity)
-
-        if request.assistant_id is not None:
-            resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)
-            stmt = stmt.where(CronORM.assistant_id == resolved_assistant_id)
-        if request.thread_id is not None:
-            stmt = stmt.where(CronORM.thread_id == request.thread_id)
-        if request.enabled is not None:
-            stmt = stmt.where(CronORM.enabled == request.enabled)
-        if request.metadata:
-            stmt = stmt.where(CronORM.metadata_dict.op("@>")(request.metadata))
+        stmt = select(CronORM).where(*self._build_cron_filters(request, user, auth_filters))
 
         # sort_by is Pydantic-validated against a Literal of CronORM columns,
         # so getattr cannot reach arbitrary attributes.
@@ -402,19 +425,11 @@ class CronService:
     async def count_crons(
         self,
         request: CronCountRequest,
-        user_identity: str,
+        user: User,
+        auth_filters: dict[str, Any] | None = None,
     ) -> int:
-        """Count cron jobs matching filters."""
-        stmt = select(func.count()).select_from(CronORM).where(CronORM.user_id == user_identity)
-
-        if request.assistant_id is not None:
-            resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)
-            stmt = stmt.where(CronORM.assistant_id == resolved_assistant_id)
-        if request.thread_id is not None:
-            stmt = stmt.where(CronORM.thread_id == request.thread_id)
-        if request.metadata:
-            stmt = stmt.where(CronORM.metadata_dict.op("@>")(request.metadata))
-
+        """Count cron jobs matching the same filters as the search endpoint."""
+        stmt = select(func.count()).select_from(CronORM).where(*self._build_cron_filters(request, user, auth_filters))
         total = await self.session.scalar(stmt)
         return total or 0
 

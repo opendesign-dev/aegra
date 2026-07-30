@@ -341,6 +341,57 @@ class TestCancelRun:
             mock_streaming.interrupt_run.assert_awaited_once_with("test-run-123")
 
 
+class TestCancelRunsBulk:
+    """Test POST /runs/cancel — the SDK's ``runs.cancel_many``."""
+
+    @staticmethod
+    def _client(rows: list) -> object:
+        app = create_test_app(include_runs=True, include_threads=False)
+
+        class Session(DummySessionBase):
+            async def scalars(self, _stmt):
+                class Result:
+                    def all(self):
+                        return rows
+
+                return Result()
+
+            async def execute(self, _stmt):
+                return None
+
+            async def commit(self):
+                return None
+
+        override_session_dependency(app, Session)
+        return make_client(app)
+
+    def test_empty_status_sweep_succeeds(self):
+        """`cancel_many(status=...)` is a set operation: nothing matching means done.
+
+        Regression: this 404'd, so an SDK caller clearing pending runs got an
+        exception precisely when there was nothing left to clear.
+        """
+        resp = self._client([]).post("/runs/cancel", json={"status": "pending"})
+        assert resp.status_code == 204, resp.text
+
+    def test_empty_status_sweep_succeeds_for_all(self):
+        resp = self._client([]).post("/runs/cancel", json={"status": "all"})
+        assert resp.status_code == 204, resp.text
+
+    def test_missing_named_run_ids_still_404(self):
+        """Naming run_ids that do not exist is a genuine miss, not an empty sweep."""
+        resp = self._client([]).post("/runs/cancel", json={"thread_id": "test-thread-123", "run_ids": ["nope"]})
+        assert resp.status_code == 404
+
+    def test_status_sweep_cancels_matches(self):
+        run = _run_row(status="pending")
+        with patch("aegra_api.api.runs.signal_cancel", new_callable=AsyncMock) as mock_signal:
+            resp = self._client([run]).post("/runs/cancel", json={"status": "pending"})
+        assert resp.status_code == 204, resp.text
+        mock_signal.assert_awaited_once()
+        assert mock_signal.await_args.args[1] == ["test-run-123"]
+
+
 class TestDeleteRun:
     """Test DELETE /threads/{thread_id}/runs/{run_id}"""
 

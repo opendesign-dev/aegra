@@ -7,11 +7,9 @@ that need cleanup after the underlying run finishes.
 import asyncio
 
 import structlog
-from redis import RedisError
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 
-from aegra_api.core.active_runs import active_runs
+from aegra_api.core.active_runs import TRANSPORT_ERRORS, active_runs, drain_task
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
@@ -24,9 +22,8 @@ logger = structlog.getLogger(__name__)
 # Strong refs so fire-and-forget cleanup tasks survive GC until done.
 background_cleanup_tasks: set[asyncio.Task[None]] = set()
 
-# Transient infra failures we tolerate during cleanup. Programmer errors
-# (TypeError, AttributeError, ...) propagate.
-CLEANUP_ERRORS: tuple[type[BaseException], ...] = (RedisError, SQLAlchemyError, OSError)
+# Alias kept for the name callers read at their catch sites; one definition.
+CLEANUP_ERRORS = TRANSPORT_ERRORS
 
 
 async def delete_thread_checkpoints(thread_id: str) -> None:
@@ -64,13 +61,7 @@ async def delete_thread_by_id(thread_id: str, user_id: str) -> None:
             task = active_runs.pop(run_id, None)
             if task and not task.done():
                 task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    # Expected: we just called task.cancel(). Nothing to log.
-                    pass
-                except CLEANUP_ERRORS:
-                    logger.exception("Error awaiting cancelled task during thread cleanup", run_id=run_id)
+                await drain_task(task, run_id)
 
         thread = await session.scalar(
             select(ThreadORM).where(

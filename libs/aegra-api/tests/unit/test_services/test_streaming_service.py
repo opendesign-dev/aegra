@@ -200,7 +200,7 @@ class TestStreamingService:
         with patch("aegra_api.services.streaming_service.broker_manager") as mock_manager:
             mock_manager.get_or_create_broker.return_value = mock_broker
             mock_manager.get_broker.return_value = mock_broker
-            service._convert_raw_to_sse = MagicMock(side_effect=["sse1", "sse2", "sse3", "sse4"])  # type: ignore[assignment]
+            service.event_converter.convert_raw_to_sse = MagicMock(side_effect=["sse1", "sse2", "sse3", "sse4"])  # type: ignore[assignment]
 
             events: list[str] = []
             async for event in service.stream_run_execution(run):
@@ -274,7 +274,7 @@ class TestStreamingService:
         with patch("aegra_api.services.streaming_service.broker_manager") as mock_manager:
             mock_manager.get_or_create_broker.return_value = mock_broker
             mock_manager.get_broker.return_value = mock_broker
-            service._convert_raw_to_sse = MagicMock(side_effect=["sse6", "sse7"])  # type: ignore[assignment]
+            service.event_converter.convert_raw_to_sse = MagicMock(side_effect=["sse6", "sse7"])  # type: ignore[assignment]
 
             events: list[str] = []
             async for event in service.stream_run_execution(run, last_event_id="run-123_event_5"):
@@ -325,7 +325,7 @@ class TestStreamingService:
             mock_manager.get_or_create_broker.return_value = mock_broker
             mock_manager.get_broker.return_value = mock_broker
             # Only 4 convert calls expected (event_6 skipped in live)
-            service._convert_raw_to_sse = MagicMock(  # type: ignore[assignment]
+            service.event_converter.convert_raw_to_sse = MagicMock(  # type: ignore[assignment]
                 side_effect=["sse5", "sse6", "sse7", "sse8"]
             )
 
@@ -411,12 +411,12 @@ class TestStreamModeFilter:
             (None, None),
             ([], None),
             (["values"], frozenset({"values"})),
-            (["messages-tuple"], frozenset({"messages"})),
-            (["values", "messages-tuple", "messages"], frozenset({"values", "messages"})),
+            (["messages-tuple"], frozenset({"messages", "messages-tuple"})),
+            (["values", "messages-tuple", "messages"], frozenset({"values", "messages", "messages-tuple"})),
         ],
     )
     def test_normalize_stream_modes(self, modes: list[str] | None, expected: frozenset[str] | None) -> None:
-        """Empty/None mean "no filter"; messages-tuple is an alias for messages."""
+        """Empty/None mean "no filter"; messages-tuple admits both spellings."""
         assert normalize_stream_modes(modes) == expected
 
     @pytest.mark.asyncio

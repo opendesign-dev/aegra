@@ -28,7 +28,7 @@ class TestEventConverter:
             {"__interrupt__": [{"value": "approve?", "id": "int-1"}]},
         )
 
-        sse_event = event_converter.convert_raw_to_sse(event_id, raw_event)
+        sse_event = event_converter.convert_raw_to_sse(event_id, raw_event, None)
 
         assert sse_event is not None
         assert "event: values" in sse_event
@@ -40,7 +40,7 @@ class TestEventConverter:
         event_id = "test-456"
         raw_event = ("updates", {"status": "waiting"})
 
-        sse_event = event_converter.convert_raw_to_sse(event_id, raw_event)
+        sse_event = event_converter.convert_raw_to_sse(event_id, raw_event, None)
 
         assert sse_event is not None
         assert "event: updates" in sse_event

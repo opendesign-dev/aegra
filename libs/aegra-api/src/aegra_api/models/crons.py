@@ -176,4 +176,5 @@ class CronCountRequest(BaseModel):
 
     assistant_id: str | None = None
     thread_id: str | None = None
+    enabled: bool | None = None
     metadata: dict[str, Any] | None = None

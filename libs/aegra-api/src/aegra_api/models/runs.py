@@ -26,6 +26,9 @@ from aegra_api.utils.status_compat import validate_run_status
 # serialized-size cap to close the DoS surface; shape is unconstrained.
 _METADATA_MAX_BYTES = 64 * 1024
 
+# The stored columns the SDK's synthetic ``kwargs`` field is rebuilt from.
+_KWARGS_SOURCES = frozenset({"input", "config", "context", "multitask_strategy"})
+
 # Aegra-only: /runs/search has no SDK counterpart, so this set is ours to define.
 RunSortBy = Literal["run_id", "thread_id", "assistant_id", "status", "created_at", "updated_at"]
 
@@ -332,16 +335,16 @@ def project_runs(runs: Sequence[Run], fields: Collection[str]) -> list[dict[str,
     params under that key, so rebuild it from the ones Aegra stores separately.
     """
     wanted = set(fields)
+    # ``kwargs`` is assembled, not stored, so ask pydantic only for real columns —
+    # dumping the whole model would serialize `output` (never selectable) on every row.
+    columns = wanted & set(Run.model_fields)
+    if "kwargs" in wanted:
+        columns |= _KWARGS_SOURCES
     rows: list[dict[str, Any]] = []
     for run in runs:
-        dumped = run.model_dump(mode="json")
+        dumped = run.model_dump(mode="json", include=columns)
         if "kwargs" in wanted:
-            dumped["kwargs"] = {
-                "input": dumped["input"],
-                "config": dumped["config"],
-                "context": dumped["context"],
-                "multitask_strategy": dumped["multitask_strategy"],
-            }
+            dumped["kwargs"] = {field: dumped[field] for field in _KWARGS_SOURCES}
         rows.append({k: v for k, v in dumped.items() if k in wanted})
     return rows
 

@@ -27,7 +27,7 @@ from aegra_api.models.runs import RunsCancelRequest, project_runs
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.run_cancellation import rollback_runs, signal_cancel, wait_for_settle
 from aegra_api.services.run_preparation import prepare_run
-from aegra_api.services.run_search import SEARCH_ALL_USERS_PERMISSION, build_run_filters
+from aegra_api.services.run_search import build_run_filters
 from aegra_api.services.run_waiters import TERMINAL_STATES, encode_output, heartbeat_wait_body, wrap_run_result
 from aegra_api.services.streaming_service import normalize_stream_modes, streaming_service
 from aegra_api.settings import settings
@@ -623,10 +623,10 @@ async def search_runs(
     paginated via `limit`/`offset`, ordered by `sort_by`/`sort_order` (default
     `created_at` descending), and `select` projects fields.
 
-    Callers holding `runs:search:all` search every user's runs instead, narrowed
-    by `user_ids` — for platforms aggregating runs they don't own.
+    Callers holding `runs:search:all` search every user's runs instead — for
+    platforms aggregating runs they don't own. Scope comes from the permission
+    alone; no request field can widen it.
     """
-    cross_user = SEARCH_ALL_USERS_PERMISSION in user.permissions
     ctx = build_auth_context(user, "runs", "search")
     auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
 
@@ -634,7 +634,7 @@ async def search_runs(
     direction = sort_column.asc() if request.sort_order == "asc" else sort_column.desc()
     stmt = (
         select(RunORM)
-        .where(*build_run_filters(request, user, auth_filters, cross_user=cross_user))
+        .where(*build_run_filters(request, user, auth_filters))
         # Secondary sort keeps offset pagination stable when the primary key ties.
         .order_by(direction, RunORM.run_id.asc())
         .offset(request.offset)
@@ -653,11 +653,10 @@ async def count_runs(
     session: AsyncSession = Depends(get_session),
 ) -> int:
     """Count runs matching the same filters as `/runs/search`."""
-    cross_user = SEARCH_ALL_USERS_PERMISSION in user.permissions
     ctx = build_auth_context(user, "runs", "search")
     auth_filters = await handle_event(ctx, request.model_dump(exclude_none=True))
 
-    where = build_run_filters(request, user, auth_filters, cross_user=cross_user)
+    where = build_run_filters(request, user, auth_filters)
     stmt = select(func.count()).select_from(RunORM).where(*where)
     return await session.scalar(stmt) or 0
 
@@ -665,9 +664,8 @@ async def count_runs(
 @router.post("/runs/cancel", status_code=204)
 async def cancel_runs_bulk(
     request: RunsCancelRequest,
-    action: str = Query(
+    action: CancelAction = Query(
         "interrupt",
-        pattern="^(interrupt|rollback)$",
         description="'interrupt' marks runs interrupted; 'rollback' also deletes them and their checkpoints.",
     ),
     user: User = Depends(get_current_user),
@@ -675,7 +673,8 @@ async def cancel_runs_bulk(
 ) -> Response:
     """Bulk-cancel runs by status, or by thread_id + run_ids."""
     where = [RunORM.user_id == user.identity]
-    if request.status is not None:
+    by_status = request.status is not None
+    if by_status:
         statuses = ("pending", "running") if request.status == "all" else (request.status,)
         where.append(RunORM.status.in_(statuses))
     else:
@@ -683,6 +682,11 @@ async def cancel_runs_bulk(
         where.append(RunORM.run_id.in_(request.run_ids or []))
     rows = list((await session.scalars(select(RunORM).where(*where))).all())
     if not rows:
+        # A status sweep is a set operation: "nothing matched" means the caller's
+        # intent already holds, so it succeeds. Named run_ids that don't exist are
+        # a genuine 404.
+        if by_status:
+            return Response(status_code=204)
         raise HTTPException(404, "No runs found to cancel")
 
     run_ids = [row.run_id for row in rows]

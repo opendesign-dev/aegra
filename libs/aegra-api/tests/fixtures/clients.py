@@ -8,21 +8,23 @@ from aegra_api.core.health import router as health_router
 from aegra_api.models.auth import User
 
 
-def create_test_app(include_runs: bool = True, include_threads: bool = True) -> FastAPI:
+def create_test_app(
+    include_runs: bool = True,
+    include_threads: bool = True,
+    *,
+    permissions: list[str] | None = None,
+) -> FastAPI:
     """Build a FastAPI app with routers mounted and configured auth mocks.
 
     This setup automatically handles authentication overrides, ensuring that
-    tests run as 'test-user' without encountering 401 errors.
+    tests run as 'test-user' without encountering 401 errors. Pass ``permissions``
+    to exercise the ``<resource>:search:all`` scoping gates.
     """
     app = FastAPI()
 
-    # --- [CLEANUP] Middleware removed ---
-    # We no longer use middleware as it was creating an "anonymous" user.
-    # Instead, we use dependency_overrides below for precise control.
-    # ------------------------------------
-
-    # 1. Create a proper test user
-    mock_user = User(identity="test-user", display_name="Test User")
+    # Dependency overrides rather than middleware: the middleware path built an
+    # "anonymous" user, which defeats per-user scoping assertions.
+    mock_user = User(identity="test-user", display_name="Test User", permissions=permissions or [])
 
     # 2. Override dependencies
     # require_auth: allows access to protected routes

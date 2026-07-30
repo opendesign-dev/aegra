@@ -182,9 +182,9 @@ async def search_crons(
     """
     ctx = build_auth_context(user, "crons", "search")
     value = request.model_dump(exclude_none=True)
-    await handle_event(ctx, value)
+    auth_filters = await handle_event(ctx, value)
 
-    return await service.search_crons(request, user.identity)
+    return await service.search_crons(request, user, auth_filters)
 
 
 @router.post("/runs/crons/count")
@@ -196,6 +196,6 @@ async def count_crons(
     """Count cron jobs matching filters."""
     ctx = build_auth_context(user, "crons", "search")
     value = request.model_dump(exclude_none=True)
-    await handle_event(ctx, value)
+    auth_filters = await handle_event(ctx, value)
 
-    return await service.count_crons(request, user.identity)
+    return await service.count_crons(request, user, auth_filters)

@@ -12,9 +12,11 @@ import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from aegra_api.core.active_runs import active_runs, drain_task
 from aegra_api.core.auth_deps import auth_dependency, get_current_user
+from aegra_api.core.auth_filters import THREADS_SEARCH_ALL, build_metadata_filter, build_visibility_filters
 from aegra_api.core.auth_handlers import build_auth_context, handle_event
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
@@ -430,13 +432,15 @@ def _wants_state(request: ThreadSearchRequest) -> bool:
     return bool(request.select) and bool({"values", "interrupts"} & set(request.select))
 
 
-def _search_filters(request: ThreadSearchRequest, user: User) -> list[Any]:
+def _build_thread_filters(
+    request: ThreadSearchRequest, user: User, auth_filters: dict[str, Any] | None = None
+) -> list[Any]:
     """Shared WHERE predicates for /threads/search and /threads/count.
 
-    The ``values`` filter targets ``thread_state`` (the caller joins it when
-    ``_wants_state`` is true).
+    Scope comes from ``threads:search:all``; the ``values`` filter targets
+    ``thread_state`` (the caller joins it when ``_wants_state`` is true).
     """
-    where: list[Any] = [ThreadORM.user_id == user.identity]
+    where: list[ColumnElement[bool]] = build_visibility_filters(ThreadORM.user_id, user, THREADS_SEARCH_ALL)
     if request.status:
         where.append(ThreadORM.status == request.status)
     if request.metadata:
@@ -452,6 +456,12 @@ def _search_filters(request: ThreadSearchRequest, user: User) -> list[Any]:
         where.append(ThreadORM.created_at >= request.created_after)
     if request.created_before is not None:
         where.append(ThreadORM.created_at <= request.created_before)
+    # Compiled as its own predicate, not folded into request.metadata: the handler
+    # may return flat constraints or $or/$contains operators, which a plain dict
+    # merge would silently drop.
+    auth_filter = build_metadata_filter(ThreadORM.metadata_json, auth_filters)
+    if auth_filter is not None:
+        where.append(auth_filter)
     return where
 
 
@@ -462,7 +472,7 @@ async def search_threads(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[Thread] | list[dict[str, Any]]:
-    """Search threads with filters.
+    """Search threads with auth_filters.
 
     Filter by status, metadata, latest state values, or explicit ids. Results
     are paginated via `limit`/`offset`; `select` projects fields and `extract`
@@ -471,17 +481,8 @@ async def search_threads(
     # Authorization check
     ctx = build_auth_context(user, "threads", "search")
     value = request.model_dump()
-    filters = await handle_event(ctx, value)
+    auth_filters = await handle_event(ctx, value)
 
-    # Merge handler filters with request metadata
-    # Note: ThreadSearchRequest doesn't have a filters field,
-    # so we merge authorization filters into metadata if needed
-    if filters and "metadata" in filters:
-        # If filters contain metadata, merge with request metadata
-        handler_meta = filters["metadata"]
-        if isinstance(handler_meta, dict):
-            request.metadata = {**(request.metadata or {}), **handler_meta}
-        # Other filter types can be handled here if needed
     extract = validate_extract(request.extract) if request.extract else None
 
     # Only join thread_state when the query actually needs values (filter/projection);
@@ -491,10 +492,10 @@ async def search_threads(
         stmt = (
             select(ThreadORM, ThreadStateORM)
             .outerjoin(ThreadStateORM, ThreadStateORM.thread_id == ThreadORM.thread_id)
-            .where(*_search_filters(request, user))
+            .where(*_build_thread_filters(request, user, auth_filters))
         )
     else:
-        stmt = select(ThreadORM).where(*_search_filters(request, user))
+        stmt = select(ThreadORM).where(*_build_thread_filters(request, user, auth_filters))
     offset = request.offset or 0
     limit = request.limit or 20
     column, asc = _resolve_sort(request)
@@ -529,23 +530,19 @@ async def count_threads(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> int:
-    """Count threads matching the given filters.
+    """Count threads matching the given auth_filters.
 
-    Accepts the same filters as `/threads/search` (status, metadata, values,
+    Accepts the same auth_filters as `/threads/search` (status, metadata, values,
     ids) but returns only the total count.
     """
     ctx = build_auth_context(user, "threads", "search")
     value = request.model_dump()
-    filters = await handle_event(ctx, value)
-    if filters and "metadata" in filters:
-        handler_meta = filters["metadata"]
-        if isinstance(handler_meta, dict):
-            request.metadata = {**(request.metadata or {}), **handler_meta}
+    auth_filters = await handle_event(ctx, value)
 
     stmt = select(func.count()).select_from(ThreadORM)
     if request.values:  # values filter targets thread_state
         stmt = stmt.join(ThreadStateORM, ThreadStateORM.thread_id == ThreadORM.thread_id)
-    stmt = stmt.where(*_search_filters(request, user))
+    stmt = stmt.where(*_build_thread_filters(request, user, auth_filters))
     return await session.scalar(stmt) or 0
 
 

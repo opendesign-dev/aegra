@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
-from aegra_api.api.threads import _search_filters
+from aegra_api.api.threads import _build_thread_filters
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.models import ThreadSearchRequest, User
 
@@ -28,7 +28,7 @@ class Compiled:
 
 
 def _filters(request: ThreadSearchRequest) -> Compiled:
-    return Compiled(_search_filters(request, User(identity="user-1", display_name="User One")))
+    return Compiled(_build_thread_filters(request, User(identity="user-1", display_name="User One")))
 
 
 class TestThreadSearchTimeWindow:
@@ -74,3 +74,80 @@ class TestThreadSearchTimeWindow:
         assert "@>" in result
         assert "thread.created_at >= " in result
         assert result.bound("user-1")
+
+
+class TestThreadHandlerFilters:
+    """`@auth.on` filters are compiled, not merged into request.metadata.
+
+    Regression: search/count previously only looked for a ``{"metadata": {...}}``
+    envelope, so a handler returning flat constraints — or any ``$or`` /
+    ``$contains`` operator — had its authorization scope silently dropped.
+    """
+
+    def test_flat_handler_filter_is_applied(self) -> None:
+        result = Compiled(
+            _build_thread_filters(
+                ThreadSearchRequest(),
+                User(identity="user-1"),
+                {"team_id": "t1"},
+            )
+        )
+        assert "@>" in result
+        assert result.bound({"team_id": "t1"})
+
+    def test_metadata_envelope_still_applied(self) -> None:
+        """The historical envelope shape keeps working."""
+        result = Compiled(
+            _build_thread_filters(
+                ThreadSearchRequest(),
+                User(identity="user-1"),
+                {"metadata": {"team_id": "t1"}},
+            )
+        )
+        assert result.bound({"team_id": "t1"})
+
+    def test_handler_operator_is_compiled_not_dropped(self) -> None:
+        """A ``$contains`` operator would be meaningless as a dict merge."""
+        result = Compiled(
+            _build_thread_filters(
+                ThreadSearchRequest(),
+                User(identity="user-1"),
+                {"tags": {"$contains": "admin"}},
+            )
+        )
+        assert "@>" in result
+        assert result.bound(["admin"])
+
+    def test_handler_filter_does_not_replace_request_metadata(self) -> None:
+        """Both constraints survive: the caller's filter AND the handler's."""
+        result = Compiled(
+            _build_thread_filters(
+                ThreadSearchRequest(metadata={"env": "prod"}),
+                User(identity="user-1"),
+                {"team_id": "t1"},
+            )
+        )
+        assert result.bound({"env": "prod"})
+        assert result.bound({"team_id": "t1"})
+
+    def test_no_handler_filter_adds_nothing(self) -> None:
+        bare = Compiled(_build_thread_filters(ThreadSearchRequest(), User(identity="user-1"), None))
+        assert "@>" not in bare
+
+
+class TestThreadSearchScope:
+    """Owner scoping mirrors runs: permission-only, no request field."""
+
+    def test_scoped_to_caller_without_permission(self) -> None:
+        result = _filters(ThreadSearchRequest())
+        assert "thread.user_id = " in result
+        assert result.bound("user-1")
+
+    def test_permission_drops_ownership_predicate(self) -> None:
+        result = Compiled(
+            _build_thread_filters(
+                ThreadSearchRequest(),
+                User(identity="user-1", permissions=["threads:search:all"]),
+            )
+        )
+        assert "thread.user_id" not in result

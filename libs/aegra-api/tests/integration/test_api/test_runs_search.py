@@ -6,10 +6,6 @@ from unittest.mock import Mock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from aegra_api.core.auth_deps import get_current_user, require_auth
-from aegra_api.models import RunSearchRequest
-from aegra_api.models.auth import User
-from aegra_api.services.run_search import SEARCH_ALL_USERS_PERMISSION
 from tests.fixtures.clients import create_test_app, make_client
 from tests.fixtures.database import DummySessionBase
 from tests.fixtures.session_fixtures import override_session_dependency
@@ -49,11 +45,7 @@ def stub_graphs():
 
 
 def _client(runs: list[Any] | None = None, *, permissions: list[str] | None = None) -> TestClient:
-    app = create_test_app(include_runs=True, include_threads=False)
-    if permissions is not None:
-        user = User(identity="test-user", display_name="Test User", permissions=permissions)
-        app.dependency_overrides[require_auth] = lambda: user
-        app.dependency_overrides[get_current_user] = lambda: user
+    app = create_test_app(include_runs=True, include_threads=False, permissions=permissions)
     override_session_dependency(app, _session_with(runs or []))
     return make_client(app)
 
@@ -150,32 +142,6 @@ class TestSearchRunsListForms:
     def test_invalid_status_in_list_returns_422(self) -> None:
         resp = _client([]).post("/runs/search", json={"status": ["success", "not-a-status"]})
         assert resp.status_code == 422
-
-
-class TestSearchRunsScope:
-    """Scope is decided by permissions; no request field can widen it."""
-
-    def test_default_caller_is_scoped_to_itself(self) -> None:
-        resp = _client([DummyRun("run-1")], permissions=[]).post("/runs/search", json={})
-        assert resp.status_code == 200, resp.text
-
-    def test_permitted_caller_sees_the_deployment(self) -> None:
-        resp = _client([DummyRun("run-1")], permissions=[SEARCH_ALL_USERS_PERMISSION]).post("/runs/search", json={})
-        assert resp.status_code == 200, resp.text
-
-    def test_unknown_user_field_cannot_widen_scope(self) -> None:
-        """A client sending a user filter gets its own runs, not the deployment.
-
-        The field was removed rather than gated: with no way to express "other
-        users" in the request, an unpermitted caller cannot even ask.
-        """
-        assert "user_ids" not in RunSearchRequest.model_fields
-        resp = _client([DummyRun("run-1")], permissions=[]).post("/runs/search", json={"user_ids": ["other-user"]})
-        assert resp.status_code == 200, resp.text
-
-    def test_count_uses_the_same_scope_rule(self) -> None:
-        resp = _client([], permissions=[]).post("/runs/count", json={})
-        assert resp.status_code == 200, resp.text
 
 
 class TestSearchRunsValidation:

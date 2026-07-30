@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi import HTTPException
 
+from aegra_api.models.auth import User
 from aegra_api.models.crons import (
     CronCountRequest,
     CronCreate,
@@ -24,6 +25,12 @@ from aegra_api.services.cron_service import (
     _is_valid_schedule,
     cron_to_response,
 )
+
+
+def _user(*, permissions: list[str] | None = None) -> User:
+    """Caller for scope assertions; search/count read permissions off it."""
+    return User(identity="test-user", permissions=permissions or [])
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -309,7 +316,7 @@ class TestCreateCron:
             "aegra_api.services.cron_service.resolve_assistant_id",
             return_value="resolved-assistant-id",
         ) as mock_resolve:
-            await cron_service.search_crons(CronSearchRequest(assistant_id="test-graph"), "test-user")
+            await cron_service.search_crons(CronSearchRequest(assistant_id="test-graph"), _user())
 
         mock_resolve.assert_called_once_with("test-graph", cron_service.langgraph_service.list_graphs.return_value)
         stmt = mock_session.scalars.await_args.args[0]
@@ -328,7 +335,7 @@ class TestCreateCron:
             "aegra_api.services.cron_service.resolve_assistant_id",
             return_value="resolved-assistant-id",
         ) as mock_resolve:
-            result = await cron_service.count_crons(CronCountRequest(assistant_id="test-graph"), "test-user")
+            result = await cron_service.count_crons(CronCountRequest(assistant_id="test-graph"), _user())
 
         assert result == 1
         mock_resolve.assert_called_once_with("test-graph", cron_service.langgraph_service.list_graphs.return_value)
@@ -439,7 +446,7 @@ class TestSearchCrons:
         scalars.all.return_value = []
         mock_session.scalars.return_value = scalars
 
-        result = await cron_service.search_crons(CronSearchRequest(), "test-user")
+        result = await cron_service.search_crons(CronSearchRequest(), _user())
         assert result == []
 
     @pytest.mark.asyncio
@@ -453,7 +460,7 @@ class TestSearchCrons:
         scalars.all.return_value = rows
         mock_session.scalars.return_value = scalars
 
-        result = await cron_service.search_crons(CronSearchRequest(), "test-user")
+        result = await cron_service.search_crons(CronSearchRequest(), _user())
         assert len(result) == 2
         assert result[0]["cron_id"] == "c1"
         assert result[1]["cron_id"] == "c2"
@@ -469,7 +476,7 @@ class TestCountCrons:
         mock_session: AsyncMock,
     ) -> None:
         mock_session.scalar.return_value = 42
-        result = await cron_service.count_crons(CronCountRequest(), "test-user")
+        result = await cron_service.count_crons(CronCountRequest(), _user())
         assert result == 42
 
     @pytest.mark.asyncio
@@ -479,7 +486,7 @@ class TestCountCrons:
         mock_session: AsyncMock,
     ) -> None:
         mock_session.scalar.return_value = None
-        result = await cron_service.count_crons(CronCountRequest(), "test-user")
+        result = await cron_service.count_crons(CronCountRequest(), _user())
         assert result == 0
 
     @pytest.mark.asyncio
@@ -489,7 +496,7 @@ class TestCountCrons:
         mock_session: AsyncMock,
     ) -> None:
         mock_session.scalar.return_value = 3
-        result = await cron_service.count_crons(CronCountRequest(assistant_id="asst-001"), "test-user")
+        result = await cron_service.count_crons(CronCountRequest(assistant_id="asst-001"), _user())
         assert result == 3
         mock_session.scalar.assert_awaited_once()
 
@@ -500,7 +507,7 @@ class TestCountCrons:
         mock_session: AsyncMock,
     ) -> None:
         mock_session.scalar.return_value = 1
-        result = await cron_service.count_crons(CronCountRequest(thread_id="t-1"), "test-user")
+        result = await cron_service.count_crons(CronCountRequest(thread_id="t-1"), _user())
         assert result == 1
 
 
@@ -909,7 +916,7 @@ class TestSearchCronsExtended:
         scalars.all.return_value = [_make_cron_orm()]
         mock_session.scalars.return_value = scalars
 
-        result = await cron_service.search_crons(CronSearchRequest(assistant_id="asst-001"), "test-user")
+        result = await cron_service.search_crons(CronSearchRequest(assistant_id="asst-001"), _user())
         assert len(result) == 1
         mock_session.scalars.assert_awaited_once()
 
@@ -923,7 +930,7 @@ class TestSearchCronsExtended:
         scalars.all.return_value = []
         mock_session.scalars.return_value = scalars
 
-        result = await cron_service.search_crons(CronSearchRequest(thread_id="t-1"), "test-user")
+        result = await cron_service.search_crons(CronSearchRequest(thread_id="t-1"), _user())
         assert result == []
 
     @pytest.mark.asyncio
@@ -936,7 +943,7 @@ class TestSearchCronsExtended:
         scalars.all.return_value = [_make_cron_orm(enabled=True)]
         mock_session.scalars.return_value = scalars
 
-        result = await cron_service.search_crons(CronSearchRequest(enabled=True), "test-user")
+        result = await cron_service.search_crons(CronSearchRequest(enabled=True), _user())
         assert len(result) == 1
         assert result[0]["enabled"] is True
 
@@ -950,7 +957,7 @@ class TestSearchCronsExtended:
         scalars.all.return_value = []
         mock_session.scalars.return_value = scalars
 
-        await cron_service.search_crons(CronSearchRequest(sort_by="next_run_date"), "test-user")
+        await cron_service.search_crons(CronSearchRequest(sort_by="next_run_date"), _user())
         mock_session.scalars.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -963,7 +970,7 @@ class TestSearchCronsExtended:
         scalars.all.return_value = []
         mock_session.scalars.return_value = scalars
 
-        await cron_service.search_crons(CronSearchRequest(sort_by="updated_at"), "test-user")
+        await cron_service.search_crons(CronSearchRequest(sort_by="updated_at"), _user())
         mock_session.scalars.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -976,7 +983,7 @@ class TestSearchCronsExtended:
         scalars.all.return_value = []
         mock_session.scalars.return_value = scalars
 
-        await cron_service.search_crons(CronSearchRequest(sort_order="desc"), "test-user")
+        await cron_service.search_crons(CronSearchRequest(sort_order="desc"), _user())
         mock_session.scalars.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -989,7 +996,7 @@ class TestSearchCronsExtended:
         scalars.all.return_value = []
         mock_session.scalars.return_value = scalars
 
-        await cron_service.search_crons(CronSearchRequest(limit=5, offset=10), "test-user")
+        await cron_service.search_crons(CronSearchRequest(limit=5, offset=10), _user())
         mock_session.scalars.assert_awaited_once()
 
 
@@ -1312,3 +1319,60 @@ class TestUpdateCronTimezone:
         await cron_service.update_cron("cron-001", CronUpdate(schedule="0 10 * * *"), "test-user")
         # verify execute was called (next_run_date was set)
         mock_session.execute.assert_awaited_once()
+
+
+class TestCronSearchScope:
+    """`crons:search:all` decides scope; no request field can."""
+
+    @staticmethod
+    def _sql(mock_session: AsyncMock) -> str:
+        from sqlalchemy.dialects import postgresql
+
+        stmt = mock_session.scalar.await_args.args[0]
+        return str(stmt.compile(dialect=postgresql.dialect()))
+
+    @pytest.mark.asyncio
+    async def test_scoped_to_caller_without_permission(
+        self, cron_service: CronService, mock_session: AsyncMock
+    ) -> None:
+        mock_session.scalar.return_value = 0
+        await cron_service.count_crons(CronCountRequest(), _user())
+        assert "crons.user_id = " in self._sql(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_permission_drops_ownership_predicate(
+        self, cron_service: CronService, mock_session: AsyncMock
+    ) -> None:
+        mock_session.scalar.return_value = 0
+        await cron_service.count_crons(CronCountRequest(), _user(permissions=["crons:search:all"]))
+        assert "crons.user_id = " not in self._sql(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_other_resource_permission_does_not_widen_scope(
+        self, cron_service: CronService, mock_session: AsyncMock
+    ) -> None:
+        mock_session.scalar.return_value = 0
+        await cron_service.count_crons(CronCountRequest(), _user(permissions=["runs:search:all"]))
+        assert "crons.user_id = " in self._sql(mock_session)
+
+    @pytest.mark.asyncio
+    async def test_count_and_search_filter_identically(
+        self, cron_service: CronService, mock_session: AsyncMock
+    ) -> None:
+        """A count that scoped differently from its search would silently mislead."""
+        from sqlalchemy.dialects import postgresql
+
+        request_kwargs: dict[str, Any] = {"assistant_id": "asst-1", "thread_id": "t-1", "enabled": True}
+        empty = Mock()
+        empty.all.return_value = []
+        mock_session.scalars.return_value = empty
+        mock_session.scalar.return_value = 0
+
+        await cron_service.search_crons(CronSearchRequest(**request_kwargs), _user())
+        await cron_service.count_crons(CronCountRequest(**request_kwargs), _user())
+
+        search_sql = str(mock_session.scalars.await_args.args[0].compile(dialect=postgresql.dialect()))
+        count_sql = str(mock_session.scalar.await_args.args[0].compile(dialect=postgresql.dialect()))
+        search_where = search_sql.split("WHERE", 1)[1].split("ORDER BY")[0].strip()
+        count_where = count_sql.split("WHERE", 1)[1].strip()
+        assert search_where == count_where

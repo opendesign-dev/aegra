@@ -105,7 +105,7 @@ async def test_search_finds_run_across_threads_e2e() -> None:
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_search_filters_by_assistant_id_e2e() -> None:
+async def test_build_thread_filters_by_assistant_id_e2e() -> None:
     """Two assistants' runs are separable by assistant_id, unlike thread metadata."""
     tag_a = f"assistant-a-{uuid.uuid4().hex[:8]}"
     tag_b = f"assistant-b-{uuid.uuid4().hex[:8]}"

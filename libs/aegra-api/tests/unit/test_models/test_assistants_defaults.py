@@ -25,34 +25,30 @@ def test_assistant_create_defaults_do_not_share_state() -> None:
     assert b.metadata == {}
 
 
-def test_assistant_update_defaults_do_not_share_state() -> None:
-    a = AssistantUpdate()
-    b = AssistantUpdate()
-    assert a.config is not None
-    assert a.context is not None
-    assert a.metadata is not None
+def test_assistant_update_omitted_fields_are_none_not_empty() -> None:
+    """PATCH must distinguish "omitted" from "set to empty".
 
-    a.config["x"] = 1
-    a.context["y"] = 2
-    a.metadata["z"] = 3
+    Regression: these defaulted to ``{}``, so the service could not tell the two
+    apart and every partial update wiped the assistant's stored config — which
+    also collided with the (user_id, graph_id, config) uniqueness constraint.
+    """
+    request = AssistantUpdate()
+    assert request.config is None
+    assert request.context is None
+    assert request.metadata is None
 
-    assert b.config == {}
-    assert b.context == {}
-    assert b.metadata == {}
+
+def test_assistant_update_accepts_explicit_empty_dict() -> None:
+    """An explicit ``{}`` still reaches the service as a clear-it instruction."""
+    request = AssistantUpdate(config={}, context={}, metadata={})
+    assert request.config == {}
+    assert request.context == {}
+    assert request.metadata == {}
 
 
 def test_assistant_create_defaults_are_distinct_instances() -> None:
     a = AssistantCreate(graph_id="agent")
     b = AssistantCreate(graph_id="agent")
-
-    assert a.config is not b.config
-    assert a.context is not b.context
-    assert a.metadata is not b.metadata
-
-
-def test_assistant_update_defaults_are_distinct_instances() -> None:
-    a = AssistantUpdate()
-    b = AssistantUpdate()
 
     assert a.config is not b.config
     assert a.context is not b.context

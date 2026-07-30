@@ -142,12 +142,22 @@ class TestAssistantServiceDatabase:
         )
         original_assistant = await assistant_service.create_assistant(create_request)
 
-        # Mock scalar calls: first returns assistant, second returns max version, third returns updated assistant
-        assistant_service.session.scalar.side_effect = [
-            original_assistant,
-            1,
-            original_assistant,
-        ]  # max version = 1
+        # scalar() calls, in order: fetch the row, max(version), re-read after update.
+        # Must be an AssistantORM: the service reads ORM attribute names off it.
+        stored = AssistantORM(
+            assistant_id=original_assistant.assistant_id,
+            name=original_assistant.name,
+            description=original_assistant.description,
+            graph_id=original_assistant.graph_id,
+            config=original_assistant.config,
+            context=original_assistant.context,
+            user_id=original_assistant.user_id,
+            metadata_dict=original_assistant.metadata,
+            version=original_assistant.version,
+            created_at=original_assistant.created_at,
+            updated_at=original_assistant.updated_at,
+        )
+        assistant_service.session.scalar.side_effect = [stored, 1, stored]
 
         # Update the assistant
         update_request = AssistantUpdate(
@@ -501,3 +511,57 @@ class TestAssistantServiceDatabase:
         assert result.description == special_description
         assert result.metadata["unicode"] == "测试"
         assert result.metadata["emoji"] == "🎉"
+
+    # --- PATCH keeps what it was not asked to change ---
+    """PATCH keeps what it was not asked to change."""
+
+    @staticmethod
+    def _stored(**overrides: object) -> AssistantORM:
+        row = {
+            "assistant_id": "asst-patch",
+            "name": "Original",
+            "description": "desc",
+            "graph_id": "test-graph",
+            "config": {"configurable": {"model": "gpt-4"}},
+            "context": {"model": "gpt-4"},
+            "user_id": "test-user",
+            "metadata_dict": {"team": "a"},
+            "version": 1,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+        }
+        row.update(overrides)
+        return AssistantORM(**row)
+
+    async def _patch(self, service: AssistantService, request: AssistantUpdate) -> AssistantVersionORM:
+        stored = self._stored()
+        service.session.scalar.side_effect = [stored, 1, stored]
+        await service.update_assistant("asst-patch", request)
+        versions = [o for o in service.session.added_objects if isinstance(o, AssistantVersionORM)]
+        return max(versions, key=lambda v: v.version)
+
+    @pytest.mark.asyncio
+    async def test_omitted_config_is_preserved(self, assistant_service: AssistantService) -> None:
+        """Regression: a name-only PATCH used to wipe config to {}, which both lost
+        data and collided with the (user_id, graph_id, config) unique constraint."""
+        version = await self._patch(assistant_service, AssistantUpdate(name="Renamed"))
+        assert version.config == {"configurable": {"model": "gpt-4"}}
+        assert version.context == {"model": "gpt-4"}
+        assert version.name == "Renamed"
+
+    @pytest.mark.asyncio
+    async def test_omitted_metadata_is_preserved(self, assistant_service: AssistantService) -> None:
+        version = await self._patch(assistant_service, AssistantUpdate(name="Renamed"))
+        assert version.metadata_dict == {"team": "a"}
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_config_clears_it(self, assistant_service: AssistantService) -> None:
+        """An explicit {} is a clear-it instruction, distinct from omitting the field."""
+        version = await self._patch(assistant_service, AssistantUpdate(config={}, context={}))
+        assert version.config == {}
+        assert version.context == {}
+
+    @pytest.mark.asyncio
+    async def test_supplied_config_replaces_stored(self, assistant_service: AssistantService) -> None:
+        version = await self._patch(assistant_service, AssistantUpdate(config={"tags": ["x"]}))
+        assert version.config["tags"] == ["x"]

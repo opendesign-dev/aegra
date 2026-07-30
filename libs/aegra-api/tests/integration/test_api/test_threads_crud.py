@@ -100,7 +100,7 @@ class TestCreateThread:
         assert data["status"] == "idle"
         assert data["metadata"]["thread_name"] == "Test Thread"
 
-    def test_create_thread_accepts_sdk_snake_case_ids(self, client):
+    def test_create_thread_accepts_sdk_snake_case_ids(self, client: TestClient) -> None:
         """`thread_id` / `if_exists` are the wire names the LangGraph SDK sends.
 
         Regression: both fields carried a camelCase `alias`, so the generated
@@ -114,7 +114,7 @@ class TestCreateThread:
         assert resp.status_code == 200, resp.text
         assert resp.json()["thread_id"] == "sdk-snake-1"
 
-    def test_create_thread_still_accepts_legacy_camel_case_ids(self, client):
+    def test_create_thread_still_accepts_legacy_camel_case_ids(self, client: TestClient) -> None:
         """The camelCase spelling stays accepted so older clients keep working."""
         resp = client.post(
             "/threads",

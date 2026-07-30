@@ -371,7 +371,7 @@ class TestRunsStreamingEndpoints:
 
     @pytest.mark.asyncio
     async def test_stream_run_normalizes_requested_stream_modes(self, mock_user: User, mock_session: AsyncMock) -> None:
-        """``stream_mode`` narrows the connection; ``messages-tuple`` folds into ``messages``."""
+        """``stream_mode`` narrows the connection; ``messages-tuple`` admits both spellings."""
         run_orm = RunORM(
             run_id="run-42",
             thread_id="test-thread",
@@ -403,7 +403,7 @@ class TestRunsStreamingEndpoints:
                 user=mock_user,
             )
 
-        assert mock_stream_exec.call_args.kwargs["stream_modes"] == frozenset({"values", "messages"})
+        assert mock_stream_exec.call_args.kwargs["stream_modes"] == frozenset({"values", "messages", "messages-tuple"})
 
     @pytest.mark.asyncio
     async def test_stream_run_rejects_unknown_stream_mode(self, mock_user: User, mock_session: AsyncMock) -> None:

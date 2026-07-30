@@ -20,14 +20,52 @@ matching the wrong rows.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
+if TYPE_CHECKING:
+    from aegra_api.models.auth import User
+
 _MAX_FILTER_DEPTH = 2
+
+# Permissions that lift per-user scoping on a resource's search/count endpoints.
+# Free-form elsewhere, but these exact strings are interpreted by the server, so
+# they live here rather than being spelled out at each call site.
+RUNS_SEARCH_ALL = "runs:search:all"
+THREADS_SEARCH_ALL = "threads:search:all"
+ASSISTANTS_SEARCH_ALL = "assistants:search:all"
+CRONS_SEARCH_ALL = "crons:search:all"
+
+# Owner of deployment-provided rows (the assistants derived from aegra.json), which
+# every caller can see alongside its own.
+SYSTEM_IDENTITY = "system"
+
+
+def build_visibility_filters(
+    column: InstrumentedAttribute[Any],
+    user: User,
+    permission: str,
+    *,
+    shared_identity: str | None = None,
+) -> list[ColumnElement[bool]]:
+    """Predicates limiting a search to the identities this caller may see.
+
+    Scope is decided by *permission* alone — there is deliberately no request field
+    that names other owners, so an unpermitted client cannot even express the
+    query. Returns an empty list when the caller may search every identity.
+
+    ``shared_identity`` keeps deployment-owned rows (``user_id = "system"``)
+    visible alongside the caller's own.
+    """
+    if permission in user.permissions:
+        return []
+    if shared_identity is not None:
+        return [or_(column == user.identity, column == shared_identity)]
+    return [column == user.identity]
 
 
 def build_metadata_filter(

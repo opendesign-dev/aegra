@@ -349,7 +349,6 @@ class TestAssistantServiceCreate:
         request = AssistantCreate(
             graph_id="test-graph",
             config={"configurable": {"key": "value"}},
-            context=None,
         )
 
         assistant_service.langgraph_service.list_graphs.return_value = {"test-graph": {}}
@@ -1218,3 +1217,62 @@ class TestAuthDispatch:
         stmt = assistant_service.session.scalars.call_args.args[0]
         compiled = stmt.compile(dialect=postgresql.dialect())
         assert {"owner": "user-123"} in compiled.params.values()
+
+
+class TestAssistantSearchScope:
+    """`assistants:search:all` decides scope; deployment assistants stay visible."""
+
+    @staticmethod
+    def _search_sql(service: AssistantService) -> str:
+        from sqlalchemy.dialects import postgresql
+
+        return str(service.session.scalars.await_args.args[0].compile(dialect=postgresql.dialect()))
+
+    @staticmethod
+    async def _run_search(service: AssistantService) -> None:
+        request = Mock(
+            name=None, description=None, graph_id=None, metadata=None, offset=0, limit=20, sort_by=None, select=None
+        )
+        empty = Mock()
+        empty.all.return_value = []
+        service.session.scalars.return_value = empty
+        service.session.scalar.return_value = 0
+        with patch(_DISPATCH, new=AsyncMock(return_value=None)):
+            await service.search_assistants(request)
+
+    @pytest.mark.asyncio
+    async def test_scoped_to_caller_and_system_without_permission(
+        self, mock_session: AsyncMock, mock_langgraph_service: Mock
+    ) -> None:
+        """Without the permission: own rows OR the deployment's shared ones."""
+        service = AssistantService(mock_session, User(identity="user-123"), mock_langgraph_service)
+        await self._run_search(service)
+        sql = self._search_sql(service)
+        where = sql.split("WHERE", 1)[1]
+        assert where.count("assistant.user_id = ") == 2
+        assert " OR " in where
+
+    @pytest.mark.asyncio
+    async def test_permission_drops_ownership_predicate(
+        self, mock_session: AsyncMock, mock_langgraph_service: Mock
+    ) -> None:
+        service = AssistantService(
+            mock_session,
+            User(identity="user-123", permissions=["assistants:search:all"]),
+            mock_langgraph_service,
+        )
+        await self._run_search(service)
+        sql = self._search_sql(service)
+        assert "WHERE" not in sql or "assistant.user_id = " not in sql.split("WHERE", 1)[1]
+
+    @pytest.mark.asyncio
+    async def test_other_resource_permission_does_not_widen_scope(
+        self, mock_session: AsyncMock, mock_langgraph_service: Mock
+    ) -> None:
+        service = AssistantService(
+            mock_session,
+            User(identity="user-123", permissions=["runs:search:all"]),
+            mock_langgraph_service,
+        )
+        await self._run_search(service)
+        assert "assistant.user_id = " in self._search_sql(service).split("WHERE", 1)[1]

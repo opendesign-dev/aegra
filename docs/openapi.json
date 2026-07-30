@@ -1704,7 +1704,7 @@
           "Threads"
         ],
         "summary": "Search Threads",
-        "description": "Search threads with filters.\n\nFilter by status, metadata, latest state values, or explicit ids. Results\nare paginated via `limit`/`offset`; `select` projects fields and `extract`\nadds keys pulled from values/metadata via dot/bracket paths.",
+        "description": "Search threads with auth_filters.\n\nFilter by status, metadata, latest state values, or explicit ids. Results\nare paginated via `limit`/`offset`; `select` projects fields and `extract`\nadds keys pulled from values/metadata via dot/bracket paths.",
         "operationId": "search_threads_threads_search_post",
         "requestBody": {
           "content": {
@@ -1744,7 +1744,7 @@
           "Threads"
         ],
         "summary": "Count Threads",
-        "description": "Count threads matching the given filters.\n\nAccepts the same filters as `/threads/search` (status, metadata, values,\nids) but returns only the total count.",
+        "description": "Count threads matching the given auth_filters.\n\nAccepts the same auth_filters as `/threads/search` (status, metadata, values,\nids) but returns only the total count.",
         "operationId": "count_threads_threads_count_post",
         "requestBody": {
           "content": {
@@ -2831,7 +2831,7 @@
           "Thread Runs"
         ],
         "summary": "Search Runs",
-        "description": "Search runs across every thread the caller owns.\n\nFilter by assistant, thread, run id, status, metadata, or a `created_after` /\n`created_before` window; each filter takes a scalar or a list. Results are\npaginated via `limit`/`offset`, ordered by `sort_by`/`sort_order` (default\n`created_at` descending), and `select` projects fields.\n\nCallers holding `runs:search:all` search every user's runs instead, narrowed\nby `user_ids` \u2014 for platforms aggregating runs they don't own.",
+        "description": "Search runs across every thread the caller owns.\n\nFilter by assistant, thread, run id, status, metadata, or a `created_after` /\n`created_before` window; each filter takes a scalar or a list. Results are\npaginated via `limit`/`offset`, ordered by `sort_by`/`sort_order` (default\n`created_at` descending), and `select` projects fields.\n\nCallers holding `runs:search:all` search every user's runs instead \u2014 for\nplatforms aggregating runs they don't own. Scope comes from the permission\nalone; no request field can widen it.",
         "operationId": "search_runs_runs_search_post",
         "requestBody": {
           "content": {
@@ -2922,8 +2922,11 @@
             "in": "query",
             "required": false,
             "schema": {
+              "enum": [
+                "interrupt",
+                "rollback"
+              ],
               "type": "string",
-              "pattern": "^(interrupt|rollback)$",
               "description": "'interrupt' marks runs interrupted; 'rollback' also deletes them and their checkpoints.",
               "default": "interrupt",
               "title": "Action"
@@ -4226,28 +4229,14 @@
             "description": "Assistant description"
           },
           "config": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "additionalProperties": true,
+            "type": "object",
             "title": "Config",
             "description": "Assistant configuration"
           },
           "context": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "additionalProperties": true,
+            "type": "object",
             "title": "Context",
             "description": "Assistant context"
           },
@@ -4500,7 +4489,7 @@
               }
             ],
             "title": "Config",
-            "description": "Configuration to use for the graph."
+            "description": "Configuration to use for the graph. Omit to keep the current one."
           },
           "graph_id": {
             "anyOf": [
@@ -4525,7 +4514,7 @@
               }
             ],
             "title": "Context",
-            "description": "The context to use for the graph. Useful when graph is configurable."
+            "description": "The context to use for the graph. Omit to keep the current one."
           },
           "metadata": {
             "anyOf": [
@@ -4538,12 +4527,12 @@
               }
             ],
             "title": "Metadata",
-            "description": "Metadata to use for searching and filtering assistants."
+            "description": "Metadata for searching and filtering. Omit to keep the current one."
           }
         },
         "type": "object",
         "title": "AssistantUpdate",
-        "description": "Request model for updating assistants \u2014 every field is an optional patch."
+        "description": "Request model for updating assistants \u2014 every field is an optional patch.\n\nEvery default is ``None``, never ``{}``: the service distinguishes \"omitted\"\n(keep the stored value) from an explicit empty object (clear it). A dict\ndefault would collapse the two and silently wipe config on any partial update."
       },
       "AssistantVersionsRequest": {
         "properties": {
@@ -4617,6 +4606,17 @@
               }
             ],
             "title": "Thread Id"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
           },
           "metadata": {
             "anyOf": [

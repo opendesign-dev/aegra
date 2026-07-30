@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects import postgresql
 
 from aegra_api.api.runs import _RUN_SELECT_FIELDS
+from aegra_api.core.auth_filters import RUNS_SEARCH_ALL
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.models import RunSearchRequest, User
 from aegra_api.services.run_search import build_run_filters
@@ -41,11 +42,16 @@ def _filters(
     *,
     cross_user: bool = False,
 ) -> Compiled:
-    """Build predicates with graph resolution stubbed to a known registry."""
+    """Build predicates with graph resolution stubbed to a known registry.
+
+    ``cross_user`` is expressed the way the server sees it — as the permission on
+    the caller — so these tests exercise the real widening path.
+    """
     service = Mock()
     service.list_graphs.return_value = {"known-graph": "graph.py"}
+    user = _user(permissions=[RUNS_SEARCH_ALL] if cross_user else [])
     with patch("aegra_api.services.run_search.get_langgraph_service", return_value=service):
-        return Compiled(build_run_filters(request, _user(), auth_filters, cross_user=cross_user))
+        return Compiled(build_run_filters(request, user, auth_filters))
 
 
 class TestOwnershipScoping:
@@ -150,7 +156,7 @@ class TestCrossUserScoping:
         result = _filters(RunSearchRequest(), cross_user=True)
         assert "runs.user_id" not in result
 
-    def test_default_is_caller_scoped(self) -> None:
+    def test_scoped_to_caller_without_permission(self) -> None:
         result = _filters(RunSearchRequest())
         assert "runs.user_id = " in result
         assert result.bound("user-1")

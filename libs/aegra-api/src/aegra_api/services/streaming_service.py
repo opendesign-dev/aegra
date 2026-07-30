@@ -15,20 +15,20 @@ from aegra_api.utils import extract_event_sequence
 
 logger = structlog.getLogger(__name__)
 
-# Control events carry no graph payload, so a stream_mode filter must never drop
-# them — the client would lose run_id, errors, and the end of the stream.
-_CONTROL_EVENTS = frozenset({"metadata", "end", "error"})
+# ``messages-tuple`` is a request-side alias the producer normalizes to ``messages``
+# for Python graphs but publishes verbatim for JS ones, so accept either spelling
+# rather than re-deriving that runtime decision here.
+_MODE_ALIASES: dict[str, frozenset[str]] = {"messages-tuple": frozenset({"messages", "messages-tuple"})}
 
 
 def normalize_stream_modes(modes: Sequence[str] | None) -> frozenset[str] | None:
     """Build the allowlist a join-stream filter matches events against.
 
-    ``None`` means "everything the run produced". ``messages-tuple`` is a
-    request-side alias the producer already normalizes to ``messages``.
+    ``None`` means "everything the run produced".
     """
     if not modes:
         return None
-    return frozenset("messages" if mode == "messages-tuple" else mode for mode in modes)
+    return frozenset().union(*(_MODE_ALIASES.get(mode, frozenset({mode})) for mode in modes))
 
 
 class StreamingService:
@@ -157,7 +157,7 @@ class StreamingService:
         stored_events = await broker.replay(last_event_id)
 
         for event_id, raw_event in stored_events:
-            sse_event = self._convert_raw_to_sse(event_id, raw_event, stream_modes)
+            sse_event = self.event_converter.convert_raw_to_sse(event_id, raw_event, stream_modes)
             if sse_event:
                 yield event_id, sse_event
 
@@ -183,7 +183,7 @@ class StreamingService:
             if current_sequence <= last_sent_sequence:
                 continue
 
-            sse_event = self._convert_raw_to_sse(event_id, raw_event, stream_modes)
+            sse_event = self.event_converter.convert_raw_to_sse(event_id, raw_event, stream_modes)
             # Advance past filtered-out events too, else a later replay resends them.
             last_sent_sequence = current_sequence
             if sse_event:
@@ -221,16 +221,6 @@ class StreamingService:
     async def cleanup_run(self, run_id: str) -> None:
         """Clean up streaming resources for a run."""
         broker_manager.cleanup_broker(run_id)
-
-    def _convert_raw_to_sse(
-        self, event_id: str, raw_event: Any, stream_modes: frozenset[str] | None = None
-    ) -> str | None:
-        """Convert a raw broker event to SSE, or None when the filter excludes it."""
-        if stream_modes is not None:
-            base = self.event_converter.base_mode(raw_event)
-            if base not in _CONTROL_EVENTS and base not in stream_modes:
-                return None
-        return self.event_converter.convert_raw_to_sse(event_id, raw_event)
 
 
 # Global streaming service instance

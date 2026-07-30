@@ -58,16 +58,22 @@ async def test_gate_on_upserts(monkeypatch) -> None:
     assert len(session.executed) == 1
 
 
+# The runtime-alignment schema has been squashed more than once, so locate it by
+# revision id rather than filename — a rename must not silently skip these tests.
+_SCHEMA_REVISION = "d1f7b3a9c5e2"
+
+
+def _schema_migration() -> Path:
+    versions = Path(__file__).resolve().parents[3] / "alembic" / "versions"
+    matches = [p for p in versions.glob("*.py") if f'revision = "{_SCHEMA_REVISION}"' in p.read_text(encoding="utf-8")]
+    assert len(matches) == 1, f"expected exactly one file defining {_SCHEMA_REVISION}, found {matches}"
+    return matches[0]
+
+
 def test_migration_backfill_leaves_values_hash_null() -> None:
     # SQL md5(jsonb::text) can't match the app's md5(json.dumps(sort_keys=True)),
     # so the backfill leaves values_hash NULL for the first materialize to recompute.
-    path = (
-        Path(__file__).resolve().parents[3]
-        / "alembic"
-        / "versions"
-        / "20260718140000_run_metadata_indexes_thread_state.py"
-    )
-    spec = importlib.util.spec_from_file_location("mig_e5b9d2f7a3c1", path)
+    spec = importlib.util.spec_from_file_location("mig_schema", _schema_migration())
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -77,16 +83,30 @@ def test_migration_backfill_leaves_values_hash_null() -> None:
     assert "NULL, t.updated_at" in backfill_sql  # values_hash column now backfills NULL
 
 
-def test_migration_creates_ttl_and_scheduled_at() -> None:
-    # The consolidation dropped the standalone ttl / scheduled_at migrations; the
-    # consolidated migration must (re)create both ORM columns or a fresh DB breaks.
-    path = (
-        Path(__file__).resolve().parents[3]
-        / "alembic"
-        / "versions"
-        / "20260718140000_run_metadata_indexes_thread_state.py"
-    )
-    src = path.read_text(encoding="utf-8")
-    assert "thread ADD COLUMN IF NOT EXISTS ttl" in src
-    assert "runs ADD COLUMN IF NOT EXISTS scheduled_at" in src
-    assert "idx_runs_scheduled" in src
+def test_squashed_migration_keeps_every_folded_change() -> None:
+    """Guards the squash: each folded migration's defining DDL must still be here.
+
+    Five sequential migrations were collapsed into one. Dropping any of these
+    would leave a fresh database disagreeing with the ORM, which only surfaces at
+    runtime on a query against the missing column or index.
+    """
+    src = _schema_migration().read_text(encoding="utf-8")
+    for fragment in (
+        # e5b9d2f7a3c1 — run contract columns, thread_state, hot-path indexes
+        "runs ADD COLUMN IF NOT EXISTS metadata",
+        "runs ADD COLUMN IF NOT EXISTS multitask_strategy",
+        "runs ADD COLUMN IF NOT EXISTS scheduled_at",
+        "thread ADD COLUMN IF NOT EXISTS ttl",
+        "CREATE TABLE IF NOT EXISTS thread_state",
+        "idx_runs_scheduled",
+        # a7c3e1f9b2d4 — one-running-per-thread invariant + prefix pruning
+        "uq_runs_one_running_per_thread",
+        "idx_thread_user",
+        # b8d4f2a1c3e5 — durable cancel marker
+        "runs ADD COLUMN IF NOT EXISTS cancel_requested",
+        # c9e5a3f1d2b7 — webhook outbox
+        "CREATE TABLE IF NOT EXISTS webhook_deliveries",
+        # d1f7b3a9c5e2 — TTL sweep index
+        "idx_runs_ttl_sweep",
+    ):
+        assert fragment in src, f"squashed migration lost: {fragment}"

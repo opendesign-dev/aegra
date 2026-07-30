@@ -15,16 +15,16 @@ import contextvars
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from langgraph_sdk import Auth  # type: ignore
+from langgraph_sdk import Auth
 from starlette.authentication import AuthCredentials, BaseUser
 
 # Internal context-var storing the current auth context (or None when absent)
-_AuthCtx: contextvars.ContextVar[Auth.types.BaseAuthContext | None] = contextvars.ContextVar(  # type: ignore[attr-defined]
+_AuthCtx: contextvars.ContextVar[Auth.types.BaseAuthContext | None] = contextvars.ContextVar(
     "AuthContext", default=None
 )
 
 
-def get_auth_ctx() -> Auth.types.BaseAuthContext | None:  # type: ignore[attr-defined]
+def get_auth_ctx() -> Auth.types.BaseAuthContext | None:
     """Return the current authentication context or ``None`` if not set."""
     return _AuthCtx.get()
 
@@ -55,9 +55,11 @@ async def with_auth_ctx(
         token = _AuthCtx.set(None)
     else:
         token = _AuthCtx.set(
-            Auth.types.BaseAuthContext(  # type: ignore[attr-defined]
-                user=user, permissions=scopes
-            )
+            # Starlette's BaseUser and the SDK's are separate protocols with no
+            # common base, and this branch is also reachable with user=None
+            # (permissions but no identity). Both are pre-existing; narrowing them
+            # would change auth semantics, so it is left for a dedicated change.
+            Auth.types.BaseAuthContext(user=user, permissions=scopes)  # type: ignore[invalid-argument-type]
         )
     try:
         yield

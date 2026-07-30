@@ -75,14 +75,28 @@ Any additional fields you return (like `role`, `team_id`, etc.) are preserved an
 ### Recognized permissions
 
 `permissions` is free-form — your authorization handlers decide what the strings
-mean. One string is interpreted by the server itself:
+mean. These four are interpreted by the server itself, each lifting per-user
+scoping on one resource's search and count endpoints:
 
-| Permission | Effect |
+| Permission | Endpoints it widens |
 |------------|--------|
-| `runs:search:all` | Lets `POST /runs/search` and `POST /runs/count` span the whole deployment instead of the caller's own runs. Without it those endpoints are pinned to the caller at the SQL layer; there is no request field that can widen the scope. |
+| `runs:search:all` | `POST /runs/search`, `POST /runs/count` |
+| `threads:search:all` | `POST /threads/search`, `POST /threads/count` |
+| `assistants:search:all` | `POST /assistants/search`, `POST /assistants/count` |
+| `crons:search:all` | `POST /runs/crons/search`, `POST /runs/crons/count` |
 
-Grant it only to operator or admin identities: it lifts per-user isolation on run
-metadata, which includes run inputs and outputs.
+Without the relevant permission those endpoints are pinned to the caller at the
+SQL layer, and **no request field can widen the scope** — scope is decided by the
+permission alone, so an unpermitted client cannot even express "other users'
+rows". The gates are independent: holding `runs:search:all` does nothing for
+thread search.
+
+Grant them only to operator or admin identities. Each lifts per-user isolation on
+that resource: run metadata includes inputs and outputs, thread metadata and state
+include conversation content, and assistant rows include their configuration.
+
+Assistants defined in `aegra.json` are owned by the `system` identity and stay
+visible to every caller regardless of permission.
 
 ### Denying access
 

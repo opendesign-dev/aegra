@@ -218,17 +218,28 @@ Available filters, all optional and ANDed together. Each takes a scalar or a lis
 
 Results are paginated with `limit` (max 1000) / `offset`, sorted by `sort_by` / `sort_order` (default `created_at` descending), and `select` projects fields.
 
-### Searching other users' runs
+### Searching other users' rows
 
-By default a search only ever returns the caller's own runs — the ownership
+By default a search only ever returns the caller's own rows — the ownership
 predicate is applied at the SQL layer, not as a filter the request can lift. A
-caller holding the `runs:search:all` permission searches the whole deployment
-instead.
+caller holding the matching `:search:all` permission searches the whole
+deployment instead:
 
-There is deliberately no `user_ids` field: scope is decided entirely by the
-permission, so an unpermitted client cannot even express "other users' runs".
-Grant it from your auth handler by putting `runs:search:all` in the user's
-`permissions` — see [Authentication](/guides/authentication).
+| Resource | Permission |
+|----------|------------|
+| Runs | `runs:search:all` |
+| Threads | `threads:search:all` |
+| Assistants | `assistants:search:all` |
+| Crons | `crons:search:all` |
+
+Each gate is independent — `runs:search:all` widens run search only. Grant them
+from your auth handler by putting the strings in the user's `permissions` — see
+[Authentication](/guides/authentication).
+
+There is deliberately no `user_ids` field on any of these bodies: scope is decided
+entirely by the permission, so an unpermitted client cannot even express "other
+users' rows". A permitted caller therefore sees the whole deployment, and filters
+what it wants client-side or through `metadata`.
 
 `POST /runs/count` accepts the same body and returns the matching total. `GET /threads/{id}/runs` takes the same `created_after` / `created_before` window when you already know the thread.
 

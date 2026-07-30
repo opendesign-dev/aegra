@@ -19,8 +19,8 @@ class AuthContextWrapper:
     """Wrapper to convert Aegra User model to AuthContext.
 
     AuthContext expects a BaseUser-compatible object. Our User model
-    implements the BaseUser protocol (identity, permissions, display_name, __getitem__),
-    so we can use it directly after ensuring compatibility.
+    implements the BaseUser protocol (identity, is_authenticated, permissions,
+    display_name, __getitem__, __contains__), so we can use it directly.
     """
 
     def __init__(
@@ -28,7 +28,7 @@ class AuthContextWrapper:
         user: User,
         resource: str,
         action: str,
-    ):
+    ) -> None:
         """Initialize auth context wrapper.
 
         Args:
@@ -44,15 +44,14 @@ class AuthContextWrapper:
     def to_langgraph_context(self) -> LangGraphAuthContext:
         """Convert to LangGraph AuthContext.
 
-        Our User model implements the BaseUser protocol (identity, permissions,
-        display_name, __getitem__, __contains__, __iter__), so it's compatible
-        with LangGraph's AuthContext.
-
         Returns:
             AuthContext instance compatible with @auth.on handlers
         """
         return LangGraphAuthContext(
-            user=self.user,  # Our User model implements BaseUser protocol
+            # BaseUser.__iter__ is declared unannotated in the SDK, so Pyright
+            # infers `-> None` and rejects any real iterator — the SDK's own
+            # StudioUser fails the same check. Every other member matches.
+            user=self.user,  # pyright: ignore[reportArgumentType]
             resource=self.resource,  # type: ignore
             action=self.action,  # type: ignore
             permissions=self.permissions,

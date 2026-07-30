@@ -1,6 +1,9 @@
 """Integration tests for assistants CRUD operations"""
 
+from unittest.mock import AsyncMock
+
 import pytest
+from fastapi.testclient import TestClient
 
 from aegra_api.services.assistant_service import AssistantSearchPage, get_assistant_service
 from tests.fixtures.clients import create_test_app, make_client
@@ -663,7 +666,9 @@ class TestListAssistantVersions:
         assert data[0]["version"] == 1
         assert data[2]["version"] == 3
 
-    def test_list_assistant_versions_forwards_pagination_body(self, client, mock_assistant_service):
+    def test_list_assistant_versions_forwards_pagination_body(
+        self, client: TestClient, mock_assistant_service: AsyncMock
+    ) -> None:
         """The SDK sends {metadata, limit, offset}; the route must pass it through.
 
         Regression: the endpoint declared no request body, so `get_versions(limit=1)`
@@ -681,7 +686,9 @@ class TestListAssistantVersions:
         assert (request.limit, request.offset) == (5, 10)
         assert request.metadata == {"env": "prod"}
 
-    def test_list_assistant_versions_rejects_bad_pagination(self, client, mock_assistant_service):
+    def test_list_assistant_versions_rejects_bad_pagination(
+        self, client: TestClient, mock_assistant_service: AsyncMock
+    ) -> None:
         """Out-of-range paging is a client error, not a silently clamped query."""
         mock_assistant_service.list_assistant_versions.return_value = []
         assert client.post("/assistants/a/versions", json={"limit": 0}).status_code == 422

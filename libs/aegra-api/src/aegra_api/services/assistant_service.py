@@ -21,13 +21,18 @@ from typing import Any, NamedTuple
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException
-from langchain_core.runnables.utils import create_model
+from langchain_core.utils.pydantic import create_model
 from pydantic import TypeAdapter
 from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aegra_api.core.auth_deps import get_current_user
-from aegra_api.core.auth_filters import build_metadata_filter
+from aegra_api.core.auth_filters import (
+    ASSISTANTS_SEARCH_ALL,
+    SYSTEM_IDENTITY,
+    build_metadata_filter,
+    build_visibility_filters,
+)
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import AssistantVersion as AssistantVersionORM
 from aegra_api.core.orm import Thread as ThreadORM
@@ -302,7 +307,14 @@ class AssistantService(Authenticated):
 
         Shared by search and count so both queries match the same row set.
         """
-        stmt = stmt.where(or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system"))
+        stmt = stmt.where(
+            *build_visibility_filters(
+                AssistantORM.user_id,
+                self.user,
+                ASSISTANTS_SEARCH_ALL,
+                shared_identity=SYSTEM_IDENTITY,
+            )
+        )
 
         if request.name:
             stmt = stmt.where(AssistantORM.name.ilike(f"%{_escape_like(request.name)}%", escape="\\"))
@@ -395,22 +407,6 @@ class AssistantService(Authenticated):
         filters = await self._dispatch("update", value)
         request.metadata = _injected_metadata(request.metadata, value)
 
-        metadata = request.metadata or {}
-        config = request.config or {}
-        context = request.context or {}
-
-        if config.get("configurable") and context:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot specify both configurable and context. Use only one.",
-            )
-
-        # Keep config and context up to date with one another
-        if config.get("configurable"):
-            context = config["configurable"]
-        elif context:
-            config["configurable"] = context
-
         stmt = select(AssistantORM).where(
             AssistantORM.assistant_id == assistant_id,
             AssistantORM.user_id == self.user.identity,
@@ -421,6 +417,29 @@ class AssistantService(Authenticated):
         assistant = await self.session.scalar(stmt)
         if not assistant:
             raise HTTPException(404, f"Assistant '{assistant_id}' not found")
+
+        # Applies to the request only. Stored rows legitimately carry both, because
+        # the mirroring below writes them in pairs — validating the merged result
+        # would reject every partial update to an assistant that has a context.
+        if request.config is not None and request.config.get("configurable") and request.context:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot specify both configurable and context. Use only one.",
+            )
+
+        # An omitted field keeps its stored value, matching how name/description are
+        # patched below. Coercing absent to {} would wipe the assistant's config —
+        # and collide with the (user_id, graph_id, config) uniqueness constraint
+        # whenever another assistant already has an empty one.
+        metadata = request.metadata if request.metadata is not None else (assistant.metadata_dict or {})
+        config = request.config if request.config is not None else (assistant.config or {})
+        context = request.context if request.context is not None else (assistant.context or {})
+
+        # Mirror whichever side the request actually supplied; leave both alone otherwise.
+        if request.config is not None and config.get("configurable"):
+            context = config["configurable"]
+        elif request.context is not None and context:
+            config = {**config, "configurable": context}
 
         now = datetime.now(UTC)
         version_stmt = select(func.max(AssistantVersionORM.version)).where(
@@ -465,6 +484,9 @@ class AssistantService(Authenticated):
         await self.session.execute(assistant_update)
         await self.session.commit()
         updated_assistant = await self.session.scalar(stmt)
+        if updated_assistant is None:
+            # Deleted between the commit and this re-read.
+            raise HTTPException(404, f"Assistant '{assistant_id}' not found")
         return to_pydantic(updated_assistant)
 
     async def delete_assistant(self, assistant_id: str, *, delete_threads: bool = False) -> dict[str, str]:
@@ -548,6 +570,9 @@ class AssistantService(Authenticated):
         await self.session.execute(assistant_update)
         await self.session.commit()
         updated_assistant = await self.session.scalar(stmt)
+        if updated_assistant is None:
+            # Deleted between the commit and this re-read.
+            raise HTTPException(404, f"Assistant '{assistant_id}' not found")
         return to_pydantic(updated_assistant)
 
     async def list_assistant_versions(
@@ -590,7 +615,7 @@ class AssistantService(Authenticated):
         version_list = [
             Assistant(
                 assistant_id=assistant_id,
-                name=v.name,
+                name=v.name or f"Assistant for {v.graph_id}",
                 description=v.description,
                 config=v.config or {},
                 context=v.context or {},

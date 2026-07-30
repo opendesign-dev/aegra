@@ -32,28 +32,30 @@ class DummySessionBase:
     appropriate rows for a test. By default, returns empty data.
     """
 
-    async def __aenter__(self):
+    # Statement params are positional-only: subclasses name them freely (stmt,
+    # _stmt, query) without tripping an override mismatch.
+    async def __aenter__(self) -> "DummySessionBase":
         return self
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(self, exc_type: object, exc: object, tb: object, /) -> bool:
         return False
 
-    def add(self, _):
+    def add(self, obj: Any, /) -> None:
         """AsyncSession.add is sync in SQLAlchemy"""
         return None
 
-    async def commit(self):
+    async def commit(self) -> None:
         return None
 
-    async def refresh(self, _obj):
+    async def refresh(self, obj: Any, /) -> None:
         return None
 
-    async def scalar(self, _stmt):
+    async def scalar(self, stmt: Any, /) -> Any:
         return None
 
-    async def scalars(self, _stmt):
+    async def scalars(self, stmt: Any, /) -> Any:
         class Result:
-            def all(self_inner):
+            def all(self) -> list[Any]:
                 return []
 
         return Result()

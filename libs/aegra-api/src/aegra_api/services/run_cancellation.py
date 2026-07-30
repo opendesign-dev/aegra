@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.models.enums import TERMINAL_RUN_STATUSES
+from aegra_api.models.enums import TERMINAL_RUN_STATUSES, CancelAction
 from aegra_api.services.streaming_service import streaming_service
 
 logger = structlog.getLogger(__name__)
@@ -64,14 +64,17 @@ async def wait_for_settle(
     safe moment to delete checkpoints for a rollback. In dev ``claimed_by`` is
     always NULL, so this reduces to waiting for the local task's terminal status.
     """
-    for _ in range(attempts):
-        await asyncio.sleep(delay)
+    for attempt in range(attempts):
+        # Check before sleeping: interrupt_pending just settled any unclaimed run,
+        # so the exit condition is often already true on entry.
+        if attempt:
+            await asyncio.sleep(delay)
         rows = (await session.execute(select(RunORM.status, RunORM.claimed_by).where(RunORM.run_id.in_(run_ids)))).all()
         if all(status in TERMINAL_RUN_STATUSES and claimed_by is None for status, claimed_by in rows):
             return
 
 
-async def signal_cancel(session: AsyncSession, run_ids: list[str], action: str) -> None:
+async def signal_cancel(session: AsyncSession, run_ids: list[str], action: CancelAction) -> None:
     """Mark the intent, fire the pub/sub accelerator, and settle unclaimed runs.
 
     Intent is persisted before signalling so a lost message cannot let the run
