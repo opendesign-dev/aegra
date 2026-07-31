@@ -11,6 +11,7 @@
 | 来源 | 说明 | 权威性 |
 |:--|:--|:--|
 | `langgraph-sdk 0.4.2` 源码 | `.venv/Lib/site-packages/langgraph_sdk/_async/{assistants,runs,threads,cron,store}.py`，AST 提取每个方法的动词、路径、请求字段 | 最高 —— 这是客户端真实发出的请求 |
+| —— 版本时效 | 0.4.2 发布于 2026-06-01，是分析当日 PyPI 上的**最新版本**（已核对）。仓库同时装有 `langgraph 1.2.6`，而 PyPI 最新为 1.2.10 —— 该库属运行时，不定义数据面 HTTP 契约，不影响本文结论 | — |
 | `langgraph_sdk/schema.py` | `Assistant`/`Thread`/`ThreadState`/`Run`/`Cron`/`Item` 等 TypedDict，以及 `StreamMode`/`RunStatus` 等 Literal | 最高 —— 客户端期望的响应形状 |
 | `docs/openapi.json` | 本项目导出的 spec（40 个端点） | 高 |
 | `libs/aegra-api/src/` 源码 | 校验 OpenAPI 与实现不一致处 | 最高 |
@@ -65,7 +66,7 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官
 | `search()` | `POST /threads/search` | ⚠️ | 缺 `values`、`ids`、`select`、`extract`；`sort_by` 缺 `state_updated_at` |
 | `count()` | `POST /threads/count` | ❌ | 缺失 |
 | `copy()` | `POST /threads/{id}/copy` | ❌ | 缺失 |
-| `prune()` | `POST /threads/prune` | ❌ | 缺失。官方用于回收 checkpoint 存储（DeltaChannel-aware） |
+| `prune()` | `POST /threads/prune` | ❌ | 缺失。官方用于回收 checkpoint 存储（DeltaChannel-aware），`strategy` 取 `PruneStrategy = delete｜keep_latest` |
 | `get_state()` | `GET /threads/{id}/state` | ✅ | 支持 `subgraphs` |
 | `get_state()` | `GET /threads/{id}/state/{checkpoint_id}` | ✅ | — |
 | `get_state()` | `POST /threads/{id}/state/checkpoint` | ✅ | — |
@@ -87,7 +88,7 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官
 | `list()` | `GET /threads/{id}/runs` | ⚠️ | 缺 `select`；`limit` **无上限**（SDK 侧上限 1000） |
 | `get()` | `GET /threads/{id}/runs/{run_id}` | ⚠️ | 响应缺 `metadata`、`multitask_strategy`（见 6.1） |
 | `cancel()` | `POST /threads/{id}/runs/{run_id}/cancel` | ✅ | 支持 `wait`、`action` |
-| `cancel_many()` | `POST /runs/cancel` | ❌ | 缺失 |
+| `cancel_many()` | `POST /runs/cancel` | ❌ | 缺失。参数为 `thread_id`+`run_ids` 或 `status`（`BulkCancelRunsStatus = pending｜running｜all`）+ `action` |
 | `join()` | `GET /threads/{id}/runs/{run_id}/join` | ✅ | — |
 | `join_stream()` | `GET /threads/{id}/runs/{run_id}/stream` | ⚠️ | **参数名不匹配 + 未生效**（见 6.3） |
 | `delete()` | `DELETE /threads/{id}/runs/{run_id}` | ✅ | 额外支持 `force` |
@@ -188,6 +189,19 @@ SDK 从 `api_key` 参数或 `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` 环境变�
 
 项目不硬编码任何认证头，而是把认证委托给 `aegra.json` 的 `auth.path` 所指的 `@auth.authenticate` handler。因此对齐是**可配置的而非默认的**：要让 SDK 客户端开箱可用，自定义 handler 必须读取 `x-api-key` 头。这一点值得写进部署文档。
 
+### 5.3 易误判为缺失、实际已对齐的项
+
+以下几项在 SDK 侧有专门类型或机制，看字段名容易判成缺失，但读实现后确认可用。记录在此以免重复排查：
+
+| 项 | SDK 机制 | 项目现状 |
+|:--|:--|:--|
+| `on_run_created` 回调 | 从 **`Content-Location`** 响应头正则提取 `RunCreateMetadata{run_id, thread_id}`，不是读响应体 | ✅ 五处流式/创建端点均设 `Content-Location: /threads/{id}/runs/{run_id}`，且在 CORS `expose_headers` 中暴露（浏览器可读）|
+| `Config{tags, recursion_limit, configurable}` | 整个 config 传给运行时 | ✅ `create_run_config()` 对入参 `deepcopy` 后只增不删（仅注入 `configurable.thread_id`/`run_id` 与 `metadata`），故 `tags`、`recursion_limit` 原样透传 |
+| `err.request_id` | 读 `x-request-id` 响应头 | ✅ `CorrelationIdMiddleware` 默认暴露 `X-Request-ID`，httpx 查找大小写不敏感 |
+| `graph_id`（创建 thread） | 被 SDK 合并进 `metadata.graph_id` | ✅ 项目接受 `metadata`（见 4.2）|
+| v2 流式协议 | 客户端转换，但依赖服务端 `type｜ns1｜ns2` 事件名约定 | ✅ 项目按该格式拼接（见 8.3）|
+| `interrupt_before/after` 的 `"*"` | `All = Literal["*"]` | ✅ 支持全节点通配 |
+
 ## 六、静默失效清单（最高优先级）
 
 以下七处**不报错、不 4xx**，客户端以为生效但实际无效。这类问题比端点缺失更危险 —— 缺失会拿到 404，静默失效拿到 200。
@@ -245,7 +259,9 @@ Pydantic 模型未设 `extra="forbid"`，4.1 表中的 9 个参数传入后既�
 
 ## 八、流式协议对比
 
-### stream_mode 支持
+SDK 定义了**两套彼此独立**的流式模式枚举，对应两类端点：`StreamMode` 用于 run 级流式，`ThreadStreamMode` 用于 thread 级流式。
+
+### 8.1 run 级 `StreamMode`
 
 | 模式 | SDK 定义 | 项目 | 说明 |
 |:--|:-:|:-:|:--|
@@ -261,11 +277,46 @@ Pydantic 模型未设 `extra="forbid"`，4.1 表中的 9 个参数传入后既�
 
 项目侧的合法性校验已随 `_parse_stream_modes` 移除，非法 `stream_mode` 不再返回 422。
 
-### SSE 事件类型
+另注：`langgraph` 核心库自己的 `StreamMode` 只有 7 个值（无 `events`、`messages-tuple`）—— 这两个是 API 层概念，由 Agent Server 翻译成核心库的模式，项目已实现该翻译（`messages-tuple` 对 Python graph 归一化为 `messages`）。
 
-项目发出：`metadata`、`values`、`updates`、`messages`（含 `messages/partial`、`messages/complete`、`messages/metadata`）、`debug`、`end`、`error`，与 SDK 的 `StreamPart(event, data, id)` 解码器兼容。
+### 8.2 thread 级 `ThreadStreamMode`
 
-### 断线重放
+`GET /threads/{id}/stream` 用的是另一套枚举，与 run 级完全不重叠：
+
+| 模式 | 语义 | Platform | 项目 |
+|:--|:--|:-:|:-:|
+| `run_modes` | 转发该 thread 上各 run 的 run 级事件 | ✅ | ❌ |
+| `lifecycle` | thread 生命周期事件（run 开始/结束等） | ✅ | ❌ |
+| `state_update` | thread 状态变更事件 | ✅ | ❌ |
+
+三者均不可用，因为端点本身缺失（3.2）。补齐时需注意：0.15.0 曾实现过该端点，但只支持 `run_modes` 一种模式（源码中有 `Only the 'run_modes' thread stream mode is supported` 的 422），即便直接恢复那份实现，也只覆盖 1/3。
+
+### 8.3 SSE 事件类型与协议版本（v1 / v2）
+
+SDK 的 `runs.stream()` 有 `version: Literal["v1","v2"]` 参数（默认 `v1`），两个版本的事件形状不同：
+
+| | v1（`StreamPart`） | v2（`StreamPartV2`） |
+|:--|:--|:--|
+| 形状 | `(event, data, id)` 三元组 | `{"type", "ns", "data"}` 字典 |
+| 子图层级 | 编码在 `event` 名里 | 拆成 `ns: list[str]` |
+| 流结束 | `end` 事件 | 转换器返回 `None`（吞掉该事件）|
+| 中断 | 需自行从 data 里找 | `values` 类型额外带 `interrupts` 字段 |
+
+**`version` 不发给服务端** —— 它是纯客户端转换（`_wrap_stream_v2` → `_sse_to_v2_dict`）。但转换**依赖服务端的事件名约定**：
+
+```
+event.split("|")  →  parts[0] 作为 type，parts[1:] 作为 ns
+```
+
+即子图事件的 SSE 事件名必须形如 `values|node_a|inner`，客户端才能解出 `ns: ["node_a", "inner"]`。
+
+**项目已满足该约定**：`graph_streaming.py` 在 `stream_subgraphs=True` 时拼 `f"{mode}|{ns_str}"`（`ns_str = "|".join(namespace)`）。因此 v1 与 v2 均可用，**此项已对齐** ✅。
+
+v2 定义了 11 个具体事件类型（`values`、`updates`、`messages`、`messages/partial`、`messages/complete`、`messages/metadata`、`custom`、`checkpoints`、`tasks`、`debug`、`metadata`）。项目实际发出：`metadata`、`values`、`updates`、`messages`（含三个 `messages/*` 变体）、`debug`、`end`、`error` —— 与 v1 解码器兼容；`checkpoints`、`tasks` 两类事件透传 LangGraph 但无专门构造（与 8.1 表中的 ⚠️ 一致）。
+
+> **勿与项目的 `event_streaming_v2` 混淆。** 后者是 Aegra 自有的双向命令协议（`services/event_streaming/protocol.py` 构造 `{"type":"event","seq","method","params"}` 与 `{"type":"success","id","result"}`），服务于两个非 SDK 端点 `POST /threads/{id}/commands` 和 `POST /threads/{id}/stream/events`，与 SDK 的 v2 流式格式无关。
+
+### 8.4 断线重放
 
 | 能力 | Platform | 项目 |
 |:--|:-:|:-:|
@@ -300,7 +351,7 @@ Pydantic 模型未设 `extra="forbid"`，4.1 表中的 9 个参数传入后既�
 14. **Thread TTL / `POST /threads/prune`** —— retention 功能族，配合 checkpoint 存储回收。
 15. **Store `index` / `ttl` / `refresh_ttl` / `score`** —— 语义检索与过期，依赖 `AsyncPostgresStore` 的 index/ttl 配置。
 16. **`supersteps`** 预填 thread 状态。
-17. **`GET /threads/{id}/stream`** thread 级流式 + `stream_resumable` 事件落盘。
+17. **`GET /threads/{id}/stream`** thread 级流式 + `stream_resumable` 事件落盘。注意要覆盖 `ThreadStreamMode` 的三种模式（`run_modes`/`lifecycle`/`state_update`），0.15.0 的实现只做了第一种。
 
 ## 十、如何重做这个分析
 
