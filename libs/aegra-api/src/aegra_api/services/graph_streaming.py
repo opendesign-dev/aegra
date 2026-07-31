@@ -105,16 +105,28 @@ async def stream_graph_events(
     context: dict[str, Any] | None = None,
     subgraphs: bool = False,
     output_keys: list[str] | None = None,
-    durability: str | None = None,
-    interrupt_before: str | list[str] | None = None,
-    interrupt_after: str | list[str] | None = None,
     on_checkpoint: Callable[[CheckpointPayload | None], None] = lambda _: None,
     on_task_result: Callable[[TaskResultPayload], None] = lambda _: None,
 ) -> AnyStream:
-    """Stream a graph execution as (mode, payload) tuples.
+    """Stream events from a graph execution.
 
-    Picks ``astream_events`` over ``astream`` for JS graphs and when "events" is requested;
-    accumulates message chunks into partial/complete events on the way out.
+    Handles both standard streaming (astream) and event-based streaming (astream_events)
+    depending on the graph type and requested stream modes. Automatically accumulates
+    message chunks and yields appropriate partial/complete events.
+
+    Args:
+        graph: The graph instance to execute
+        input_data: Input data for graph execution
+        config: RunnableConfig for execution
+        stream_mode: List of stream modes (e.g., ["messages", "values", "debug"])
+        context: Optional context dictionary
+        subgraphs: Whether to include subgraph namespaces in event types
+        output_keys: Optional output channel keys for astream
+        on_checkpoint: Callback invoked when checkpoint events are received
+        on_task_result: Callback invoked when task result events are received
+
+    Yields:
+        Tuples of (mode, payload) where mode is the stream mode and payload is the event data
     """
     run_id = str(config.get("configurable", {}).get("run_id", uuid.uuid4()))
 
@@ -158,18 +170,6 @@ async def stream_graph_events(
     # Choose streaming method based on mode and graph type
     use_astream_events = "events" in stream_mode or is_js_graph
 
-    # Each kwarg is forwarded only when set, so an unset one keeps langgraph's
-    # default and graph types that don't accept it (e.g. JS remote) are
-    # unaffected. Static breakpoints belong here, not in config: config is an
-    # allow-list and an unknown key there is silently dropped.
-    stream_kwargs: dict[str, Any] = {}
-    if durability is not None:
-        stream_kwargs["durability"] = durability
-    if interrupt_before:
-        stream_kwargs["interrupt_before"] = interrupt_before
-    if interrupt_after:
-        stream_kwargs["interrupt_after"] = interrupt_after
-
     # Yield metadata event
     yield (
         "metadata",
@@ -186,7 +186,6 @@ async def stream_graph_events(
                 version="v2",
                 stream_mode=list(stream_modes_set),
                 subgraphs=subgraphs,
-                **stream_kwargs,
             )
         ) as stream:
             async for event in stream:
@@ -273,7 +272,6 @@ async def stream_graph_events(
                 stream_mode=list(stream_modes_set),
                 output_keys=output_keys,
                 subgraphs=subgraphs,
-                **stream_kwargs,
             )
         ) as stream:
             async for event in stream:
@@ -322,10 +320,24 @@ def _process_stream_event(
     on_checkpoint: Callable[[CheckpointPayload | None], None],
     on_task_result: Callable[[TaskResultPayload], None],
 ) -> list[tuple[str, Any]] | None:
-    """Turn one raw stream event into the (mode, payload) tuples to emit, or None.
+    """Process a single stream event and generate output events.
 
-    Shared by the astream and astream_events paths; handles message accumulation,
-    debug normalization, and stream-mode routing.
+    Handles message accumulation, debug events, and stream mode routing.
+    Used by both astream and astream_events execution paths.
+
+    Args:
+        mode: The stream mode (e.g., "messages", "values", "debug")
+        chunk: The event chunk data
+        namespace: Optional namespace for subgraph events
+        subgraphs: Whether subgraph namespaces should be included
+        stream_mode: List of requested stream modes
+        messages: Dictionary for accumulating message chunks by ID
+        only_interrupt_updates: Whether to filter non-interrupt updates
+        on_checkpoint: Callback for checkpoint events
+        on_task_result: Callback for task result events
+
+    Returns:
+        List of (mode, payload) tuples to yield, or None if nothing to yield
     """
     results: list[tuple[str, Any]] = []
 

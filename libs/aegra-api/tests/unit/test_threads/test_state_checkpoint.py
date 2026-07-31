@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from aegra_api.api.thread_state import (
+from aegra_api.api.threads import (
     get_thread_state_at_checkpoint,
     get_thread_state_at_checkpoint_post,
 )
@@ -56,7 +56,7 @@ class TestGetThreadStateAtCheckpoint:
                 return_value=config,
             ),
             patch(
-                "aegra_api.api.thread_state.thread_state_service.convert_snapshot_to_thread_state",
+                "aegra_api.api.threads.thread_state_service.convert_snapshot_to_thread_state",
                 return_value=mock_thread_state,
             ) as mock_convert,
         ):
@@ -100,7 +100,7 @@ class TestGetThreadStateAtCheckpoint:
                 return_value=config,
             ),
             patch(
-                "aegra_api.api.thread_state.thread_state_service.convert_snapshot_to_thread_state",
+                "aegra_api.api.threads.thread_state_service.convert_snapshot_to_thread_state",
                 return_value=mock_thread_state,
             ),
         ):
@@ -143,7 +143,7 @@ class TestGetThreadStateAtCheckpoint:
                 return_value=config,
             ),
             patch(
-                "aegra_api.api.thread_state.thread_state_service.convert_snapshot_to_thread_state",
+                "aegra_api.api.threads.thread_state_service.convert_snapshot_to_thread_state",
                 return_value=mock_thread_state,
             ),
         ):
@@ -181,7 +181,7 @@ class TestGetThreadStateAtCheckpointPost:
         mock_thread_state = MagicMock()
 
         with patch(
-            "aegra_api.api.thread_state.get_thread_state_at_checkpoint",
+            "aegra_api.api.threads.get_thread_state_at_checkpoint",
             return_value=mock_thread_state,
         ) as mock_get:
             result = await get_thread_state_at_checkpoint_post("thread-123", request, user=user, session=session)
@@ -213,7 +213,7 @@ class TestGetThreadStateAtCheckpointPost:
         mock_thread_state = MagicMock()
 
         with patch(
-            "aegra_api.api.thread_state.get_thread_state_at_checkpoint",
+            "aegra_api.api.threads.get_thread_state_at_checkpoint",
             return_value=mock_thread_state,
         ) as mock_get:
             result = await get_thread_state_at_checkpoint_post("thread-123", request, user=user, session=session)
@@ -264,7 +264,7 @@ class TestGetThreadStateAtCheckpointPost:
         mock_thread_state = MagicMock()
 
         with patch(
-            "aegra_api.api.thread_state.get_thread_state_at_checkpoint",
+            "aegra_api.api.threads.get_thread_state_at_checkpoint",
             return_value=mock_thread_state,
         ) as mock_get:
             await get_thread_state_at_checkpoint_post("thread-123", request, user=user, session=session)

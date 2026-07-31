@@ -10,10 +10,6 @@ from aegra_api.core.sse import (
     format_sse_message,
 )
 
-# Emitted by the server itself rather than by a graph, so no stream_mode filter
-# may drop them.
-_CONTROL_EVENTS = frozenset({"metadata", "end", "error"})
-
 
 class EventConverter:
     """Converts events to SSE format"""
@@ -26,27 +22,10 @@ class EventConverter:
         """Set whether subgraphs mode is enabled for namespace extraction"""
         self.subgraphs = subgraphs
 
-    def convert_raw_to_sse(self, event_id: str, raw_event: Any, stream_modes: frozenset[str] | None) -> str | None:
-        """Convert a raw broker event to SSE, or None when *stream_modes* excludes it.
-
-        Filtering lives here rather than in the caller so the event is parsed once:
-        deciding the mode and rendering the payload need the same parse.
-        """
+    def convert_raw_to_sse(self, event_id: str, raw_event: Any) -> str | None:
+        """Convert raw event to SSE format"""
         stream_mode, payload, namespace = self._parse_raw_event(raw_event)
-        if stream_modes is not None and not self._is_allowed(stream_mode, stream_modes):
-            return None
         return self._create_sse_event(stream_mode, payload, event_id, namespace)
-
-    @staticmethod
-    def _is_allowed(stream_mode: str, stream_modes: frozenset[str]) -> bool:
-        """Whether an event's mode survives a join-stream ``stream_mode`` filter.
-
-        Strips the ``messages/partial`` and ``values|ns`` modifiers down to the
-        plain SDK vocabulary. Control events carry no graph payload, so dropping
-        them would cost the client run_id, errors, and the end of the stream.
-        """
-        base = stream_mode.split("/", 1)[0].split("|", 1)[0]
-        return base in _CONTROL_EVENTS or base in stream_modes
 
     def _parse_raw_event(self, raw_event: Any) -> tuple[str, Any, list[str] | None]:
         """

@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Mapping
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse
@@ -22,14 +22,14 @@ from aegra_api.api.runs import (
     wait_for_run,
 )
 from aegra_api.core.auth_deps import auth_dependency, get_current_user
-from aegra_api.core.orm import get_session, get_session_maker
+from aegra_api.core.orm import get_session
 from aegra_api.core.sse import make_sse_response
 from aegra_api.models import Run, RunCreate, User
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.run_cleanup import (
-    CLEANUP_ERRORS,
-    background_cleanup_tasks,
+    _CLEANUP_ERRORS,
+    _background_cleanup_tasks,
     delete_thread_by_id,
     schedule_background_cleanup,
 )
@@ -44,15 +44,35 @@ logger = structlog.getLogger(__name__)
 
 
 def _run_finished(run_id: str) -> bool:
-    """Best-effort check: did the run already publish its end event *in this process*?
+    """Best-effort check: did the run already publish its end event locally?
 
-    Only true once this instance saw the ``end`` event — always the case in dev,
-    but cross-instance in prod it flips only after the local pub/sub subscriber
-    drains it. False therefore means "unknown", and the caller keeps the
-    ephemeral thread rather than deleting a live run's state.
+    Both broker backends set ``_finished`` whenever ``put(end)``
+    (producer-side) or ``aiter()`` reading the end event (consumer-side)
+    runs in this process. From the calling instance's perspective:
 
-    TODO(orphan-thread-sweeper): prod-mode aborts that race the drain leak an
-    empty ephemeral thread; a retention sweeper should reclaim them.
+      - In-memory (dev): producer and consumer share this process, so
+        any ``end`` event reliably flips the flag.
+      - Redis (prod): if the run was picked up by a worker on another
+        instance, this process never called ``put()`` — the flag flips
+        only after our local pub/sub subscriber drains the end event.
+        A slow-client abort that races ahead of the drain leaves the
+        flag False even though the run itself terminated.
+
+    Returning False errs on keeping the thread. The broker cleanup task
+    removes the broker dict entry after an hour, but it does NOT delete
+    the ephemeral thread row from Postgres — leaving an unmatched abort
+    here leaks an empty ephemeral thread.
+
+    TODO(orphan-thread-sweeper): file as a follow-up issue. The sweeper
+    should periodically delete ephemeral threads (flagged via
+    ``is_ephemeral`` column or metadata) where no run is in
+    pending/running status and ``updated_at`` is older than a configured
+    retention window. Triggering condition for accumulation: prod-mode
+    Redis broker + slow-client / dead-proxy aborts that race ahead of
+    the local pub/sub subscriber draining the run's end event.
+
+    A missing broker (None) also returns False — the safe answer for
+    "run not started" and "broker dict entry already swept".
     """
     broker = broker_manager.get_broker(run_id)
     return broker is not None and broker.is_finished()
@@ -61,8 +81,18 @@ def _run_finished(run_id: str) -> bool:
 def _extract_run_id_from_headers(headers: Mapping[str, str]) -> str | None:
     """Pull ``run_id`` from a streaming response's ``Content-Location``.
 
-    Starlette lowercases header keys per ASGI; the capitalized fallback covers
-    plain ``dict`` callers. Failing to parse only disables slow-client cleanup.
+    Both ``wait_for_run`` and ``create_and_stream_run`` set
+    ``Content-Location: /threads/{thread_id}/runs/{run_id}`` with the same
+    format; we currently call this only from the stream endpoint, where
+    slow-client cleanup needs the run_id to consult the broker.
+
+    Starlette's ``Headers``/``MutableHeaders`` is case-insensitive on
+    ``.get`` and stores keys lowercase per the ASGI spec, so the
+    lowercase lookup is the canonical path. The capitalized fallback
+    covers plain ``dict`` callers (e.g. unit tests constructing headers
+    directly) — cheap defense vs the silent "always returns None" bug
+    if someone ever bypasses Starlette normalization. Failing to parse
+    disables the slow-client cleanup branch — not fatal.
     """
     location = headers.get("content-location") or headers.get("Content-Location") or ""
     if not location:
@@ -77,15 +107,15 @@ async def _delete_thread_with_log(thread_id: str, user_id: str, *, reason: str) 
     """Delete an ephemeral thread, logging infra failures."""
     try:
         await delete_thread_by_id(thread_id, user_id)
-    except CLEANUP_ERRORS:
+    except _CLEANUP_ERRORS:
         logger.exception(reason, thread_id=thread_id)
 
 
 def _schedule_thread_cleanup(thread_id: str, user_id: str, *, reason: str) -> None:
-    """Fire-and-forget delete keyed off ``background_cleanup_tasks``."""
+    """Fire-and-forget delete keyed off ``_background_cleanup_tasks``."""
     task = asyncio.create_task(_delete_thread_with_log(thread_id, user_id, reason=reason))
-    background_cleanup_tasks.add(task)
-    task.add_done_callback(background_cleanup_tasks.discard)
+    _background_cleanup_tasks.add(task)
+    task.add_done_callback(_background_cleanup_tasks.discard)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +135,6 @@ async def stateless_wait_for_run(
     (unless ``on_completion="keep"``).
     """
     thread_id = str(uuid4())
-    request.if_not_exists = "create"  # ephemeral thread is created by this run
     should_delete = request.on_completion != "keep"
 
     try:
@@ -114,7 +143,7 @@ async def stateless_wait_for_run(
         if should_delete:
             try:
                 await delete_thread_by_id(thread_id, user.identity)
-            except CLEANUP_ERRORS:
+            except _CLEANUP_ERRORS:
                 logger.exception(
                     "Failed to delete ephemeral thread after wait error",
                     thread_id=thread_id,
@@ -174,7 +203,6 @@ async def stateless_stream_run(
     stream finishes (unless ``on_completion="keep"``).
     """
     thread_id = str(uuid4())
-    request.if_not_exists = "create"  # ephemeral thread is created by this run
     should_delete = request.on_completion != "keep"
 
     try:
@@ -185,7 +213,7 @@ async def stateless_stream_run(
         if should_delete:
             try:
                 await delete_thread_by_id(thread_id, user.identity)
-            except CLEANUP_ERRORS:
+            except _CLEANUP_ERRORS:
                 logger.exception(
                     "Failed to delete ephemeral thread after stream setup error",
                     thread_id=thread_id,
@@ -257,7 +285,6 @@ async def stateless_create_run(
     ``on_completion="keep"``).
     """
     thread_id = str(uuid4())
-    request.if_not_exists = "create"  # ephemeral thread is created by this run
     should_delete = request.on_completion != "keep"
 
     try:
@@ -268,7 +295,7 @@ async def stateless_create_run(
         if should_delete:
             try:
                 await delete_thread_by_id(thread_id, user.identity)
-            except CLEANUP_ERRORS:
+            except _CLEANUP_ERRORS:
                 logger.exception(
                     "Failed to delete ephemeral thread after create error",
                     thread_id=thread_id,
@@ -279,35 +306,3 @@ async def stateless_create_run(
         schedule_background_cleanup(result.run_id, thread_id, user.identity)
 
     return result
-
-
-# Bound batch fan-out so one request can't create unbounded runs or open
-# unbounded DB sessions at once.
-_MAX_BATCH_SIZE = 100
-_BATCH_CONCURRENCY = 10
-
-
-@router.post("/runs/batch", response_model=list[Run], responses={**NOT_FOUND, **CONFLICT})
-async def stateless_create_run_batch(
-    requests: list[RunCreate],
-    user: User = Depends(get_current_user),
-) -> list[Run]:
-    """Create a batch of stateless background runs.
-
-    Each run gets its own ephemeral thread and runs in the background. Bounded
-    concurrency; returns the created Run records in request order. Each item
-    uses its own DB session — a single AsyncSession is not concurrency-safe.
-    """
-    if not requests:
-        return []
-    if len(requests) > _MAX_BATCH_SIZE:
-        raise HTTPException(status_code=422, detail=f"batch exceeds {_MAX_BATCH_SIZE} runs")
-
-    maker = get_session_maker()
-    semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
-
-    async def _create_one(req: RunCreate) -> Run:
-        async with semaphore, maker() as batch_session:
-            return await stateless_create_run(req, user, batch_session)
-
-    return list(await asyncio.gather(*(_create_one(req) for req in requests)))

@@ -15,42 +15,25 @@ applied to other APIs (runs, threads, crons) as part of ongoing refactoring.
 """
 
 import uuid
-from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import Any
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException
-from langchain_core.utils.pydantic import create_model
+from langchain_core.runnables.utils import create_model
 from pydantic import TypeAdapter
-from sqlalchemy import Select, func, or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aegra_api.core.auth_deps import get_current_user
-from aegra_api.core.auth_filters import (
-    ASSISTANTS_SEARCH_ALL,
-    SYSTEM_IDENTITY,
-    build_metadata_filter,
-    build_visibility_filters,
-)
+from aegra_api.core.auth_filters import build_metadata_filter
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import AssistantVersion as AssistantVersionORM
-from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session
 from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
-from aegra_api.models.assistants import AssistantVersionsRequest
 from aegra_api.models.auth import User
 from aegra_api.services.authenticated import Authenticated
 from aegra_api.services.langgraph_service import LangGraphService, get_langgraph_service
-from aegra_api.services.run_cleanup import delete_thread_by_id
-
-
-class AssistantSearchPage(NamedTuple):
-    """One page of /assistants/search results plus pagination header values."""
-
-    items: list[dict[str, Any]]
-    total: int
-    next_offset: int | None
 
 
 def to_pydantic(row: AssistantORM) -> Assistant:
@@ -146,17 +129,6 @@ def _escape_like(value: str) -> str:
     Backslash is replaced first so subsequent escapes are not double-escaped.
     """
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _serialize_assistant(assistant: Assistant, select_fields: Sequence[str] | None) -> dict[str, Any]:
-    """Dump an assistant for the wire, projected to `select_fields` when given.
-
-    Uses the same Pydantic JSON serializer the response_model path used, so the
-    full-model output (select=None) is byte-identical to the old wire format.
-    """
-    if select_fields:
-        return assistant.model_dump(mode="json", by_alias=False, include=set(select_fields))
-    return assistant.model_dump(mode="json", by_alias=False)
 
 
 def _injected_metadata(
@@ -297,23 +269,19 @@ class AssistantService(Authenticated):
         result = await self.session.scalars(stmt)
         return [to_pydantic(a) for a in result.all()]
 
-    def _apply_search_filters(
+    async def search_assistants(
         self,
-        stmt: Select[Any],
         request: Any,  # AssistantSearchRequest
-        filters: dict[str, Any] | None,
-    ) -> Select[Any]:
-        """Apply tenant scope, request filters, and the handler auth filter.
+        *,
+        sort_column: Any | None = None,
+        sort_asc: bool = False,
+    ) -> list[Assistant]:
+        """Search assistants with filters"""
+        value = request.model_dump()
+        filters = await self._dispatch("search", value)
 
-        Shared by search and count so both queries match the same row set.
-        """
-        stmt = stmt.where(
-            *build_visibility_filters(
-                AssistantORM.user_id,
-                self.user,
-                ASSISTANTS_SEARCH_ALL,
-                shared_identity=SYSTEM_IDENTITY,
-            )
+        stmt = select(AssistantORM).where(
+            or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system")
         )
 
         if request.name:
@@ -331,23 +299,6 @@ class AssistantService(Authenticated):
         auth_filter = build_metadata_filter(AssistantORM.metadata_dict, filters)
         if auth_filter is not None:
             stmt = stmt.where(auth_filter)
-        return stmt
-
-    async def search_assistants(
-        self,
-        request: Any,  # AssistantSearchRequest
-        *,
-        sort_column: Any | None = None,
-        sort_asc: bool = False,
-    ) -> AssistantSearchPage:
-        """Search assistants with filters; returns the page plus pagination totals."""
-        value = request.model_dump()
-        filters = await self._dispatch("search", value)
-
-        count_stmt = self._apply_search_filters(select(func.count()).select_from(AssistantORM), request, filters)
-        total = await self.session.scalar(count_stmt) or 0
-
-        stmt = self._apply_search_filters(select(AssistantORM), request, filters)
 
         column = sort_column if sort_column is not None else AssistantORM.created_at
         direction = column.asc() if sort_asc else column.desc()
@@ -360,9 +311,7 @@ class AssistantService(Authenticated):
         stmt = stmt.offset(offset).limit(limit)
 
         result = await self.session.scalars(stmt)
-        items = [_serialize_assistant(to_pydantic(a), request.select) for a in result.all()]
-        next_offset = offset + limit if offset + limit < total else None
-        return AssistantSearchPage(items=items, total=total, next_offset=next_offset)
+        return [to_pydantic(a) for a in result.all()]
 
     async def count_assistants(self, request: Any) -> int:
         """Count assistants with filters"""
@@ -370,7 +319,25 @@ class AssistantService(Authenticated):
         filters = await self._dispatch("search", value)
 
         # Include both user's assistants and system assistants (like search_assistants does)
-        stmt = self._apply_search_filters(select(func.count()).select_from(AssistantORM), request, filters)
+        stmt = select(func.count()).where(
+            or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system")
+        )
+
+        if request.name:
+            stmt = stmt.where(AssistantORM.name.ilike(f"%{_escape_like(request.name)}%", escape="\\"))
+
+        if request.description:
+            stmt = stmt.where(AssistantORM.description.ilike(f"%{_escape_like(request.description)}%", escape="\\"))
+
+        if request.graph_id:
+            stmt = stmt.where(AssistantORM.graph_id == request.graph_id)
+
+        if request.metadata:
+            stmt = stmt.where(AssistantORM.metadata_dict.op("@>")(request.metadata))
+
+        auth_filter = build_metadata_filter(AssistantORM.metadata_dict, filters)
+        if auth_filter is not None:
+            stmt = stmt.where(auth_filter)
 
         total = await self.session.scalar(stmt)
         return total or 0
@@ -407,6 +374,22 @@ class AssistantService(Authenticated):
         filters = await self._dispatch("update", value)
         request.metadata = _injected_metadata(request.metadata, value)
 
+        metadata = request.metadata or {}
+        config = request.config or {}
+        context = request.context or {}
+
+        if config.get("configurable") and context:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot specify both configurable and context. Use only one.",
+            )
+
+        # Keep config and context up to date with one another
+        if config.get("configurable"):
+            context = config["configurable"]
+        elif context:
+            config["configurable"] = context
+
         stmt = select(AssistantORM).where(
             AssistantORM.assistant_id == assistant_id,
             AssistantORM.user_id == self.user.identity,
@@ -417,29 +400,6 @@ class AssistantService(Authenticated):
         assistant = await self.session.scalar(stmt)
         if not assistant:
             raise HTTPException(404, f"Assistant '{assistant_id}' not found")
-
-        # Applies to the request only. Stored rows legitimately carry both, because
-        # the mirroring below writes them in pairs — validating the merged result
-        # would reject every partial update to an assistant that has a context.
-        if request.config is not None and request.config.get("configurable") and request.context:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot specify both configurable and context. Use only one.",
-            )
-
-        # An omitted field keeps its stored value, matching how name/description are
-        # patched below. Coercing absent to {} would wipe the assistant's config —
-        # and collide with the (user_id, graph_id, config) uniqueness constraint
-        # whenever another assistant already has an empty one.
-        metadata = request.metadata if request.metadata is not None else (assistant.metadata_dict or {})
-        config = request.config if request.config is not None else (assistant.config or {})
-        context = request.context if request.context is not None else (assistant.context or {})
-
-        # Mirror whichever side the request actually supplied; leave both alone otherwise.
-        if request.config is not None and config.get("configurable"):
-            context = config["configurable"]
-        elif request.context is not None and context:
-            config = {**config, "configurable": context}
 
         now = datetime.now(UTC)
         version_stmt = select(func.max(AssistantVersionORM.version)).where(
@@ -484,13 +444,10 @@ class AssistantService(Authenticated):
         await self.session.execute(assistant_update)
         await self.session.commit()
         updated_assistant = await self.session.scalar(stmt)
-        if updated_assistant is None:
-            # Deleted between the commit and this re-read.
-            raise HTTPException(404, f"Assistant '{assistant_id}' not found")
         return to_pydantic(updated_assistant)
 
-    async def delete_assistant(self, assistant_id: str, *, delete_threads: bool = False) -> dict[str, str]:
-        """Delete assistant by ID, optionally cascading to its threads."""
+    async def delete_assistant(self, assistant_id: str) -> dict:
+        """Delete assistant by ID"""
         filters = await self._dispatch("delete", {"assistant_id": assistant_id})
 
         stmt = select(AssistantORM).where(
@@ -508,24 +465,7 @@ class AssistantService(Authenticated):
         await self.session.delete(assistant)
         await self.session.commit()
 
-        if delete_threads:
-            await self._delete_assistant_threads(assistant_id)
-
         return {"status": "deleted"}
-
-    async def _delete_assistant_threads(self, assistant_id: str) -> None:
-        """Delete caller-owned threads whose metadata binds them to this assistant.
-
-        Goes through run_cleanup.delete_thread_by_id so active runs are cancelled
-        and checkpoints/runs are cleaned the same way as ephemeral-thread cleanup.
-        """
-        stmt = select(ThreadORM.thread_id).where(
-            ThreadORM.user_id == self.user.identity,
-            ThreadORM.metadata_json.op("@>")({"assistant_id": assistant_id}),
-        )
-        thread_ids = (await self.session.scalars(stmt)).all()
-        for thread_id in thread_ids:
-            await delete_thread_by_id(str(thread_id), self.user.identity)
 
     async def set_assistant_latest(self, assistant_id: str, version: int) -> Assistant:
         """Set the given version as the latest version of an assistant"""
@@ -570,19 +510,13 @@ class AssistantService(Authenticated):
         await self.session.execute(assistant_update)
         await self.session.commit()
         updated_assistant = await self.session.scalar(stmt)
-        if updated_assistant is None:
-            # Deleted between the commit and this re-read.
-            raise HTTPException(404, f"Assistant '{assistant_id}' not found")
         return to_pydantic(updated_assistant)
 
-    async def list_assistant_versions(
-        self, assistant_id: str, request: AssistantVersionsRequest | None = None
-    ) -> list[Assistant]:
-        """List versions of an assistant, newest first, paginated."""
-        request = request or AssistantVersionsRequest()
+    async def list_assistant_versions(self, assistant_id: str) -> list[Assistant]:
+        """List all versions of an assistant"""
         # Versions dispatches `search` (not `read`) per the auth dispatch spec,
         # with the {assistant_id, metadata} value shape.
-        filters = await self._dispatch("search", {"assistant_id": assistant_id, "metadata": request.metadata})
+        filters = await self._dispatch("search", {"assistant_id": assistant_id, "metadata": None})
 
         stmt = select(AssistantORM).where(
             AssistantORM.assistant_id == assistant_id,
@@ -599,23 +533,18 @@ class AssistantService(Authenticated):
             select(AssistantVersionORM)
             .where(AssistantVersionORM.assistant_id == assistant_id)
             .order_by(AssistantVersionORM.version.desc())
-            .offset(request.offset)
-            .limit(request.limit)
         )
-        if request.metadata:
-            stmt = stmt.where(AssistantVersionORM.metadata_dict.op("@>")(request.metadata))
         result = await self.session.scalars(stmt)
         versions = result.all()
 
-        # An empty page past the first is just the end of the list, not a 404.
-        if not versions and request.offset == 0 and not request.metadata:
+        if not versions:
             raise HTTPException(404, f"No versions found for Assistant '{assistant_id}'")
 
         # Convert to Pydantic models
         version_list = [
             Assistant(
                 assistant_id=assistant_id,
-                name=v.name or f"Assistant for {v.graph_id}",
+                name=v.name,
                 description=v.description,
                 config=v.config or {},
                 context=v.context or {},

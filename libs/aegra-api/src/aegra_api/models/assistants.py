@@ -1,40 +1,27 @@
 """Assistant-related Pydantic models for Agent Protocol"""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
-from aegra_api.models.enums import (
-    AssistantSelectField,
-    AssistantSortBy,
-    OnConflictBehavior,
-    SortOrder,
-)
 
 
 class AssistantCreate(BaseModel):
     """Request model for creating assistants"""
 
-    assistant_id: str | None = Field(
-        default=None, description="Unique assistant identifier (auto-generated if not provided)"
-    )
+    assistant_id: str | None = Field(None, description="Unique assistant identifier (auto-generated if not provided)")
     name: str | None = Field(
-        default=None,
+        None,
         description="Human-readable assistant name (auto-generated if not provided)",
     )
-    description: str | None = Field(default=None, description="Assistant description")
-    # Not optional: create dereferences both, and default_factory already means
-    # "absent == empty". An explicit null now 422s instead of 500ing downstream.
-    config: dict[str, Any] = Field(default_factory=dict, description="Assistant configuration")
-    context: dict[str, Any] = Field(default_factory=dict, description="Assistant context")
+    description: str | None = Field(None, description="Assistant description")
+    config: dict[str, Any] | None = Field(default_factory=dict, description="Assistant configuration")
+    context: dict[str, Any] | None = Field(default_factory=dict, description="Assistant context")
     graph_id: str = Field(..., description="LangGraph graph ID from aegra.json")
     metadata: dict[str, Any] | None = Field(
         default_factory=dict, description="Metadata to use for searching and filtering assistants."
     )
-    if_exists: OnConflictBehavior | None = Field(
-        default="raise", description="What to do if the assistant exists: 'raise' (default) or 'do_nothing'."
-    )
+    if_exists: str | None = Field("error", description="What to do if assistant exists: error or do_nothing")
 
 
 class Assistant(BaseModel):
@@ -42,7 +29,7 @@ class Assistant(BaseModel):
 
     assistant_id: str = Field(..., description="Unique identifier for the assistant.")
     name: str = Field(..., description="Human-readable name of the assistant.")
-    description: str | None = Field(default=None, description="Optional description of the assistant's purpose.")
+    description: str | None = Field(None, description="Optional description of the assistant's purpose.")
     config: dict[str, Any] = Field(default_factory=dict, description="Configuration passed to the graph at runtime.")
     context: dict[str, Any] = Field(
         default_factory=dict, description="Context variables available to the graph during execution."
@@ -60,27 +47,20 @@ class Assistant(BaseModel):
 
 
 class AssistantUpdate(BaseModel):
-    """Request model for updating assistants — every field is an optional patch.
+    """Request model for creating assistants"""
 
-    Every default is ``None``, never ``{}``: the service distinguishes "omitted"
-    (keep the stored value) from an explicit empty object (clear it). A dict
-    default would collapse the two and silently wipe config on any partial update.
-    """
-
-    name: str | None = Field(default=None, description="The name of the assistant (auto-generated if not provided)")
-    description: str | None = Field(default=None, description="The description of the assistant. Defaults to null.")
-    config: dict[str, Any] | None = Field(
-        default=None, description="Configuration to use for the graph. Omit to keep the current one."
-    )
-    graph_id: str | None = Field(
-        default=None, description="The ID of the graph. Omit to keep the assistant's current graph."
-    )
+    name: str | None = Field(None, description="The name of the assistant (auto-generated if not provided)")
+    description: str | None = Field(None, description="The description of the assistant. Defaults to null.")
+    config: dict[str, Any] | None = Field(default_factory=dict, description="Configuration to use for the graph.")
+    # 必须默认 None：服务层用 `request.graph_id or assistant.graph_id` 回退，
+    # 任何 truthy 默认值都会让未传该字段的 PATCH 静默改写 graph_id。
+    graph_id: str | None = Field(None, description="The ID of the graph")
     context: dict[str, Any] | None = Field(
-        default=None,
-        description="The context to use for the graph. Omit to keep the current one.",
+        default_factory=dict,
+        description="The context to use for the graph. Useful when graph is configurable.",
     )
     metadata: dict[str, Any] | None = Field(
-        default=None, description="Metadata for searching and filtering. Omit to keep the current one."
+        default_factory=dict, description="Metadata to use for searching and filtering assistants."
     )
 
 
@@ -94,53 +74,29 @@ class AssistantList(BaseModel):
 class AssistantSearchRequest(BaseModel):
     """Request model for assistant search"""
 
-    name: str | None = Field(default=None, description="Filter by assistant name")
-    description: str | None = Field(default=None, description="Filter by assistant description")
-    graph_id: str | None = Field(default=None, description="Filter by graph ID")
-    limit: int | None = Field(default=20, le=1000, ge=1, description="Maximum results")
-    offset: int | None = Field(default=0, ge=0, description="Results offset")
+    name: str | None = Field(None, description="Filter by assistant name")
+    description: str | None = Field(None, description="Filter by assistant description")
+    graph_id: str | None = Field(None, description="Filter by graph ID")
+    limit: int | None = Field(20, le=100, ge=1, description="Maximum results")
+    offset: int | None = Field(0, ge=0, description="Results offset")
     metadata: dict[str, Any] | None = Field(
         default_factory=dict,
         description="Metadata to use for searching and filtering assistants.",
     )
-    sort_by: AssistantSortBy | None = Field(
-        default=None,
+    sort_by: Literal["assistant_id", "name", "graph_id", "created_at", "updated_at"] | None = Field(
+        None,
         description="Field to sort by (SDK-compatible).",
     )
-    sort_order: SortOrder | None = Field(
-        default=None,
+    sort_order: Literal["asc", "desc"] | None = Field(
+        None,
         description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
     )
-    select: list[AssistantSelectField] | None = Field(
-        default=None,
-        description="Fields to return for each assistant (SDK-compatible). None returns full assistants.",
-    )
-
-
-class AssistantVersionsRequest(BaseModel):
-    """Request body for ``POST /assistants/{assistant_id}/versions``.
-
-    The SDK always sends limit/offset here; an unpaginated response would grow
-    without bound on an assistant with a long edit history.
-    """
-
-    metadata: dict[str, Any] | None = Field(
-        default=None, description="Only versions whose metadata contains these key/value pairs."
-    )
-    limit: int = Field(default=10, ge=1, le=1000, description="Maximum versions to return.")
-    offset: int = Field(default=0, ge=0, description="Versions to skip, newest first.")
 
 
 class AgentSchemas(BaseModel):
-    """Agent schema definitions for client integration.
+    """Agent schema definitions for client integration"""
 
-    Schema fields are nullable: a graph may not expose a JSON schema for every
-    slot, and the SDK's GraphSchema types each as ``dict | None``.
-    """
-
-    graph_id: str = Field(..., description="Identifier of the graph these schemas describe.")
-    input_schema: dict[str, Any] | None = Field(default=None, description="JSON Schema for agent inputs.")
-    output_schema: dict[str, Any] | None = Field(default=None, description="JSON Schema for agent outputs.")
-    state_schema: dict[str, Any] | None = Field(default=None, description="JSON Schema for agent state.")
-    config_schema: dict[str, Any] | None = Field(default=None, description="JSON Schema for agent config.")
-    context_schema: dict[str, Any] | None = Field(default=None, description="JSON Schema for agent context.")
+    input_schema: dict[str, Any] = Field(..., description="JSON Schema for agent inputs")
+    output_schema: dict[str, Any] = Field(..., description="JSON Schema for agent outputs")
+    state_schema: dict[str, Any] = Field(..., description="JSON Schema for agent state")
+    config_schema: dict[str, Any] = Field(..., description="JSON Schema for agent config")

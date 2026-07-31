@@ -32,7 +32,7 @@ class TestFindAlembicIni:
         exist (GH #306). Discovery must be CWD-independent.
         """
         decoy = tmp_path / "alembic.ini"
-        decoy.write_text("[alembic]\nscript_location = not-ours\n", encoding="utf-8")
+        decoy.write_text("[alembic]\nscript_location = not-ours\n")
         monkeypatch.chdir(tmp_path)
 
         result = find_alembic_ini()
@@ -74,7 +74,7 @@ class TestGetAlembicConfig:
     def test_returns_config_object(self, tmp_path, monkeypatch):
         """Should return a valid Alembic Config object."""
         ini_file = tmp_path / "alembic.ini"
-        ini_file.write_text("[alembic]\nscript_location = alembic\n", encoding="utf-8")
+        ini_file.write_text("[alembic]\nscript_location = alembic\n")
         alembic_dir = tmp_path / "alembic"
         alembic_dir.mkdir()
         monkeypatch.setattr(migrations_mod, "find_alembic_ini", lambda: ini_file)
@@ -91,7 +91,7 @@ class TestGetAlembicConfig:
     def test_resolves_relative_script_location(self, tmp_path, monkeypatch):
         """Should resolve relative script_location to absolute path."""
         ini_file = tmp_path / "alembic.ini"
-        ini_file.write_text("[alembic]\nscript_location = alembic\n", encoding="utf-8")
+        ini_file.write_text("[alembic]\nscript_location = alembic\n")
         (tmp_path / "alembic").mkdir()
         monkeypatch.setattr(migrations_mod, "find_alembic_ini", lambda: ini_file)
 
@@ -104,7 +104,7 @@ class TestGetAlembicConfig:
         """Should not modify an already-absolute script_location."""
         abs_path = str(tmp_path / "my_alembic")
         ini_file = tmp_path / "alembic.ini"
-        ini_file.write_text(f"[alembic]\nscript_location = {abs_path}\n", encoding="utf-8")
+        ini_file.write_text(f"[alembic]\nscript_location = {abs_path}\n")
         monkeypatch.setattr(migrations_mod, "find_alembic_ini", lambda: ini_file)
 
         cfg = get_alembic_config()
@@ -117,7 +117,7 @@ class TestRunMigrations:
     def test_run_migrations_calls_alembic_upgrade(self, tmp_path, monkeypatch):
         """Should call alembic command.upgrade with 'head'."""
         ini_file = tmp_path / "alembic.ini"
-        ini_file.write_text("[alembic]\nscript_location = alembic\n", encoding="utf-8")
+        ini_file.write_text("[alembic]\nscript_location = alembic\n")
         (tmp_path / "alembic").mkdir()
         monkeypatch.setattr(migrations_mod, "find_alembic_ini", lambda: ini_file)
 
@@ -147,7 +147,7 @@ class TestRunMigrationsIfNeeded:
 
     def _setup_alembic_ini(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         ini_file = tmp_path / "alembic.ini"
-        ini_file.write_text("[alembic]\nscript_location = alembic\n", encoding="utf-8")
+        ini_file.write_text("[alembic]\nscript_location = alembic\n")
         (tmp_path / "alembic").mkdir()
         monkeypatch.setattr(migrations_mod, "find_alembic_ini", lambda: ini_file)
 

@@ -45,15 +45,7 @@ async def info(_request: Request) -> InfoResponse:
         version=__version__,
         description="Production-ready Agent Protocol server built on LangGraph",
         status="running",
-        flags={
-            "assistants": True,
-            "crons": settings.cron.CRON_ENABLED,
-            "webhooks": settings.webhook.WEBHOOK_ENABLED,
-            "multitask": True,
-            "batch": True,
-            "store": True,
-            "checkpointer": True,
-        },
+        flags={"assistants": True, "crons": settings.cron.CRON_ENABLED},
     )
 
 
@@ -149,7 +141,6 @@ async def readiness_check(_request: Request) -> dict[str, str]:
 
 
 @router.get("/live")
-@router.get("/ok")
 async def liveness_check(_request: Request) -> dict[str, str]:
     """Kubernetes liveness probe.
 

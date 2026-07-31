@@ -21,8 +21,7 @@ def test_load_http_config_from_aegra_json(tmp_path, monkeypatch):
                     "enable_custom_route_auth": True,
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     config = load_http_config()
@@ -47,8 +46,7 @@ def test_load_http_config_from_langgraph_json(tmp_path, monkeypatch):
                     "app": "./custom.py:app",
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     config = load_http_config()
@@ -70,8 +68,7 @@ def test_load_http_config_prefers_aegra_json(tmp_path, monkeypatch):
                 "graphs": {"test": "./test.py:graph"},
                 "http": {"app": "./aegra_custom.py:app"},
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     langgraph_config = tmp_path / "langgraph.json"
@@ -81,8 +78,7 @@ def test_load_http_config_prefers_aegra_json(tmp_path, monkeypatch):
                 "graphs": {"test": "./test.py:graph"},
                 "http": {"app": "./langgraph_custom.py:app"},
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     config = load_http_config()
@@ -107,7 +103,7 @@ def test_load_http_config_no_http_section(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     config_file = tmp_path / "aegra.json"
-    config_file.write_text(json.dumps({"graphs": {"test": "./test.py:graph"}}), encoding="utf-8")
+    config_file.write_text(json.dumps({"graphs": {"test": "./test.py:graph"}}))
 
     config = load_http_config()
 
@@ -120,7 +116,7 @@ def test_load_http_config_invalid_json(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     config_file = tmp_path / "aegra.json"
-    config_file.write_text("{ invalid json }", encoding="utf-8")
+    config_file.write_text("{ invalid json }")
 
     # Should return None and log warning
     config = load_http_config()
@@ -149,8 +145,7 @@ def test_load_store_config_with_index(tmp_path, monkeypatch):
                     }
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     config = load_store_config()
@@ -174,7 +169,7 @@ def test_load_store_config_no_store_section(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     config_file = tmp_path / "aegra.json"
-    config_file.write_text(json.dumps({"graphs": {"test": "./test.py:graph"}}), encoding="utf-8")
+    config_file.write_text(json.dumps({"graphs": {"test": "./test.py:graph"}}))
 
     config = load_store_config()
 
@@ -197,8 +192,7 @@ def test_load_store_config_from_langgraph_json(tmp_path, monkeypatch):
                     }
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     config = load_store_config()

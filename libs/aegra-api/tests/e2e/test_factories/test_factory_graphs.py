@@ -7,16 +7,9 @@ context drives model selection, graph structure changes, and system prompt
 customisation.
 """
 
-import os
-
 import pytest
 
-from tests.e2e._utils import (
-    check_and_skip_if_geo_blocked,
-    check_and_skip_if_model_unavailable,
-    elog,
-    get_e2e_client,
-)
+from tests.e2e._utils import check_and_skip_if_geo_blocked, elog, get_e2e_client
 
 # ---------------------------------------------------------------------------
 # Default context — factory works with no explicit context
@@ -67,17 +60,12 @@ async def test_factory_runs_with_default_context() -> None:
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_factory_model_override_via_context() -> None:
-    """``context={"model": ...}`` must win over the graph's default model.
+    """Passing ``context={"model": "openai/gpt-4o"}`` should use that model.
 
-    Both model ids come from the environment so a gateway that only serves
-    specific models can run this: MODEL_OVERRIDE is the model to switch to,
-    MODEL is the default it must displace.
+    The default model is ``openai/gpt-4o-mini``. This test overrides it with
+    ``openai/gpt-4o`` and verifies the response metadata reflects the
+    overridden model.
     """
-    override = os.environ.get("MODEL_OVERRIDE", "openai/gpt-4o")
-    default = os.environ.get("MODEL", "openai/gpt-4o-mini")
-    if override == default:
-        pytest.skip("MODEL_OVERRIDE must differ from MODEL to prove the override applied")
-
     client = get_e2e_client()
 
     assistant = await client.assistants.create(
@@ -94,7 +82,7 @@ async def test_factory_model_override_via_context() -> None:
         thread_id=thread_id,
         assistant_id=assistant["assistant_id"],
         input={"messages": [{"role": "user", "content": "Reply with just the word 'yes'."}]},
-        context={"model": override},
+        context={"model": "openai/gpt-4o"},
     )
     run_id = run["run_id"]
 
@@ -103,8 +91,6 @@ async def test_factory_model_override_via_context() -> None:
 
     check_run = await client.runs.get(thread_id, run_id)
     check_and_skip_if_geo_blocked(check_run)
-    # MODEL_OVERRIDE may name a model this key cannot serve — an env limit, not a bug.
-    check_and_skip_if_model_unavailable(check_run)
 
     assert check_run["status"] == "success"
     assert len(final_state.get("messages", [])) >= 1
@@ -114,12 +100,9 @@ async def test_factory_model_override_via_context() -> None:
     ai_message = messages[-1]
     response_metadata = ai_message.get("response_metadata", {})
     model_name = response_metadata.get("model_name", "")
-    elog("Response model_name", {"reported": model_name, "override": override, "default": default})
-    # Compare on the bare model id: model_name carries no provider prefix.
-    override_id = override.rsplit("/", 1)[-1]
-    default_id = default.rsplit("/", 1)[-1]
-    assert override_id in model_name, f"Expected overridden model {override_id}, got: {model_name}"
-    assert model_name != default_id, f"Got the default model {default_id} instead of the override"
+    elog("Response model_name", model_name)
+    assert "gpt-4o" in model_name, f"Expected gpt-4o model, got: {model_name}"
+    assert "gpt-4o-mini" not in model_name, f"Expected overridden model (gpt-4o), got default: {model_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +240,8 @@ async def test_factory_appears_in_assistants_search() -> None:
         if_exists="do_nothing",
     )
 
-    # Filter server-side: scanning the first N assistants made this fail once the
-    # database accumulated more than one page of them.
-    matching = await client.assistants.search(graph_id="factory", limit=1)
-    elog("Assistants for graph_id=factory", matching)
+    all_assistants = await client.assistants.search(limit=100)
+    graph_ids = {a["graph_id"] for a in all_assistants}
+    elog("All graph_ids in assistants", sorted(graph_ids))
 
-    assert matching, "factory not found in assistants"
-    assert matching[0]["graph_id"] == "factory"
+    assert "factory" in graph_ids, "factory not found in assistants"

@@ -5,7 +5,7 @@ resume-command validation, and config/context merging logic.
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -18,14 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
-from aegra_api.core.orm import get_session_maker
+from aegra_api.core.orm import _get_session_maker
 from aegra_api.models import Run, RunCreate, User
 from aegra_api.models.run_job import RunBehavior, RunExecution, RunIdentity, RunJob
 from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
-from aegra_api.services.multitask import resolve_multitask
 from aegra_api.services.run_status import set_thread_status
-from aegra_api.services.webhooks import WebhookValidationError, validate_webhook_url
 from aegra_api.utils.assistants import resolve_assistant_id
 from aegra_api.utils.run_utils import _merge_jsonb
 
@@ -60,7 +58,7 @@ async def _validate_resume_command(session: AsyncSession, thread_id: str, comman
 
     # Not interrupted on the request session's snapshot — poll fresh sessions in
     # case finalize_run's commit is still in flight.
-    maker = get_session_maker()
+    maker = _get_session_maker()
     for _ in range(_RESUME_SETTLE_ATTEMPTS):
         await asyncio.sleep(_RESUME_SETTLE_INTERVAL_SECONDS)
         async with maker() as fresh:
@@ -139,7 +137,6 @@ async def update_thread_metadata(
     *,
     user_id: str | None = None,
     input_data: dict[str, Any] | None = None,
-    if_not_exists: str = "create",
 ) -> None:
     """Update thread metadata with assistant and graph information (dialect agnostic).
 
@@ -154,10 +151,6 @@ async def update_thread_metadata(
     thread_name = _extract_thread_name(input_data or {})
 
     if not thread:
-        # if_not_exists=reject (LangGraph default) surfaces a missing thread as
-        # a 404 instead of silently creating it.
-        if if_not_exists != "create":
-            raise HTTPException(404, f"Thread '{thread_id}' not found")
         # Auto-create thread if it doesn't exist
         if not user_id:
             raise HTTPException(400, "Cannot auto-create thread: user_id is required")
@@ -193,7 +186,7 @@ async def update_thread_metadata(
     )
 
 
-async def prepare_run(
+async def _prepare_run(
     session: AsyncSession,
     thread_id: str,
     request: RunCreate,
@@ -210,23 +203,7 @@ async def prepare_run(
     """
     await _validate_resume_command(session, thread_id, request.command)
 
-    # Double-texting: reject/interrupt/rollback act on any in-flight run now;
-    # enqueue is a no-op here and serializes in the executor.
-    await resolve_multitask(session, thread_id, request.multitask_strategy, user)
-
-    if request.webhook is not None:
-        try:
-            validate_webhook_url(request.webhook)
-        except WebhookValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    run_id = request.run_id or str(uuid4())
-    if request.run_id is not None:
-        # Checked rather than left to the PK violation so the caller gets a 409
-        # instead of a 500 from the failed INSERT.
-        taken = await session.scalar(select(RunORM.run_id).where(RunORM.run_id == run_id))
-        if taken is not None:
-            raise HTTPException(409, f"Run '{run_id}' already exists")
+    run_id = str(uuid4())
     langgraph_service = get_langgraph_service()
     logger.info(
         "Scheduling run",
@@ -269,13 +246,7 @@ async def prepare_run(
 
     # Mark thread as busy and update metadata
     await update_thread_metadata(
-        session,
-        thread_id,
-        assistant.assistant_id,
-        assistant.graph_id,
-        user_id=user.identity,
-        input_data=request.input,
-        if_not_exists=request.if_not_exists,
+        session, thread_id, assistant.assistant_id, assistant.graph_id, user_id=user.identity, input_data=request.input
     )
     await set_thread_status(session, thread_id, "busy")
 
@@ -290,8 +261,6 @@ async def prepare_run(
             stream_mode=request.stream_mode,
             checkpoint=request.checkpoint,
             command=request.command,
-            webhook=request.webhook,
-            durability=request.durability,
             event_streaming_v2=event_streaming_v2,
         ),
         behavior=RunBehavior(
@@ -313,10 +282,8 @@ async def prepare_run(
         "thread_id": thread_id,
         "graph_id": assistant.graph_id,
     }
+
     now = datetime.now(UTC)
-    # Delayed run: persist pending with a future scheduled_at; the delayed-run
-    # scheduler submits it once due, instead of enqueueing now.
-    scheduled_at = now + timedelta(seconds=request.after_seconds) if request.after_seconds else None
     run_orm = RunORM(
         run_id=run_id,
         thread_id=thread_id,
@@ -330,20 +297,15 @@ async def prepare_run(
         updated_at=now,
         output=None,
         error_message=None,
-        metadata_dict=request.metadata or {},
-        multitask_strategy=request.multitask_strategy or "reject",
         execution_params=exec_params,
-        scheduled_at=scheduled_at,
     )
     session.add(run_orm)
     await session.commit()
 
     run = Run.model_validate(run_orm)
 
-    if scheduled_at is None:
-        await executor.submit(job)
-        logger.info("Submitted run to executor", run_id=run_id)
-    else:
-        logger.info("Scheduled delayed run", run_id=run_id, scheduled_at=scheduled_at.isoformat())
+    # Submit to executor
+    await executor.submit(job)
+    logger.info("Submitted run to executor", run_id=run_id)
 
     return run_id, run, job

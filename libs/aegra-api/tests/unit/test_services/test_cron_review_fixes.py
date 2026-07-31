@@ -1,7 +1,8 @@
-"""Guards a cron has to enforce before it is ever allowed to fire.
+"""Additional unit tests added during PR review.
 
-Per-user quota, the 6-field schedule gate, cross-tenant ownership on update/delete,
-webhook credential masking, and next_run recomputation on re-enable.
+These cover behaviours introduced for the cron PR fix-ups: per-user quota,
+6-field schedule gating, ownership enforcement on update/delete, and the
+``advance_next_run`` claim release.
 """
 
 from __future__ import annotations
@@ -187,6 +188,28 @@ class TestOwnershipEnforcement:
 
 
 # ---------------------------------------------------------------------------
+# advance_next_run releases the claim
+# ---------------------------------------------------------------------------
+
+
+class TestAdvanceClearsClaim:
+    @pytest.mark.asyncio
+    async def test_advance_sets_claimed_until_to_null(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        cron = _make_cron_orm()
+        cron.end_time = None
+        await cron_service.advance_next_run(cron)
+        # Inspect the UPDATE statement we issued and assert claimed_until is set.
+        stmt = mock_session.execute.call_args[0][0]
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+        assert "claimed_until" in compiled
+        assert "next_run_date" in compiled
+
+
+# ---------------------------------------------------------------------------
 # Webhook credential masking in CronResponse
 # ---------------------------------------------------------------------------
 
@@ -195,46 +218,46 @@ class TestWebhookCredentialMasking:
     """Webhook userinfo (https://user:tok@host/) must never round-trip in payload."""
 
     def test_strips_userinfo_from_webhook(self) -> None:
-        from aegra_api.services.cron_service import cron_to_response
+        from aegra_api.services.cron_service import _cron_to_response
 
         cron = _make_cron_orm(payload={"webhook": "https://user:secret@hooks.example.com/x"})
         from datetime import UTC, datetime
 
         cron.created_at = cron.updated_at = datetime.now(UTC)
-        resp = cron_to_response(cron)
+        resp = _cron_to_response(cron)
         assert resp.payload["webhook"] == "https://hooks.example.com/x"
 
     def test_preserves_port_and_path(self) -> None:
-        from aegra_api.services.cron_service import cron_to_response
+        from aegra_api.services.cron_service import _cron_to_response
 
         cron = _make_cron_orm(payload={"webhook": "https://u:p@host.example:8443/a/b?q=1"})
         from datetime import UTC, datetime
 
         cron.created_at = cron.updated_at = datetime.now(UTC)
-        resp = cron_to_response(cron)
+        resp = _cron_to_response(cron)
         assert resp.payload["webhook"] == "https://host.example:8443/a/b?q=1"
 
     def test_webhook_without_credentials_unchanged(self) -> None:
-        from aegra_api.services.cron_service import cron_to_response
+        from aegra_api.services.cron_service import _cron_to_response
 
         cron = _make_cron_orm(payload={"webhook": "https://hooks.example.com/x"})
         from datetime import UTC, datetime
 
         cron.created_at = cron.updated_at = datetime.now(UTC)
-        resp = cron_to_response(cron)
+        resp = _cron_to_response(cron)
         assert resp.payload["webhook"] == "https://hooks.example.com/x"
 
     def test_empty_payload_returns_empty_dict(self) -> None:
         from datetime import UTC, datetime
 
-        from aegra_api.services.cron_service import cron_to_response
+        from aegra_api.services.cron_service import _cron_to_response
 
         # _make_cron_orm normalizes payload=None to {}, so set it explicitly to
-        # exercise the real None branch in cron_to_response.
+        # exercise the real None branch in _cron_to_response.
         cron = _make_cron_orm()
         cron.payload = None
         cron.created_at = cron.updated_at = datetime.now(UTC)
-        resp = cron_to_response(cron)
+        resp = _cron_to_response(cron)
         assert resp.payload == {}
 
 

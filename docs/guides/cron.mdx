@@ -15,8 +15,6 @@ CRON_POLL_INTERVAL_SECONDS=60      # default: 60
 CRON_CLAIM_DURATION_SECONDS=300    # default: 300 (5 min lease)
 CRON_MAX_PER_USER=100              # default: 100, 0 disables
 CRON_ALLOW_SECONDS_SCHEDULE=false  # default: false
-CRON_MISFIRE_GRACE_SECONDS=0       # default: 0 (always catch up)
-CRON_MAX_CONSECUTIVE_FAILURES=10   # default: 10, 0 retries forever
 ```
 
 See the [environment variables reference](/reference/environment-variables#cron-scheduler) for all options.
@@ -56,7 +54,7 @@ asyncio.run(main())
 
 Aegra accepts the graph ID directly in `assistant_id` for cron creation and resolves it to the default assistant for that graph at request time.
 
-Creating a cron never fires a run. `POST /runs/crons` persists the record and returns the `Cron`; the scheduler owns every firing, starting at the schedule's next occurrence. By default each stateless cron run deletes its ephemeral thread after the run completes.
+By default, each stateless cron run deletes its ephemeral thread after the run completes, including the immediate first run that is triggered when the cron is created.
 
 <Note>
   The snippets below assume you are inside an `async def` function with an initialized `client`.
@@ -148,10 +146,6 @@ The server stores the timezone alongside the cron record and converts to UTC int
   When updating a cron's schedule without changing its timezone, the existing timezone is preserved automatically.
 </Note>
 
-<Warning>
-**Daylight saving transitions follow croniter semantics.** A wall-clock schedule inside the hour a zone repeats fires **twice** on the fall-back day (`30 1 * * *` in `America/New_York` matches both 01:30 EDT and 01:30 EST), and one inside the hour a zone skips is pushed to the next valid time on the spring-forward day (`30 2 * * *` fires at 03:00). Use UTC for schedules that must fire exactly once per day regardless of the local calendar.
-</Warning>
-
 ## Listing and searching
 
 ```python
@@ -175,9 +169,7 @@ updated = await client.crons.update(
 )
 ```
 
-Supported update fields: `schedule`, `timezone`, `enabled`, `end_time`, `metadata`, and every run parameter the create accepts — `input`, `config`, `context`, `webhook`, `interrupt_before`, `interrupt_after`, `on_run_completed`, `multitask_strategy`, `stream_mode`, `stream_subgraphs`, `command`, `durability`, `after_seconds`.
-
-Payload fields are merged, not replaced: patching `input` leaves a previously stored `config` in place. `metadata` is a full replace, matching SDK behavior. There is no way to unset a payload field — send a new value instead.
+Supported update fields: `schedule`, `enabled`, `input`, `config`, `metadata`, `timezone`.
 
 ## Disabling and re-enabling
 
@@ -189,23 +181,9 @@ await client.crons.update(cron_id="<cron_id>", enabled=False)
 await client.crons.update(cron_id="<cron_id>", enabled=True)
 ```
 
-Disabled crons are ignored by the scheduler but remain in the database. You can also create a cron paused by passing `enabled=False` at creation.
+Disabled crons are ignored by the scheduler but remain in the database.
 
-Re-enabling recomputes `next_run_date` when the stored one is already in the past, so resuming a long-paused cron does not fire immediately. Any update also resets the failure counter described below.
-
-## Failure handling
-
-A firing that fails is settled in one of two ways, so a broken cron neither hammers the server nor stops silently:
-
-| Cause | This occurrence | Counts toward the cap |
-|---|---|---|
-| 5xx during run setup (DB, executor) | retried on the next tick | yes |
-| 409 — previous occurrence still running | skipped | no |
-| 404 / 422 — missing graph, invalid payload | skipped | yes |
-
-After `CRON_MAX_CONSECUTIVE_FAILURES` consecutive failures the scheduler logs a warning and sets `enabled=false`. Any successful firing — or any `PATCH` to the cron — resets the counter.
-
-Separately, `CRON_MISFIRE_GRACE_SECONDS` bounds how late an occurrence may be. The default of `0` always catches up, so a cron due during an outage fires once at restart; set it to skip occurrences that are too stale to be useful.
+You can also create a cron in a paused state by passing `enabled=False` at creation. In that case the immediate first run is skipped and the response is the persisted `Cron` instead of a `Run`.
 
 ## Deleting a cron
 
@@ -218,47 +196,5 @@ Deletion is permanent. When a cron is bound to a thread and that thread is delet
 ## Limitations
 
 - **Scheduled runs skip per-request auth handlers.** Creating a cron runs the full auth chain (`crons.create` → `assistants.read` → `threads.read`/`search`), but each *scheduled firing* executes as a background daemon under the cron owner's identity and does not re-dispatch `@auth.on(...)` handlers. Put per-run authorization logic in the graph itself if it must apply to scheduled runs.
-
-  Before forging that identity the scheduler calls `aegra_api.services.cron_scheduler.validate_cron_user(user_id)`, which accepts any non-empty id. Replace that module attribute at startup to check your own identity store — returning `False` disables the cron instead of firing it, so a revoked account stops running scheduled work.
+- **Cron metadata is not copied onto fired runs.** `metadata` set on a cron is stored on the cron record for search and filtering, but is not propagated to the runs the cron creates.
 - **Delivery is at-least-once.** Under a crash between firing and advancing the schedule, a run can fire more than once for a single occurrence. Make scheduled work idempotent.
-
-## Run metadata
-
-A cron's `metadata` is assigned to **every run it fires**, matching the SDK's own description of the field ("metadata to assign to the cron job runs"). This is the only channel scheduled work has for provenance: a firing has no request context, and a stateless cron's thread is deleted once the run finishes.
-
-```python
-await client.crons.create(
-    assistant_id="agent",
-    schedule="0 9 * * *",
-    metadata={"tenant_id": "acme", "job": "daily-digest"},
-    input={"messages": [{"role": "user", "content": "Daily digest"}]},
-)
-
-# Every firing is then reachable by the same filter:
-runs = await client.runs.search(metadata={"job": "daily-digest"})
-```
-
-The copy is taken at firing time, so editing a cron's `metadata` later does not rewrite runs that already fired — each run records what was true when it ran. A `metadata` value that is not a JSON object is ignored with a warning rather than blocking the schedule.
-
-<Note>
-Aegra does **not** stamp a `cron_id` onto fired runs, matching LangGraph Platform. If you need to answer "which runs came from this cron", put your own identifier in the cron's `metadata` — the SDK's `Run` type has no cron field, so metadata is the only place it can live.
-</Note>
-
-## Pending approvals
-
-When a thread-bound cron's run pauses on `interrupt()` (or a static breakpoint), the thread goes `interrupted` and the following occurrences are **skipped rather than queued**: firing anyway would append input and advance the checkpoint, discarding the context the approver is looking at. Resume with `command={"resume": {"decisions": [{"type": "approve" | "edit" | "reject" | "respond", ...}]}}` — see [Human-in-the-loop](/guides/human-in-the-loop).
-
-A cancelled run also settles as `interrupted`, but cancels carry `cancel_requested` and are excluded from the wait, so stopping a run never trips another run's approval timeout.
-
-After `CRON_APPROVAL_TIMEOUT_SECONDS` (default 24h, `0` waits forever) the scheduler stops waiting, so one unattended approval cannot pause a schedule permanently. What it does then depends on what the pause offers:
-
-- **The interrupt declares a rejection is allowed** — either `review_configs[].allowed_decisions` contains `reject` (the LangChain `HumanInTheLoopMiddleware` convention, as in `examples/react_agent_hitl`), or the older payload carries `config.allow_ignore`: the scheduler answers it with one rejection per pending action, delivered through your graph's own rejection path. That occurrence is spent answering the approval rather than starting a new turn, and the resume carries the cron's stored `config`, `context`, breakpoints, and `webhook`.
-- **Anything else** — a plain `interrupt("...")`, a payload that declares no rejection, or a static breakpoint: the scheduler will not guess. It releases the thread to `idle` and lets the next occurrence run. The paused runs keep their `interrupted` status, and the checkpoint still holds the pending interrupt, so the next firing re-runs the paused node and asks again.
-
-<Warning>
-Auto-rejection is deliberately narrow. A graph that does `value = interrupt("Provide value:")` receives the resume value raw, where an ignore-response list is a crash at best — and reads as approval to any graph that only checks truthiness. Declare a rejection as allowed only if your graph handles that decision as one.
-</Warning>
-
-<Note>
-Detecting a rejectable pause reads the materialized `thread_state.interrupts`. With `THREAD_STATE_MATERIALIZE=false` no pause looks rejectable, so every timeout falls back to releasing the thread.
-</Note>

@@ -145,13 +145,18 @@ async def test_runs_cancel_e2e():
 
     check_and_skip_if_geo_blocked(runs_list[0])
 
-    # wait=True is required for a terminal status: the executor, not the API,
-    # writes it, so the default returns while the run is still 'running'.
-    await client.runs.cancel(thread_id, run_id, wait=True)
+    # Cancel the run
+    patched = await client.runs.cancel(thread_id, run_id)
+    elog("Runs.cancel", patched)
 
+    # It might have failed in background
+    check_and_skip_if_geo_blocked(patched)
+
+    assert patched["status"] in ("interrupted", "success")
+
+    # Verify final state
     got = await client.runs.get(thread_id, run_id)
     elog("Runs.get(post-cancel)", got)
-    check_and_skip_if_geo_blocked(got)
     assert got["status"] in ("interrupted", "error", "success")
 
 

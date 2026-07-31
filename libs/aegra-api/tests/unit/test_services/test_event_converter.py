@@ -178,7 +178,7 @@ class TestEventConverter:
     def test_convert_raw_to_sse_tuple_format(self) -> None:
         """Test converting raw event in tuple format"""
         raw_event = ("values", {"key": "value"})
-        result = self.converter.convert_raw_to_sse("evt-1", raw_event, None)
+        result = self.converter.convert_raw_to_sse("evt-1", raw_event)
 
         assert result is not None
         assert "event: values\n" in result
@@ -187,7 +187,7 @@ class TestEventConverter:
     def test_convert_raw_to_sse_direct_payload(self) -> None:
         """Test converting raw event with direct payload"""
         raw_event = {"direct": "data"}
-        result = self.converter.convert_raw_to_sse("evt-1", raw_event, None)
+        result = self.converter.convert_raw_to_sse("evt-1", raw_event)
 
         assert result is not None
         assert "event: values\n" in result

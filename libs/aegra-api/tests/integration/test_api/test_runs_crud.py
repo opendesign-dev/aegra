@@ -326,70 +326,15 @@ class TestCancelRun:
             async def commit(self):
                 pass
 
-            def expire_all(self):
-                pass
-
         override_session_dependency(app, Session)
         client = make_client(app)
 
-        # AsyncMock for the whole service: the default action is 'interrupt', so
-        # interrupt_run — not cancel_run — is the awaited call.
-        with patch("aegra_api.services.run_cancellation.streaming_service", new_callable=AsyncMock) as mock_streaming:
+        with patch("aegra_api.api.runs.streaming_service") as mock_streaming:
+            mock_streaming.cancel_run = AsyncMock()
+
             resp = client.post("/threads/test-thread-123/runs/test-run-123/cancel")
 
             assert resp.status_code == 200
-            mock_streaming.interrupt_run.assert_awaited_once_with("test-run-123")
-
-
-class TestCancelRunsBulk:
-    """Test POST /runs/cancel — the SDK's ``runs.cancel_many``."""
-
-    @staticmethod
-    def _client(rows: list) -> object:
-        app = create_test_app(include_runs=True, include_threads=False)
-
-        class Session(DummySessionBase):
-            async def scalars(self, _stmt):
-                class Result:
-                    def all(self):
-                        return rows
-
-                return Result()
-
-            async def execute(self, _stmt):
-                return None
-
-            async def commit(self):
-                return None
-
-        override_session_dependency(app, Session)
-        return make_client(app)
-
-    def test_empty_status_sweep_succeeds(self):
-        """`cancel_many(status=...)` is a set operation: nothing matching means done.
-
-        Regression: this 404'd, so an SDK caller clearing pending runs got an
-        exception precisely when there was nothing left to clear.
-        """
-        resp = self._client([]).post("/runs/cancel", json={"status": "pending"})
-        assert resp.status_code == 204, resp.text
-
-    def test_empty_status_sweep_succeeds_for_all(self):
-        resp = self._client([]).post("/runs/cancel", json={"status": "all"})
-        assert resp.status_code == 204, resp.text
-
-    def test_missing_named_run_ids_still_404(self):
-        """Naming run_ids that do not exist is a genuine miss, not an empty sweep."""
-        resp = self._client([]).post("/runs/cancel", json={"thread_id": "test-thread-123", "run_ids": ["nope"]})
-        assert resp.status_code == 404
-
-    def test_status_sweep_cancels_matches(self):
-        run = _run_row(status="pending")
-        with patch("aegra_api.api.runs.signal_cancel", new_callable=AsyncMock) as mock_signal:
-            resp = self._client([run]).post("/runs/cancel", json={"status": "pending"})
-        assert resp.status_code == 204, resp.text
-        mock_signal.assert_awaited_once()
-        assert mock_signal.await_args.args[1] == ["test-run-123"]
 
 
 class TestDeleteRun:
@@ -456,7 +401,7 @@ class TestDeleteRun:
 class TestJoinRun:
     """Test GET /threads/{thread_id}/runs/{run_id}/join
 
-    join_run manages sessions manually via get_session_maker (not Depends),
+    join_run manages sessions manually via _get_session_maker (not Depends),
     so we patch the maker to return a mock async context manager.
     """
 
@@ -471,7 +416,7 @@ class TestJoinRun:
         override_session_dependency(app, BasicSession)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(Session())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(Session())):
             resp = client.get("/threads/test-thread-123/runs/nonexistent/join")
 
         assert resp.status_code == 404
@@ -489,7 +434,7 @@ class TestJoinRun:
         override_session_dependency(app, Session)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(Session())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(Session())):
             resp = client.get("/threads/test-thread-123/runs/test-run-123/join")
 
         assert resp.status_code == 200
@@ -510,9 +455,9 @@ class TestStreamRun:
 
         client = make_client(app)
 
-        # stream_run manages its session via get_session_maker (not Depends),
+        # stream_run manages its session via _get_session_maker (not Depends),
         # so the DI override doesn't apply — patch the maker instead.
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(Session())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(Session())):
             resp = client.get("/threads/test-thread-123/runs/nonexistent/stream")
 
         assert resp.status_code == 404
@@ -575,7 +520,7 @@ class TestRunStatuses:
 class TestWaitForRun:
     """Test POST /threads/{thread_id}/runs/wait
 
-    wait_for_run manages sessions via get_session_maker (not Depends), so tests
+    wait_for_run manages sessions via _get_session_maker (not Depends), so tests
     that reach the handler must patch it. Pure-validation tests (422) don't need it.
     """
 
@@ -606,7 +551,7 @@ class TestWaitForRun:
         override_session_dependency(app, Session)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(Session())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(Session())):
             resp = client.post(
                 "/threads/nonexistent/runs/wait",
                 json={
@@ -636,7 +581,7 @@ class TestWaitForRun:
         override_session_dependency(app, Session)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(Session())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(Session())):
             resp = client.post(
                 "/threads/test-thread-123/runs/wait",
                 json={
@@ -655,7 +600,7 @@ class TestWaitForRun:
         override_session_dependency(app, BasicSession)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(BasicSession())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(BasicSession())):
             resp = client.post(
                 "/threads/test-thread-123/runs/wait",
                 json={
@@ -675,7 +620,7 @@ class TestWaitForRun:
         override_session_dependency(app, BasicSession)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(BasicSession())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(BasicSession())):
             resp = client.post(
                 "/threads/test-thread-123/runs/wait",
                 json={
@@ -695,7 +640,7 @@ class TestWaitForRun:
         override_session_dependency(app, BasicSession)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(BasicSession())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(BasicSession())):
             resp = client.post(
                 "/threads/test-thread-123/runs/wait",
                 json={
@@ -740,13 +685,13 @@ class TestWaitForRun:
         override_session_dependency(app, Session)
         client = make_client(app)
 
-        # Resume validation polls fresh sessions via run_preparation.get_session_maker
+        # Resume validation polls fresh sessions via run_preparation._get_session_maker
         # when the first read is not interrupted; keep those returning idle too, and
         # collapse the settle backoff so the reject path does not wait.
         maker = _make_session_maker(Session())
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=maker),
-            patch("aegra_api.services.run_preparation.get_session_maker", return_value=maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=maker),
+            patch("aegra_api.services.run_preparation._get_session_maker", return_value=maker),
             patch("aegra_api.services.run_preparation._RESUME_SETTLE_ATTEMPTS", 1),
             patch("aegra_api.services.run_preparation._RESUME_SETTLE_INTERVAL_SECONDS", 0),
         ):
@@ -768,7 +713,7 @@ class TestWaitForRun:
         override_session_dependency(app, BasicSession)
         client = make_client(app)
 
-        with patch("aegra_api.api.runs.get_session_maker", return_value=_make_session_maker(BasicSession())):
+        with patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(BasicSession())):
             resp = client.post(
                 "/threads/test-thread-123/runs/wait",
                 json={
@@ -881,8 +826,8 @@ class TestWaitForRunTimeouts:
         client = make_client(app)
 
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_waiters.executor", mock_executor),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_service,
         ):

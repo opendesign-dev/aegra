@@ -1,30 +1,46 @@
 """Tests for application lifespan and startup logic"""
 
 import importlib
-from contextlib import nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
-from starlette.routing import Mount, Route
+
+from aegra_api.observability.base import get_observability_manager
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_lifespan_sets_up_observability():
-    """Test that the lifespan function initializes observability during startup."""
+async def test_lifespan_registers_otel_provider(monkeypatch):
+    """Test that the lifespan function registers the OpenTelemetry provider during startup."""
+    # Configure OTEL_TARGETS so the provider is enabled
+    monkeypatch.setenv("OTEL_TARGETS", "LANGFUSE")
+
+    # 1. Reload settings
+    import aegra_api.settings as settings_module
+
+    importlib.reload(settings_module)
+
+    # 2. Reload otel module (creates new Provider class/instance)
+    import aegra_api.observability.otel as otel_module
+
+    importlib.reload(otel_module)
+    # 3. Reload setup module (crucial! so it imports the NEW otel_provider)
+    import aegra_api.observability.setup as setup_module
+    from aegra_api.observability.otel import OpenTelemetryProvider
+
+    importlib.reload(setup_module)
+
+    # 4. Reload main module
     import aegra_api.main as main_module
 
     importlib.reload(main_module)
 
+    # Mock all the dependencies
     with (
         patch("aegra_api.main.run_migrations_async", new_callable=AsyncMock),
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
-        patch("aegra_api.main.setup_observability") as mock_setup_observability,
-        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
-        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 
@@ -32,12 +48,17 @@ async def test_lifespan_sets_up_observability():
         mock_langgraph_service.initialize = AsyncMock()
         mock_get_langgraph_service.return_value = mock_langgraph_service
 
+        # Clear the manager
+        manager = get_observability_manager()
+        manager._providers.clear()
+
         mock_app = MagicMock()
 
         async with main_module.lifespan(mock_app):
-            pass
+            # Verify OpenTelemetryProvider is registered
+            otel_providers = [p for p in manager._providers if isinstance(p, OpenTelemetryProvider)]
+            assert len(otel_providers) == 1, "OpenTelemetry provider should be registered during lifespan startup"
 
-        mock_setup_observability.assert_called_once()
         mock_db_manager.close.assert_called_once()
 
 
@@ -55,10 +76,8 @@ async def test_lifespan_calls_required_initialization():
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
         patch("aegra_api.main.setup_observability") as mock_setup_observability,
-        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
         # Setup mocks
-        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 
@@ -100,9 +119,7 @@ async def test_lifespan_skips_migrations_when_disabled(monkeypatch):
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
         patch("aegra_api.main.setup_observability"),
-        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
-        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 
@@ -135,9 +152,7 @@ async def test_lifespan_runs_migrations_when_enabled(monkeypatch):
         patch("aegra_api.main.db_manager") as mock_db_manager,
         patch("aegra_api.main.get_langgraph_service") as mock_get_langgraph_service,
         patch("aegra_api.main.setup_observability"),
-        patch("aegra_api.main.mcp_server") as mock_mcp_server,
     ):
-        mock_mcp_server.session_manager.run.return_value = nullcontext()
         mock_db_manager.initialize = AsyncMock()
         mock_db_manager.close = AsyncMock()
 
@@ -149,73 +164,3 @@ async def test_lifespan_runs_migrations_when_enabled(monkeypatch):
             pass
 
         mock_migrations.assert_called_once()
-
-
-@pytest.mark.unit
-def test_instrument_fastapi_skips_when_observability_disabled():
-    """No HTTP server-span instrumentation when tracing is off (avoids overhead)."""
-    import aegra_api.main as main_module
-
-    with (
-        patch.object(main_module.otel_provider, "is_enabled", return_value=False),
-        patch.object(main_module, "FastAPIInstrumentor") as mock_instrumentor,
-    ):
-        main_module._instrument_fastapi(MagicMock())
-
-    mock_instrumentor.instrument_app.assert_not_called()
-
-
-@pytest.mark.unit
-def test_instrument_fastapi_wraps_app_when_observability_enabled():
-    """The app is instrumented for HTTP server spans when tracing is on."""
-    import aegra_api.main as main_module
-
-    app = MagicMock()
-    with (
-        patch.object(main_module.otel_provider, "is_enabled", return_value=True),
-        patch.object(main_module, "FastAPIInstrumentor") as mock_instrumentor,
-    ):
-        main_module._instrument_fastapi(app)
-
-    mock_instrumentor.instrument_app.assert_called_once()
-    assert mock_instrumentor.instrument_app.call_args.args[0] is app
-
-
-def _mcp_routes(app: FastAPI) -> list[Route]:
-    return [r for r in app.routes if isinstance(r, Route) and r.path == "/mcp"]
-
-
-@pytest.mark.unit
-def test_mcp_served_at_exact_path_not_a_mount():
-    """A Mount only matches with a trailing slash and 307s '/mcp'. MCP clients use
-    httpx, which does not follow redirects, so the endpoint must be an exact Route."""
-    import aegra_api.main as main_module
-
-    app = FastAPI()
-    with patch.object(main_module, "_mcp_enabled", return_value=True):
-        main_module._include_core_routers(app)
-
-    assert len(_mcp_routes(app)) == 1
-    assert not [r for r in app.routes if isinstance(r, Mount) and r.path == "/mcp"]
-
-
-@pytest.mark.unit
-def test_mcp_route_accepts_the_streamable_http_methods():
-    import aegra_api.main as main_module
-
-    app = FastAPI()
-    with patch.object(main_module, "_mcp_enabled", return_value=True):
-        main_module._include_core_routers(app)
-
-    assert {"GET", "POST", "DELETE"} <= set(_mcp_routes(app)[0].methods or set())
-
-
-@pytest.mark.unit
-def test_mcp_route_absent_when_disabled():
-    import aegra_api.main as main_module
-
-    app = FastAPI()
-    with patch.object(main_module, "_mcp_enabled", return_value=False):
-        main_module._include_core_routers(app)
-
-    assert _mcp_routes(app) == []

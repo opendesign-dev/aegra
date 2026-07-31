@@ -1,18 +1,10 @@
 """Integration tests for assistants CRUD operations"""
 
-from unittest.mock import AsyncMock
-
 import pytest
-from fastapi.testclient import TestClient
 
-from aegra_api.services.assistant_service import AssistantSearchPage, get_assistant_service
+from aegra_api.services.assistant_service import get_assistant_service
 from tests.fixtures.clients import create_test_app, make_client
 from tests.fixtures.test_helpers import make_assistant
-
-
-def _page(items: list) -> AssistantSearchPage:
-    """Wrap items in the page shape the search route expects."""
-    return AssistantSearchPage(items=items, total=len(items), next_offset=None)
 
 
 @pytest.fixture
@@ -249,7 +241,7 @@ class TestDeleteAssistant:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "deleted"
-        mock_assistant_service.delete_assistant.assert_called_once_with("test-assistant-123", delete_threads=False)
+        mock_assistant_service.delete_assistant.assert_called_once_with("test-assistant-123")
 
     def test_delete_assistant_not_found(self, client, mock_assistant_service):
         """Test deleting non-existent assistant"""
@@ -273,7 +265,7 @@ class TestSearchAssistants:
             make_assistant("asst-1", "Assistant 1"),
             make_assistant("asst-2", "Assistant 2"),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post("/assistants/search", json={})
 
@@ -284,7 +276,7 @@ class TestSearchAssistants:
 
     def test_search_assistants_zero_results(self, client, mock_assistant_service):
         """Test searching when no assistants match"""
-        mock_assistant_service.search_assistants.return_value = _page([])
+        mock_assistant_service.search_assistants.return_value = []
 
         resp = client.post(
             "/assistants/search",
@@ -299,7 +291,7 @@ class TestSearchAssistants:
     def test_search_assistants_single_result(self, client, mock_assistant_service):
         """Test searching with exactly one result"""
         assistant = make_assistant("asst-1", "Single Assistant", "unique-graph")
-        mock_assistant_service.search_assistants.return_value = _page([assistant])
+        mock_assistant_service.search_assistants.return_value = [assistant]
 
         resp = client.post(
             "/assistants/search",
@@ -320,7 +312,7 @@ class TestSearchAssistants:
             make_assistant("asst-2", "Assistant 2", "graph-1"),
             make_assistant("asst-3", "Assistant 3", "graph-1"),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -340,7 +332,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", "Assistant 1", "my-graph"),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -357,7 +349,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", "Test Assistant"),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -374,7 +366,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", description="A helpful assistant"),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -390,7 +382,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", metadata={"env": "prod"}),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -406,7 +398,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", metadata={"env": "prod", "region": "us-east"}),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -420,7 +412,7 @@ class TestSearchAssistants:
     def test_search_assistants_with_pagination(self, client, mock_assistant_service):
         """Test searching with offset and limit"""
         assistants = [make_assistant(f"asst-{i}") for i in range(2)]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -437,7 +429,7 @@ class TestSearchAssistants:
             make_assistant("asst-2", "Assistant 2"),
             make_assistant("asst-3", "Assistant 3"),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -455,7 +447,7 @@ class TestSearchAssistants:
             make_assistant("asst-1", "Assistant 1"),
             make_assistant("asst-2", "Assistant 2"),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -471,7 +463,7 @@ class TestSearchAssistants:
         assistants = [
             make_assistant("asst-1", "Prod Assistant", "prod-graph", metadata={"env": "prod"}),
         ]
-        mock_assistant_service.search_assistants.return_value = _page(assistants)
+        mock_assistant_service.search_assistants.return_value = assistants
 
         resp = client.post(
             "/assistants/search",
@@ -493,7 +485,7 @@ class TestSearchAssistantsSortAndAuth:
     """Sort params + #333 regression: auth handlers returning filters must not 500."""
 
     def test_search_with_sort_by_name_asc(self, client, mock_assistant_service):
-        mock_assistant_service.search_assistants.return_value = _page([])
+        mock_assistant_service.search_assistants.return_value = []
 
         resp = client.post(
             "/assistants/search",
@@ -507,7 +499,7 @@ class TestSearchAssistantsSortAndAuth:
         assert getattr(sort_column, "key", None) == "name"
 
     def test_search_with_sort_by_only_defaults_to_desc(self, client, mock_assistant_service):
-        mock_assistant_service.search_assistants.return_value = _page([])
+        mock_assistant_service.search_assistants.return_value = []
 
         resp = client.post("/assistants/search", json={"sort_by": "updated_at"})
 
@@ -666,34 +658,6 @@ class TestListAssistantVersions:
         assert data[0]["version"] == 1
         assert data[2]["version"] == 3
 
-    def test_list_assistant_versions_forwards_pagination_body(
-        self, client: TestClient, mock_assistant_service: AsyncMock
-    ) -> None:
-        """The SDK sends {metadata, limit, offset}; the route must pass it through.
-
-        Regression: the endpoint declared no request body, so `get_versions(limit=1)`
-        returned every version instead of one page.
-        """
-        mock_assistant_service.list_assistant_versions.return_value = []
-
-        resp = client.post(
-            "/assistants/test-assistant-123/versions",
-            json={"limit": 5, "offset": 10, "metadata": {"env": "prod"}},
-        )
-
-        assert resp.status_code == 200, resp.text
-        _assistant_id, request = mock_assistant_service.list_assistant_versions.call_args.args
-        assert (request.limit, request.offset) == (5, 10)
-        assert request.metadata == {"env": "prod"}
-
-    def test_list_assistant_versions_rejects_bad_pagination(
-        self, client: TestClient, mock_assistant_service: AsyncMock
-    ) -> None:
-        """Out-of-range paging is a client error, not a silently clamped query."""
-        mock_assistant_service.list_assistant_versions.return_value = []
-        assert client.post("/assistants/a/versions", json={"limit": 0}).status_code == 422
-        assert client.post("/assistants/a/versions", json={"offset": -1}).status_code == 422
-
     def test_list_assistant_versions_empty(self, client, mock_assistant_service):
         """Test listing versions when there are none"""
         mock_assistant_service.list_assistant_versions.return_value = []
@@ -711,12 +675,10 @@ class TestGetAssistantSchemas:
     def test_get_assistant_schemas(self, client, mock_assistant_service):
         """Test getting assistant schemas"""
         schemas = {
-            "graph_id": "test-graph",
             "input_schema": {"type": "object", "properties": {}},
             "output_schema": {"type": "object", "properties": {}},
             "config_schema": {"type": "object", "properties": {}},
             "state_schema": {"type": "object", "properties": {}},
-            "context_schema": {"type": "object", "properties": {}},
         }
         mock_assistant_service.get_assistant_schemas.return_value = schemas
 
@@ -724,28 +686,10 @@ class TestGetAssistantSchemas:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["graph_id"] == "test-graph"
         assert "input_schema" in data
         assert "output_schema" in data
         assert "config_schema" in data
         assert "state_schema" in data
-        assert "context_schema" in data
-
-    def test_get_assistant_schemas_allows_null_schemas(self, client, mock_assistant_service):
-        """A graph that can't produce a JSON schema yields nulls, not a 500."""
-        mock_assistant_service.get_assistant_schemas.return_value = {
-            "graph_id": "test-graph",
-            "input_schema": None,
-            "output_schema": None,
-            "config_schema": None,
-            "state_schema": None,
-            "context_schema": None,
-        }
-
-        resp = client.get("/assistants/test-assistant-123/schemas")
-
-        assert resp.status_code == 200
-        assert resp.json()["input_schema"] is None
 
 
 class TestGetAssistantGraph:

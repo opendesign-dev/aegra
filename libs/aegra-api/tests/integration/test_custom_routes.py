@@ -23,8 +23,7 @@ async def hello():
 @app.get("/")
 async def custom_root():
     return {"message": "Custom root", "custom": True}
-""",
-        encoding="utf-8",
+"""
     )
     return app_file
 
@@ -43,8 +42,7 @@ def aegra_config_with_custom_app(tmp_path, custom_app_file, monkeypatch):
                     "app": f"./{custom_app_file.name}:app",
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     return config_file
@@ -105,8 +103,7 @@ async def test_custom_routes_with_auth_config(tmp_path, custom_app_file, monkeyp
                     "enable_custom_route_auth": True,
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     from aegra_api.config import load_http_config
@@ -134,8 +131,7 @@ async def test_custom_routes_with_cors_config(tmp_path, custom_app_file, monkeyp
                     },
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     from aegra_api.config import load_http_config
@@ -167,8 +163,7 @@ async def test_cors_config_without_custom_app(tmp_path, monkeypatch):
                     },
                 },
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     from aegra_api.config import load_http_config
@@ -203,8 +198,7 @@ async def test_cors_default_expose_headers_without_config(tmp_path, monkeypatch)
             {
                 "graphs": {"test": "./test.py:graph"},
             }
-        ),
-        encoding="utf-8",
+        )
     )
 
     from aegra_api.config import load_http_config

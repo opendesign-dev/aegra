@@ -13,7 +13,7 @@ from redis import RedisError
 from sse_starlette import EventSourceResponse
 
 from aegra_api.api.stateless_runs import (
-    background_cleanup_tasks,
+    _background_cleanup_tasks,
     stateless_create_run,
     stateless_stream_run,
     stateless_wait_for_run,
@@ -104,21 +104,11 @@ class TestDeleteThreadById:
         mock_maker.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_maker.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        # The delete now also drops the thread's checkpoints; without a real
-        # db_manager the checkpointer lookup would raise "Database not initialized".
-        checkpointer = AsyncMock()
-        manager = MagicMock()
-        manager.get_checkpointer.return_value = checkpointer
-
-        with (
-            patch("aegra_api.services.run_cleanup.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_cleanup.db_manager", manager),
-        ):
+        with patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker):
             await _delete_thread_by_id(thread_id, user_id)
 
         mock_session.delete.assert_called_once_with(thread_orm)
         mock_session.commit.assert_called_once()
-        checkpointer.adelete_thread.assert_awaited_once_with(thread_id)
 
     @pytest.mark.asyncio
     async def test_cancels_active_runs_before_delete(self, mock_session: AsyncMock) -> None:
@@ -150,7 +140,7 @@ class TestDeleteThreadById:
         mock_task.done.return_value = True
 
         with (
-            patch("aegra_api.services.run_cleanup.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker),
             patch(
                 "aegra_api.services.run_cleanup.streaming_service.cancel_run",
                 new_callable=AsyncMock,
@@ -173,7 +163,7 @@ class TestDeleteThreadById:
         mock_maker.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_maker.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("aegra_api.services.run_cleanup.get_session_maker", return_value=mock_maker):
+        with patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker):
             await _delete_thread_by_id("nonexistent", "user")
 
         mock_session.delete.assert_not_called()
@@ -209,7 +199,7 @@ class TestDeleteThreadById:
         fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
 
         with (
-            patch("aegra_api.services.run_cleanup.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker),
             patch(
                 "aegra_api.services.run_cleanup.streaming_service.cancel_run",
                 new_callable=AsyncMock,
@@ -255,7 +245,7 @@ class TestDeleteThreadById:
         mock_maker.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch("aegra_api.services.run_cleanup.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker),
             patch(
                 "aegra_api.services.run_cleanup.streaming_service.cancel_run",
                 new_callable=AsyncMock,
@@ -299,7 +289,7 @@ class TestDeleteThreadById:
         mock_maker.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with (  # noqa: SIM117
-            patch("aegra_api.services.run_cleanup.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_cleanup._get_session_maker", return_value=mock_maker),
             patch(
                 "aegra_api.services.run_cleanup.streaming_service.cancel_run",
                 new_callable=AsyncMock,
@@ -673,7 +663,7 @@ class TestStatelessStreamRun:
             # we only await tasks created by this test, not stragglers from
             # prior tests in the same session (which may belong to a
             # defunct event loop).
-            tasks_before = set(background_cleanup_tasks)
+            tasks_before = set(_background_cleanup_tasks)
 
             result = await stateless_stream_run(request, mock_user)
 
@@ -681,7 +671,7 @@ class TestStatelessStreamRun:
                 async for _chunk in result.body_iterator:
                     pass
 
-            new_tasks = [task for task in background_cleanup_tasks if task not in tasks_before]
+            new_tasks = [task for task in _background_cleanup_tasks if task not in tasks_before]
             if new_tasks:
                 await asyncio.gather(*new_tasks, return_exceptions=True)
 
@@ -730,7 +720,7 @@ class TestStatelessStreamRun:
                 new_callable=AsyncMock,
             ) as mock_delete,
         ):
-            tasks_before = set(background_cleanup_tasks)
+            tasks_before = set(_background_cleanup_tasks)
 
             result = await stateless_stream_run(request, mock_user)
 
@@ -738,7 +728,7 @@ class TestStatelessStreamRun:
                 async for _chunk in result.body_iterator:
                     pass
 
-            new_tasks = [task for task in background_cleanup_tasks if task not in tasks_before]
+            new_tasks = [task for task in _background_cleanup_tasks if task not in tasks_before]
             if new_tasks:
                 await asyncio.gather(*new_tasks, return_exceptions=True)
 
@@ -781,7 +771,7 @@ class TestStatelessStreamRun:
                 new_callable=AsyncMock,
             ) as mock_delete,
         ):
-            tasks_before = set(background_cleanup_tasks)
+            tasks_before = set(_background_cleanup_tasks)
 
             result = await stateless_stream_run(request, mock_user)
 
@@ -789,7 +779,7 @@ class TestStatelessStreamRun:
                 async for _chunk in result.body_iterator:
                     pass
 
-            new_tasks = [task for task in background_cleanup_tasks if task not in tasks_before]
+            new_tasks = [task for task in _background_cleanup_tasks if task not in tasks_before]
             if new_tasks:
                 await asyncio.gather(*new_tasks, return_exceptions=True)
 

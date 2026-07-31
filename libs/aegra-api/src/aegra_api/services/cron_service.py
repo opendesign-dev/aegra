@@ -4,9 +4,9 @@ Handles CRUD operations on cron records and delegates run creation
 to the existing run preparation pipeline.
 """
 
-from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -15,13 +15,10 @@ from croniter import croniter
 from fastapi import Depends, HTTPException
 from sqlalchemy import CursorResult, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.elements import ColumnElement
 
-from aegra_api.core.auth_filters import CRONS_SEARCH_ALL, build_metadata_filter, build_visibility_filters
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Cron as CronORM
 from aegra_api.core.orm import get_session
-from aegra_api.models.auth import User
 from aegra_api.models.crons import (
     CronCountRequest,
     CronCreate,
@@ -33,7 +30,6 @@ from aegra_api.models.crons import (
 from aegra_api.services.langgraph_service import LangGraphService, get_langgraph_service
 from aegra_api.settings import settings
 from aegra_api.utils.assistants import resolve_assistant_id
-from aegra_api.utils.url import redact_url
 
 logger = structlog.getLogger(__name__)
 
@@ -41,8 +37,9 @@ logger = structlog.getLogger(__name__)
 def _build_payload(request: CronCreate | CronUpdate) -> dict[str, Any]:
     """Extract run-related fields into the payload JSONB blob.
 
-    Keep in sync with ``cron_scheduler._build_run_request``: accepting a field here
-    without forwarding it there silently drops the user's value on every firing.
+    Keep this list in sync with the fields _build_run_create maps onto
+    RunCreate — accepting a field here without forwarding it there means
+    every scheduled run silently drops the user's value.
     """
     payload: dict[str, Any] = {}
     for field in (
@@ -56,9 +53,6 @@ def _build_payload(request: CronCreate | CronUpdate) -> dict[str, Any]:
         "stream_mode",
         "stream_subgraphs",
         "timezone",
-        "command",
-        "durability",
-        "after_seconds",
     ):
         value = getattr(request, field, None)
         if value is not None:
@@ -129,29 +123,37 @@ def _compute_next_run(
     return result.astimezone(UTC)
 
 
-def _redact_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    """Return a copy of *payload* with webhook credentials masked.
+def _mask_webhook_credentials(url: str) -> str:
+    """Strip userinfo from a webhook URL before surfacing it back to clients.
 
-    A webhook like ``https://user:token@host/path`` would otherwise leak its
-    credential on every read of the cron.
+    Webhooks like ``https://user:token@host/path`` leak the credential on
+    every read of the cron. We retain the host/path so callers can still
+    audit destination, but the secret never round-trips.
     """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    if not parsed.hostname:
+        return url
+    netloc = parsed.hostname
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def _redact_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a copy of *payload* with webhook credentials masked."""
     if not payload:
         return {}
     masked = dict(payload)
     webhook = masked.get("webhook")
     if isinstance(webhook, str) and webhook:
-        masked["webhook"] = redact_url(webhook)
+        masked["webhook"] = _mask_webhook_credentials(webhook)
     return masked
 
 
-def _serialize_cron(response: CronResponse, select_fields: Sequence[str] | None) -> dict[str, Any]:
-    """Dump a cron for the wire, projected to `select_fields` when given."""
-    if select_fields:
-        return response.model_dump(mode="json", include=set(select_fields))
-    return response.model_dump(mode="json")
-
-
-def cron_to_response(row: CronORM) -> CronResponse:
+def _cron_to_response(row: CronORM) -> CronResponse:
     """Convert ORM row to Pydantic response, mapping ``metadata_dict`` → ``metadata``."""
     return CronResponse(
         cron_id=str(row.cron_id),
@@ -160,7 +162,6 @@ def cron_to_response(row: CronORM) -> CronResponse:
         on_run_completed=cast(OnRunCompleted | None, row.on_run_completed),
         end_time=row.end_time,
         schedule=row.schedule,
-        timezone=(row.payload or {}).get("timezone"),
         created_at=row.created_at,
         updated_at=row.updated_at,
         payload=_redact_payload(row.payload),
@@ -206,7 +207,11 @@ class CronService:
         *,
         thread_id: str | None = None,
     ) -> CronORM:
-        """Create a new cron job record; the scheduler owns all firing."""
+        """Create a new cron job record.
+
+        Returns the ORM row so the caller (API layer) can also trigger
+        the first run and return the ``Run`` response.
+        """
         # Schedule: validate format AND seconds-feature gate.
         if _is_seconds_cron(request.schedule) and not settings.cron.CRON_ALLOW_SECONDS_SCHEDULE:
             raise HTTPException(
@@ -257,18 +262,21 @@ class CronService:
 
         payload = _build_payload(request)
         now = datetime.now(UTC)
-        next_run = _compute_next_run(request.schedule, now=now, timezone=request.timezone)
-
-        cron_id = request.cron_id or str(uuid4())
-        if request.cron_id is not None:
-            # Checked rather than left to the PK violation so the caller gets a 409
-            # instead of a 500 from the failed INSERT.
-            taken = await self.session.scalar(select(CronORM.cron_id).where(CronORM.cron_id == cron_id))
-            if taken is not None:
-                raise HTTPException(409, f"Cron '{cron_id}' already exists")
+        # Advance past the immediate first occurrence since _trigger_first_run
+        # fires a run right away when ``enabled`` is not False. We skip to the
+        # second occurrence so the scheduler does not fire a duplicate run
+        # seconds after creation. When the caller suppresses the first run
+        # (enabled=False) the scheduler picks up the regular first occurrence.
+        first_occ = _compute_next_run(request.schedule, now=now, timezone=request.timezone)
+        will_fire_immediately = request.enabled is not False
+        next_run = (
+            _compute_next_run(request.schedule, now=first_occ, timezone=request.timezone)
+            if will_fire_immediately
+            else first_occ
+        )
 
         cron_orm = CronORM(
-            cron_id=cron_id,
+            cron_id=str(uuid4()),
             assistant_id=resolved_assistant_id,
             thread_id=thread_id,
             user_id=user_identity,
@@ -288,10 +296,6 @@ class CronService:
 
         logger.info("Created cron job", cron_id=cron_orm.cron_id, schedule=request.schedule)
         return cron_orm
-
-    async def get_cron(self, cron_id: str, user_identity: str) -> CronResponse:
-        """Return one cron owned by the caller, or 404."""
-        return cron_to_response(await self._get_cron_or_404(cron_id, user_identity))
 
     async def update_cron(
         self,
@@ -353,19 +357,11 @@ class CronService:
             timezone = existing_payload.get("timezone")
             values["next_run_date"] = _compute_next_run(schedule, timezone=timezone)
 
-        # A patch is the owner intervening, so the auto-disable counter starts over —
-        # otherwise a cron fixed at 9 failures gets exactly one more attempt.
-        values["failure_count"] = 0
-
-        # SQLAlchemy's execute() stub returns Result for every statement kind, but a
-        # DML statement yields a CursorResult at runtime — the only shape carrying
-        # ``.rowcount``. The stub cannot express that, hence the cast.
-        result = cast(
-            "CursorResult[Any]",
-            await self.session.execute(
-                update(CronORM).where(CronORM.cron_id == cron_id, CronORM.user_id == user_identity).values(**values)
-            ),
+        result: CursorResult[Any] = await self.session.execute(
+            update(CronORM).where(CronORM.cron_id == cron_id, CronORM.user_id == user_identity).values(**values)
         )
+        # DML execute() returns CursorResult; the explicit annotation makes
+        # ``.rowcount`` reachable without a type: ignore.
         if result.rowcount == 0:
             raise HTTPException(404, f"Cron '{cron_id}' not found")
         await self.session.commit()
@@ -377,7 +373,7 @@ class CronService:
             raise HTTPException(404, f"Cron '{cron_id}' not found")
 
         logger.info("Updated cron job", cron_id=cron_id)
-        return cron_to_response(updated)
+        return _cron_to_response(updated)
 
     async def delete_cron(self, cron_id: str, user_identity: str) -> None:
         """Delete a cron job."""
@@ -386,43 +382,29 @@ class CronService:
         await self.session.commit()
         logger.info("Deleted cron job", cron_id=cron_id)
 
-    def _build_cron_filters(
-        self,
-        request: CronSearchRequest | CronCountRequest,
-        user: User,
-        auth_filters: dict[str, Any] | None,
-    ) -> list[ColumnElement[bool]]:
-        """Shared WHERE predicates for /runs/crons/search and /runs/crons/count.
-
-        A count that filtered differently from the search it paginates would be a
-        silent correctness bug, so the clause is built once.
-        """
-        where: list[ColumnElement[bool]] = build_visibility_filters(CronORM.user_id, user, CRONS_SEARCH_ALL)
-        if request.assistant_id is not None:
-            where.append(CronORM.assistant_id == self._resolve_assistant_identifier(request.assistant_id))
-        if request.thread_id is not None:
-            where.append(CronORM.thread_id == request.thread_id)
-        if request.enabled is not None:
-            where.append(CronORM.enabled == request.enabled)
-        if request.metadata:
-            where.append(CronORM.metadata_dict.op("@>")(request.metadata))
-        auth_filter = build_metadata_filter(CronORM.metadata_dict, auth_filters)
-        if auth_filter is not None:
-            where.append(auth_filter)
-        return where
-
     async def search_crons(
         self,
         request: CronSearchRequest,
-        user: User,
-        auth_filters: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Search cron jobs with filters, pagination, sorting, and field selection."""
-        stmt = select(CronORM).where(*self._build_cron_filters(request, user, auth_filters))
+        user_identity: str,
+    ) -> list[CronResponse]:
+        """Search cron jobs with filters, pagination, and sorting."""
+        stmt = select(CronORM).where(CronORM.user_id == user_identity)
 
-        # sort_by is Pydantic-validated against a Literal of CronORM columns,
-        # so getattr cannot reach arbitrary attributes.
-        sort_column = getattr(CronORM, request.sort_by) if request.sort_by else CronORM.created_at
+        if request.assistant_id is not None:
+            resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)
+            stmt = stmt.where(CronORM.assistant_id == resolved_assistant_id)
+        if request.thread_id is not None:
+            stmt = stmt.where(CronORM.thread_id == request.thread_id)
+        if request.enabled is not None:
+            stmt = stmt.where(CronORM.enabled == request.enabled)
+
+        # Sorting
+        sort_column = CronORM.created_at
+        if request.sort_by == "next_run_date":
+            sort_column = CronORM.next_run_date
+        elif request.sort_by == "updated_at":
+            sort_column = CronORM.updated_at
+
         if request.sort_order == "desc":
             stmt = stmt.order_by(sort_column.desc())
         else:
@@ -431,20 +413,26 @@ class CronService:
         stmt = stmt.offset(request.offset).limit(request.limit)
 
         result = await self.session.scalars(stmt)
-        return [_serialize_cron(cron_to_response(row), request.select) for row in result.all()]
+        return [_cron_to_response(row) for row in result.all()]
 
     async def count_crons(
         self,
         request: CronCountRequest,
-        user: User,
-        auth_filters: dict[str, Any] | None = None,
+        user_identity: str,
     ) -> int:
-        """Count cron jobs matching the same filters as the search endpoint."""
-        stmt = select(func.count()).select_from(CronORM).where(*self._build_cron_filters(request, user, auth_filters))
+        """Count cron jobs matching filters."""
+        stmt = select(func.count()).select_from(CronORM).where(CronORM.user_id == user_identity)
+
+        if request.assistant_id is not None:
+            resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)
+            stmt = stmt.where(CronORM.assistant_id == resolved_assistant_id)
+        if request.thread_id is not None:
+            stmt = stmt.where(CronORM.thread_id == request.thread_id)
+
         total = await self.session.scalar(stmt)
         return total or 0
 
-    async def claim_due_crons(self, now: datetime | None = None) -> list[CronORM]:
+    async def get_due_crons(self, now: datetime | None = None) -> list[CronORM]:
         """Atomically claim enabled cron jobs whose ``next_run_date`` is in the past.
 
         The claim writes ``claimed_until = now + CRON_CLAIM_DURATION_SECONDS``
@@ -496,79 +484,32 @@ class CronService:
         await self.session.commit()
         return list(result.scalars().all())
 
-    async def advance_next_run(self, cron_id: str, *, failed: bool = False, base: datetime | None = None) -> None:
-        """Move a fired cron to its next occurrence, or disable it once spent.
+    async def advance_next_run(self, cron: CronORM) -> None:
+        """Advance ``next_run_date`` to the next occurrence after *now*.
 
-        Re-reads the row ``FOR UPDATE`` rather than trusting the claimed snapshot: an API
-        patch may have changed schedule or timezone since the claim, and advancing from the
-        stale copy would undo it. *base* is the claim instant, so firing latency cannot
-        walk the schedule forward.
+        If the cron has an ``end_time`` that has passed, disable it instead.
+        Releases the in-flight claim by clearing ``claimed_until``.
         """
-        cron = await self.session.scalar(select(CronORM).where(CronORM.cron_id == cron_id).with_for_update())
-        if cron is None:
-            return
-
         now = datetime.now(UTC)
         if cron.end_time and now >= cron.end_time:
-            await self.disable_cron(cron_id)
-            logger.info("Disabled cron past its end_time", cron_id=cron_id)
-            return
-
-        values = self._settle_values(failed=failed, now=now)
-        values["next_run_date"] = _compute_next_run(
-            cron.schedule, now=base or now, timezone=(cron.payload or {}).get("timezone")
-        )
-        await self._settle(cron_id, values, failed=failed)
-
-    async def release_claim(self, cron_id: str, *, failed: bool = False) -> None:
-        """Drop the claim without advancing, so the next tick retries this occurrence."""
-        await self._settle(cron_id, self._settle_values(failed=failed, now=datetime.now(UTC)), failed=failed)
-
-    async def disable_cron(self, cron_id: str) -> None:
-        """Stop a cron from firing without deleting it; the record stays queryable."""
-        values = {"enabled": False, "claimed_until": None, "updated_at": datetime.now(UTC)}
-        await self._settle(cron_id, values, failed=False)
+            await self.session.execute(
+                update(CronORM)
+                .where(CronORM.cron_id == cron.cron_id)
+                .values(enabled=False, claimed_until=None, updated_at=now)
+            )
+        else:
+            timezone = (cron.payload or {}).get("timezone")
+            next_run = _compute_next_run(cron.schedule, now=now, timezone=timezone)
+            await self.session.execute(
+                update(CronORM)
+                .where(CronORM.cron_id == cron.cron_id)
+                .values(next_run_date=next_run, claimed_until=None, updated_at=now)
+            )
+        await self.session.commit()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _settle_values(*, failed: bool, now: datetime) -> dict[str, Any]:
-        """Claim release plus failure accounting, shared by every settle path.
-
-        The counter moves in SQL so concurrent settles cannot lose an increment, and
-        ``enabled`` is ANDed rather than assigned: hitting the cap can only turn a cron
-        off, never resurrect one an API call just paused.
-        """
-        if not failed:
-            return {"claimed_until": None, "failure_count": 0, "updated_at": now}
-        values: dict[str, Any] = {
-            "claimed_until": None,
-            "failure_count": CronORM.failure_count + 1,
-            "updated_at": now,
-        }
-        cap = settings.cron.CRON_MAX_CONSECUTIVE_FAILURES
-        if cap > 0:
-            values["enabled"] = CronORM.enabled & (CronORM.failure_count + 1 < cap)
-        return values
-
-    async def _settle(self, cron_id: str, values: dict[str, Any], *, failed: bool) -> None:
-        """Apply one settle write and report an auto-disable the caller didn't ask for."""
-        result = await self.session.execute(
-            update(CronORM)
-            .where(CronORM.cron_id == cron_id)
-            .values(**values)
-            .returning(CronORM.enabled, CronORM.failure_count)
-        )
-        row = result.first()
-        await self.session.commit()
-        if failed and row is not None and not row.enabled:
-            logger.warning(
-                "Disabled cron after consecutive failed firings",
-                cron_id=cron_id,
-                failure_count=row.failure_count,
-            )
 
     async def _get_cron_or_404(
         self,

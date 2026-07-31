@@ -80,9 +80,6 @@ results = await client.assistants.search(name="Customer Support")
 
 ## Updating assistants
 
-Updates are partial: only the fields you pass are changed, and every other field
-— including `graph_id` — keeps its current value.
-
 ```python
 assistant = await client.assistants.update(
     assistant_id="your-assistant-id",

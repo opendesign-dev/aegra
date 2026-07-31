@@ -13,6 +13,12 @@ def validate_run_status(status: str) -> RunStatus:
     After migration, all statuses should be standard values.
     This function validates and rejects any invalid statuses.
 
+    Args:
+        status: Status string to validate
+
+    Returns:
+        Validated RunStatus value
+
     Raises:
         ValueError: If status is not a valid RunStatus
     """
@@ -33,6 +39,12 @@ def validate_run_status(status: str) -> RunStatus:
 
 def validate_thread_status(status: str) -> ThreadStatus:
     """Validate that thread status conforms to API specification.
+
+    Args:
+        status: Thread status string to validate
+
+    Returns:
+        Validated ThreadStatus value
 
     Raises:
         ValueError: If status is not a valid ThreadStatus

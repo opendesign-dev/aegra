@@ -87,6 +87,9 @@ class LangGraphAuthBackend(AuthenticationBackend):
         Resolution order:
         1. Load from aegra.json auth.path config
         2. If no auth file found, returns None (noop handled directly in authenticate())
+
+        Returns:
+            Auth instance or None if not found (noop handled in authenticate() method)
         """
         # 1. Try loading from config
         try:
@@ -108,6 +111,12 @@ class LangGraphAuthBackend(AuthenticationBackend):
         """Load auth instance from path in format './file.py:var' or 'module:var'.
 
         Relative paths are resolved from the config file directory.
+
+        Args:
+            path: Import path in format './file.py:variable' or 'module.path:variable'
+
+        Returns:
+            Auth instance or None if loading fails
         """
         if ":" not in path:
             logger.error(f"Invalid auth path format (missing ':'): {path}")
@@ -135,7 +144,15 @@ class LangGraphAuthBackend(AuthenticationBackend):
         return self._load_from_module(module_path, var_name)
 
     def _load_from_file(self, file_path: Path, var_name: str) -> Auth | None:
-        """Load auth instance from a file path."""
+        """Load auth instance from a file path.
+
+        Args:
+            file_path: Path to the Python file
+            var_name: Name of the variable to load
+
+        Returns:
+            Auth instance or None if loading fails
+        """
         try:
             if not file_path.exists():
                 logger.warning(f"Auth file not found: {file_path}")
@@ -271,9 +288,13 @@ class LangGraphAuthBackend(AuthenticationBackend):
 
 @functools.lru_cache(maxsize=1)
 def get_auth_backend() -> AuthenticationBackend:
-    """Get authentication backend based on AUTH_TYPE environment variable.
+    """
+    Get authentication backend based on AUTH_TYPE environment variable.
 
     Cached so the auth module is loaded once at first use, not per-request.
+
+    Returns:
+        AuthenticationBackend instance
     """
     auth_type = settings.app.AUTH_TYPE
 
@@ -286,7 +307,16 @@ def get_auth_backend() -> AuthenticationBackend:
 
 
 def on_auth_error(conn: HTTPConnection, exc: AuthenticationError) -> JSONResponse:
-    """Handle authentication errors in Agent Protocol format."""
+    """
+    Handle authentication errors in Agent Protocol format.
+
+    Args:
+        conn: HTTP connection
+        exc: Authentication error
+
+    Returns:
+        JSON response with Agent Protocol error format
+    """
     logger.warning(f"Authentication error for {conn.url}: {exc}")
 
     return JSONResponse(
@@ -304,6 +334,9 @@ def get_auth_instance() -> Auth | None:
 
     Delegates to get_auth_backend() so only one Auth instance exists
     per process.
+
+    Returns:
+        Auth instance or None if not configured/found
     """
     backend = get_auth_backend()
     if isinstance(backend, LangGraphAuthBackend):

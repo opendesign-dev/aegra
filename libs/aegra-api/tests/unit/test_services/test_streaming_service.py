@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aegra_api.models import Run
-from aegra_api.services.streaming_service import StreamingService, normalize_stream_modes
+from aegra_api.services.streaming_service import StreamingService
 
 
 @pytest.mark.asyncio
@@ -200,7 +200,7 @@ class TestStreamingService:
         with patch("aegra_api.services.streaming_service.broker_manager") as mock_manager:
             mock_manager.get_or_create_broker.return_value = mock_broker
             mock_manager.get_broker.return_value = mock_broker
-            service.event_converter.convert_raw_to_sse = MagicMock(side_effect=["sse1", "sse2", "sse3", "sse4"])  # type: ignore[assignment]
+            service._convert_raw_to_sse = AsyncMock(side_effect=["sse1", "sse2", "sse3", "sse4"])  # type: ignore[assignment]
 
             events: list[str] = []
             async for event in service.stream_run_execution(run):
@@ -274,7 +274,7 @@ class TestStreamingService:
         with patch("aegra_api.services.streaming_service.broker_manager") as mock_manager:
             mock_manager.get_or_create_broker.return_value = mock_broker
             mock_manager.get_broker.return_value = mock_broker
-            service.event_converter.convert_raw_to_sse = MagicMock(side_effect=["sse6", "sse7"])  # type: ignore[assignment]
+            service._convert_raw_to_sse = AsyncMock(side_effect=["sse6", "sse7"])  # type: ignore[assignment]
 
             events: list[str] = []
             async for event in service.stream_run_execution(run, last_event_id="run-123_event_5"):
@@ -325,7 +325,7 @@ class TestStreamingService:
             mock_manager.get_or_create_broker.return_value = mock_broker
             mock_manager.get_broker.return_value = mock_broker
             # Only 4 convert calls expected (event_6 skipped in live)
-            service.event_converter.convert_raw_to_sse = MagicMock(  # type: ignore[assignment]
+            service._convert_raw_to_sse = AsyncMock(  # type: ignore[assignment]
                 side_effect=["sse5", "sse6", "sse7", "sse8"]
             )
 
@@ -387,86 +387,3 @@ class TestStreamingService:
         with patch("aegra_api.services.streaming_service.broker_manager") as mock_manager:
             await service.cleanup_run(run_id)
             mock_manager.cleanup_broker.assert_called_with(run_id)
-
-
-class TestStreamModeFilter:
-    """``stream_mode`` on join-stream narrows a run's modes for one connection."""
-
-    @staticmethod
-    def _run() -> Run:
-        return Run(
-            run_id="run-123",
-            status="running",
-            user_id="user-1",
-            thread_id="thread-1",
-            assistant_id="agent",
-            input={},
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
-        )
-
-    @pytest.mark.parametrize(
-        "modes, expected",
-        [
-            (None, None),
-            ([], None),
-            (["values"], frozenset({"values"})),
-            (["messages-tuple"], frozenset({"messages", "messages-tuple"})),
-            (["values", "messages-tuple", "messages"], frozenset({"values", "messages", "messages-tuple"})),
-        ],
-    )
-    def test_normalize_stream_modes(self, modes: list[str] | None, expected: frozenset[str] | None) -> None:
-        """Empty/None mean "no filter"; messages-tuple admits both spellings."""
-        assert normalize_stream_modes(modes) == expected
-
-    @pytest.mark.asyncio
-    async def test_filters_events_outside_requested_modes(self) -> None:
-        """Events whose mode was not requested are dropped before conversion."""
-        service = StreamingService()
-        mock_broker = MagicMock()
-        mock_broker.is_finished.return_value = False
-        mock_broker.replay = AsyncMock(
-            return_value=[
-                ("run-123_event_1", ("values", {"a": 1})),
-                ("run-123_event_2", ("debug", {"step": 1})),
-            ]
-        )
-
-        async def mock_aiter() -> AsyncGenerator[tuple[str, Any], None]:
-            yield "run-123_event_3", ("messages/partial", [{"content": "hi"}])
-            yield "run-123_event_4", ("values", {"a": 2})
-            yield "run-123_event_5", ("end", {"status": "success"})
-
-        mock_broker.aiter = mock_aiter
-
-        with patch("aegra_api.services.streaming_service.broker_manager") as mock_manager:
-            mock_manager.get_or_create_broker.return_value = mock_broker
-            mock_manager.get_broker.return_value = mock_broker
-
-            events = [
-                event async for event in service.stream_run_execution(self._run(), stream_modes=frozenset({"values"}))
-            ]
-
-        # values x2 kept, debug + messages dropped, and `end` always survives.
-        assert [e.splitlines()[0] for e in events] == ["event: values", "event: values", "event: end"]
-
-    @pytest.mark.asyncio
-    async def test_no_filter_streams_every_mode(self) -> None:
-        """Omitting stream_mode keeps the run's full event set."""
-        service = StreamingService()
-        mock_broker = MagicMock()
-        mock_broker.is_finished.return_value = False
-        mock_broker.replay = AsyncMock(return_value=[("run-123_event_1", ("debug", {"step": 1}))])
-
-        async def mock_aiter() -> AsyncGenerator[tuple[str, Any], None]:
-            yield "run-123_event_2", ("end", {"status": "success"})
-
-        mock_broker.aiter = mock_aiter
-
-        with patch("aegra_api.services.streaming_service.broker_manager") as mock_manager:
-            mock_manager.get_or_create_broker.return_value = mock_broker
-            mock_manager.get_broker.return_value = mock_broker
-
-            events = [event async for event in service.stream_run_execution(self._run())]
-
-        assert [e.splitlines()[0] for e in events] == ["event: debug", "event: end"]

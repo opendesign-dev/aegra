@@ -64,8 +64,7 @@ async def allow_assistant_create(ctx, value):
     value["metadata"] = value.get("metadata", {})
     value["metadata"]["created_by"] = ctx.user.identity
     return True
-""",
-            encoding="utf-8",
+"""
         )
         return auth_file
 
@@ -81,8 +80,7 @@ async def allow_assistant_create(ctx, value):
                     "graphs": {"test": "./test.py:graph"},
                     "auth": {"path": f"./{mock_auth_file.name}:auth"},
                 }
-            ),
-            encoding="utf-8",
+            )
         )
         return config_file
 

@@ -1,12 +1,10 @@
 """Run-related Pydantic models for Agent Protocol"""
 
-import json
-from collections.abc import Collection, Sequence
+import re
 from datetime import datetime
 from typing import Any, Literal, Self
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -14,157 +12,118 @@ from pydantic import (
     model_validator,
 )
 
-from aegra_api.models.enums import (
-    DisconnectMode,
-    MultitaskStrategy,
-    RunSelectField,
-    SortOrder,
-)
-from aegra_api.models.filters import UtcDatetime, validate_time_range
 from aegra_api.utils.status_compat import validate_run_status
 
-# The SDK types run metadata as arbitrary JSON, so the only limit we impose is a
-# serialized-size cap to close the DoS surface; shape is unconstrained.
-_METADATA_MAX_BYTES = 64 * 1024
-
-# The stored columns the SDK's synthetic ``kwargs`` field is rebuilt from.
-_KWARGS_SOURCES = frozenset({"input", "config", "context", "multitask_strategy"})
-
-# Aegra-only: /runs/search has no SDK counterpart, so this set is ours to define.
-RunSortBy = Literal["run_id", "thread_id", "assistant_id", "status", "created_at", "updated_at"]
+# Constraints for ``RunCreate.metadata`` keys/values, enforced at request
+# time so the OpenAPI schema is honest about what reaches OTEL.  Without
+# these limits a tenant could submit thousands of keys, megabyte-scale
+# values, or nested structures — all of which would either be silently
+# dropped by ``merge_run_metadata`` or balloon span size past the OTEL
+# collector limits.  Bounds chosen to be generous for legitimate use
+# (tenant id, feature flag, environment, sub-agent type, ...) while
+# closing the DoS surface.
+_METADATA_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_METADATA_MAX_KEYS = 32
+_METADATA_MAX_VALUE_LEN = 512
 
 
 class RunCreate(BaseModel):
     """Request model for creating runs"""
 
-    run_id: str | None = Field(
-        default=None,
-        max_length=256,
-        description="Client-supplied id for idempotent creation. Generated when omitted; 409 if taken.",
-    )
     assistant_id: str = Field(..., description="Assistant to execute")
     input: dict[str, Any] | None = Field(
-        default=None,
+        None,
         description="Input data for the run. Optional when resuming from a checkpoint.",
     )
     config: dict[str, Any] | None = Field(default_factory=dict, description="Execution config")
     context: dict[str, Any] | None = Field(default_factory=dict, description="Execution context")
     checkpoint: dict[str, Any] | None = Field(
-        default=None,
+        None,
         description="Checkpoint configuration (e.g., {'checkpoint_id': '...', 'checkpoint_ns': ''})",
     )
-    stream: bool = Field(default=False, description="Enable streaming response")
-    stream_mode: str | list[str] | None = Field(default=None, description="Requested stream mode(s)")
-    on_disconnect: DisconnectMode | None = Field(
-        default=None,
+    stream: bool = Field(False, description="Enable streaming response")
+    stream_mode: str | list[str] | None = Field(None, description="Requested stream mode(s)")
+    on_disconnect: str | None = Field(
+        None,
         description="Behavior on client disconnect: 'cancel' (default) or 'continue'.",
     )
     on_completion: Literal["delete", "keep"] | None = Field(
-        default=None,
+        None,
         description="Behavior after stateless run completes: 'delete' (default) removes the ephemeral thread, 'keep' preserves it.",
     )
 
-    multitask_strategy: MultitaskStrategy | None = Field(
-        default=None,
-        description=(
-            "How to handle a new run when the thread already has an in-flight run "
-            "(double-texting). 'reject' (server default when omitted) → 409; "
-            "'interrupt' → cancel the in-flight run, keep its state; 'rollback' → "
-            "cancel and discard its state; 'enqueue' → run after the in-flight one "
-            "finishes. At most one run executes per thread at a time."
-        ),
-    )
-
-    webhook: str | None = Field(
-        default=None,
-        max_length=2048,
-        description=(
-            "Optional http(s) URL POSTed with the final Run payload when this "
-            "run reaches a terminal state. Hosts resolving to private/reserved "
-            "addresses are rejected unless WEBHOOK_ALLOW_PRIVATE_IPS is set."
-        ),
-    )
-
-    durability: Literal["sync", "async", "exit"] | None = Field(
-        default=None,
-        description=(
-            "When checkpoints persist: 'async' (default, persist in background), "
-            "'sync' (persist before proceeding), 'exit' (persist only at the end). "
-            "Forwarded to the LangGraph runtime."
-        ),
-    )
-
-    checkpoint_during: bool | None = Field(
-        default=None,
-        description="Deprecated alias for durability: true → 'async', false → 'exit'.",
-    )
-
-    if_not_exists: Literal["create", "reject"] = Field(
-        default="reject",
-        description=(
-            "Behavior when the target thread does not exist: 'reject' (default) "
-            "returns 404; 'create' creates the thread first."
-        ),
-    )
-
-    after_seconds: int | None = Field(
-        default=None,
-        ge=0,
-        description=(
-            "Seconds to wait before starting the run. The run is created "
-            "immediately in pending state and executed once the delay elapses."
-        ),
+    multitask_strategy: str | None = Field(
+        None,
+        description="Strategy for handling concurrent runs on same thread: 'reject', 'interrupt', 'rollback', or 'enqueue'.",
     )
 
     # Human-in-the-loop fields (core HITL functionality)
     command: dict[str, Any] | None = Field(
-        default=None,
+        None,
         description="Command for resuming interrupted runs with state updates or navigation",
     )
     interrupt_before: str | list[str] | None = Field(
-        default=None,
+        None,
         description="Nodes to interrupt immediately before they get executed. Use '*' for all nodes.",
     )
     interrupt_after: str | list[str] | None = Field(
-        default=None,
+        None,
         description="Nodes to interrupt immediately after they get executed. Use '*' for all nodes.",
     )
 
     # Subgraph configuration
     stream_subgraphs: bool | None = Field(
-        default=False,
+        False,
         description="Whether to include subgraph events in streaming. When True, includes events from all subgraphs. When False (default when None), excludes subgraph events. Defaults to False for backwards compatibility.",
     )
 
-    # Arbitrary JSON metadata, matching the SDK's ``Json`` type. Primitive
-    # values reach OTEL trace attributes (``langfuse.trace.metadata.<key>``);
-    # nested values are dropped there but stored/returned intact.
+    # Request metadata (top-level in payload).  Reaches OTEL trace
+    # attributes as ``langfuse.trace.metadata.<key>`` (and the
+    # OpenInference ``metadata.<key>`` alias on Phoenix targets).  The
+    # field is annotated ``dict[str, Any]`` rather than a primitive
+    # union so a malformed payload produces one actionable 422 message
+    # from ``validate_metadata_shape`` instead of N parallel union-arm
+    # errors (one per primitive type Pydantic tries) per offending key.
     metadata: dict[str, Any] | None = Field(
-        default=None,
-        description="Arbitrary JSON metadata associated with the run and returned on the Run entity.",
+        None,
+        description=(
+            "Request metadata propagated to OTEL trace attributes "
+            "(``langfuse.trace.metadata.<key>``).  Keys must match "
+            "``[A-Za-z0-9_-]{1,64}``.  Values must be primitive "
+            "(``str``, ``int``, ``float``, ``bool``); string values are "
+            "capped at 512 characters.  Maximum 32 keys.  Use this for "
+            "filterable attributes (tenant, feature flag, environment, "
+            "sub-agent type) rather than payload data."
+        ),
     )
 
     @field_validator("metadata", mode="after")
     @classmethod
-    def cap_metadata_size(cls, metadata: dict[str, Any] | None) -> dict[str, Any] | None:
-        """Reject metadata that isn't JSON-serializable or exceeds the anti-DoS byte cap."""
-        if metadata is None:
-            return metadata
-        try:
-            size = len(json.dumps(metadata).encode("utf-8"))
-        except TypeError as exc:
-            raise ValueError("metadata must be JSON-serializable") from exc
-        if size > _METADATA_MAX_BYTES:
-            raise ValueError(f"metadata exceeds {_METADATA_MAX_BYTES} bytes")
-        return metadata
+    def validate_metadata_shape(
+        cls,
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Enforce key shape, key count, value type, and string-value length.
 
-    @model_validator(mode="after")
-    def map_checkpoint_during(self) -> Self:
-        """Fold the deprecated ``checkpoint_during`` flag into ``durability``."""
-        if self.checkpoint_during is not None and self.durability is None:
-            self.durability = "async" if self.checkpoint_during else "exit"
-        self.checkpoint_during = None
-        return self
+        Validation runs entirely here (rather than relying on a primitive
+        union on the field type) so each violation produces one clear
+        error message instead of N parallel union-arm errors per offending
+        key — easier for clients to surface to humans.
+        """
+        if metadata is None:
+            return None
+        if len(metadata) > _METADATA_MAX_KEYS:
+            raise ValueError(f"metadata exceeds {_METADATA_MAX_KEYS} keys (got {len(metadata)})")
+        for key, value in metadata.items():
+            if not _METADATA_KEY_RE.match(key):
+                raise ValueError(f"metadata key {key!r} must match {_METADATA_KEY_RE.pattern}")
+            if not isinstance(value, (str, int, float, bool)):
+                raise ValueError(
+                    f"metadata value for key {key!r} must be str/int/float/bool, got {type(value).__name__}"
+                )
+            if isinstance(value, str) and len(value) > _METADATA_MAX_VALUE_LEN:
+                raise ValueError(f"metadata value for key {key!r} exceeds {_METADATA_MAX_VALUE_LEN} characters")
+        return metadata
 
     @model_validator(mode="after")
     def validate_input_command_exclusivity(self) -> Self:
@@ -182,137 +141,27 @@ class RunCreate(BaseModel):
         return self
 
 
-class RunsCancelRequest(BaseModel):
-    """Body for bulk cancel (``POST /runs/cancel``).
-
-    Either ``status`` alone (cancel every owned run in that state) or
-    ``thread_id`` + ``run_ids`` (cancel those specific runs).
-    """
-
-    run_ids: list[str] | None = Field(default=None, description="Run ids to cancel (requires thread_id).")
-    thread_id: str | None = Field(default=None, description="Thread scoping the run_ids.")
-    status: Literal["pending", "running", "all"] | None = Field(
-        default=None,
-        description="Cancel every owned run with this status; mutually exclusive with thread_id/run_ids.",
-    )
-
-    @model_validator(mode="after")
-    def validate_target(self) -> Self:
-        if self.status is not None:
-            if self.thread_id or self.run_ids:
-                raise ValueError("When providing 'status', 'thread_id' and 'run_ids' must be omitted")
-            return self
-        if not self.thread_id or not self.run_ids:
-            raise ValueError("Must provide either a status or both 'thread_id' and 'run_ids'")
-        return self
-
-
-class RunSearchRequest(BaseModel):
-    """Request body for ``POST /runs/search`` and ``POST /runs/count``.
-
-    Queries the ``runs`` table across threads, so assistant attribution comes from
-    the run's own ``assistant_id`` column rather than the last-writer-wins
-    ``assistant_id`` in thread metadata.
-
-    Field shape follows the SDK's own search requests: one field per concept,
-    accepting a scalar or a list, and ``ids`` (not ``run_ids``) for an id set —
-    matching ``threads.search``. Scope is never a request field; it comes from the
-    caller's identity and permissions.
-    """
-
-    # Each id/status filter takes a scalar or a list, under either its singular or
-    # plural name — clients that batch naturally reach for the plural. The singular
-    # is canonical: it is what OpenAPI advertises and what the SDK sends.
-    assistant_id: str | list[str] | None = Field(
-        default=None,
-        validation_alias=AliasChoices("assistant_id", "assistant_ids"),
-        description=(
-            "Assistant(s) that executed the run. Accepts one id or a list; a graph id "
-            "resolves to its canonical assistant id. Alias: assistant_ids."
-        ),
-    )
-    thread_id: str | list[str] | None = Field(
-        default=None,
-        validation_alias=AliasChoices("thread_id", "thread_ids"),
-        description="Restrict to one thread or any of several. Alias: thread_ids.",
-    )
-    ids: list[str] | None = Field(
-        default=None,
-        min_length=1,
-        validation_alias=AliasChoices("ids", "run_ids", "run_id"),
-        description="Match any of these run ids. Use to fetch a known batch in one call. Aliases: run_ids, run_id.",
-    )
-    status: str | list[str] | None = Field(
-        default=None,
-        validation_alias=AliasChoices("status", "statuses"),
-        description="Run status(es): pending, running, success, error, timeout, interrupted. Alias: statuses.",
-    )
-    metadata: dict[str, Any] | None = Field(default=None, description="Metadata filters (JSONB containment).")
-    created_after: UtcDatetime | None = Field(
-        default=None, description="Only runs created at or after this timestamp (ISO 8601; naive means UTC)."
-    )
-    created_before: UtcDatetime | None = Field(
-        default=None, description="Only runs created at or before this timestamp (ISO 8601; naive means UTC)."
-    )
-    limit: int = Field(default=20, ge=1, le=1000, description="Maximum results")
-    offset: int = Field(default=0, ge=0, description="Results offset")
-    sort_by: RunSortBy | None = Field(default=None, description="Field to sort by. Defaults to created_at.")
-    sort_order: SortOrder | None = Field(default=None, description="Sort direction. Defaults to 'desc'.")
-    select: list[RunSelectField] | None = Field(default=None, description="Return only these run fields.")
-
-    @field_validator("assistant_id", "thread_id", "status")
-    @classmethod
-    def reject_empty_list(cls, v: str | list[str] | None) -> str | list[str] | None:
-        """An empty list would match nothing; that is a query bug, not a filter."""
-        if isinstance(v, list) and not v:
-            raise ValueError("filter list must not be empty")
-        return v
-
-    @field_validator("status")
-    @classmethod
-    def validate_status_filter(cls, v: str | list[str] | None) -> str | list[str] | None:
-        """Validate against the API's status vocabulary, scalar or list."""
-        if v is None:
-            return v
-        if isinstance(v, list):
-            return [validate_run_status(status) for status in v]
-        return validate_run_status(v)
-
-    @model_validator(mode="after")
-    def validate_created_range(self) -> Self:
-        validate_time_range(self.created_after, self.created_before, "created")
-        return self
-
-
 class Run(BaseModel):
     """Run entity model
 
     Status values: pending, running, error, success, timeout, interrupted
     """
 
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    model_config = ConfigDict(from_attributes=True)
 
     run_id: str = Field(..., description="Unique identifier for the run.")
     thread_id: str = Field(..., description="Thread this run belongs to.")
     assistant_id: str = Field(..., description="Assistant that is executing this run.")
     status: str = Field(
-        default="pending", description="Current run status: pending, running, error, success, timeout, or interrupted."
-    )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        validation_alias="metadata_dict",
-        description="Arbitrary JSON metadata associated with the run.",
-    )
-    multitask_strategy: str = Field(
-        default="reject", description="Strategy used to handle concurrent runs on the same thread."
+        "pending", description="Current run status: pending, running, error, success, timeout, or interrupted."
     )
     input: dict[str, Any] | None = Field(
-        default=None, description="Input data provided to the run. None for checkpoint-only resume."
+        None, description="Input data provided to the run. None for checkpoint-only resume."
     )
     output: dict[str, Any] | None = Field(
-        default=None, description="Final output produced by the run, or null if not yet complete."
+        None, description="Final output produced by the run, or null if not yet complete."
     )
-    error_message: str | None = Field(default=None, description="Error message if the run failed.")
+    error_message: str | None = Field(None, description="Error message if the run failed.")
     config: dict[str, Any] | None = Field(
         default_factory=dict, description="Configuration passed to the graph at runtime."
     )
@@ -331,39 +180,6 @@ class Run(BaseModel):
             raise ValueError(f"Status must be a string, got {type(v)}")
         return validate_run_status(v)
 
-    @field_validator("metadata", mode="before")
-    @classmethod
-    def default_metadata(cls, v: dict[str, Any] | None) -> dict[str, Any]:
-        """A run row before its value is materialized carries NULL; treat as empty."""
-        return v or {}
-
-    @field_validator("multitask_strategy", mode="before")
-    @classmethod
-    def default_multitask_strategy(cls, v: str | None) -> str:
-        """Rows created before this column existed have NULL; treat as the default."""
-        return v or "reject"
-
-
-def project_runs(runs: Sequence[Run], fields: Collection[str]) -> list[dict[str, Any]]:
-    """Project runs onto the ``select`` fields requested by the caller.
-
-    ``kwargs`` has no column of its own: the SDK carries a run's execution
-    params under that key, so rebuild it from the ones Aegra stores separately.
-    """
-    wanted = set(fields)
-    # ``kwargs`` is assembled, not stored, so ask pydantic only for real columns —
-    # dumping the whole model would serialize `output` (never selectable) on every row.
-    columns = wanted & set(Run.model_fields)
-    if "kwargs" in wanted:
-        columns |= _KWARGS_SOURCES
-    rows: list[dict[str, Any]] = []
-    for run in runs:
-        dumped = run.model_dump(mode="json", include=columns)
-        if "kwargs" in wanted:
-            dumped["kwargs"] = {field: dumped[field] for field in _KWARGS_SOURCES}
-        rows.append({k: v for k, v in dumped.items() if k in wanted})
-    return rows
-
 
 class RunStatus(BaseModel):
     """Simple run status response"""
@@ -371,4 +187,4 @@ class RunStatus(BaseModel):
     run_id: str = Field(..., description="Unique identifier for the run.")
     status: str = Field(..., description="Current run status value.")
 
-    message: str | None = Field(default=None, description="Optional human-readable status message.")
+    message: str | None = Field(None, description="Optional human-readable status message.")

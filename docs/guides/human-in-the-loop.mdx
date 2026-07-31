@@ -24,50 +24,40 @@ from langgraph.types import Command, interrupt
 
 def human_approval(state):
     """Pause for human approval before executing tools."""
-    call = state["messages"][-1].tool_calls[0]
+    tool_calls = state["messages"][-1].tool_calls
 
-    # Send interrupt to client with action details. `description` is what the
-    # reviewer reads — say why this needs a person, not just which rule fired.
+    # Send interrupt to client with action details
     response = interrupt({
-        "action_requests": [{
-            "name": call["name"],
-            "args": call["args"],
-            "description": f"Approve `{call['name']}` before it runs.",
-        }],
-        "review_configs": [{
-            "action_name": call["name"],
-            "allowed_decisions": ["approve", "edit", "reject", "respond"],
-        }],
+        "action_request": {
+            "action": tool_calls[0]["name"],
+            "args": tool_calls[0]["args"],
+        },
+        "config": {
+            "allow_accept": True,
+            "allow_edit": True,
+            "allow_respond": True,
+            "allow_ignore": True,
+        },
     })
 
-    # Decisions come back in the same order as action_requests
-    decision = response["decisions"][0]
+    # Process the human response
+    human_response = response[0]
 
-    if decision["type"] == "approve":
+    if human_response["type"] == "accept":
         return Command(goto="tools")
-    elif decision["type"] == "edit":
+    elif human_response["type"] == "edit":
         # Update tool args with human edits
-        state["messages"][-1].tool_calls[0]["args"] = decision["edited_action"]["args"]
+        state["messages"][-1].tool_calls[0]["args"] = human_response["args"]
         return Command(goto="tools")
-    elif decision["type"] == "respond":
-        # Human answered on behalf of the tool instead of running it
+    elif human_response["type"] == "response":
+        # Human provided a direct response instead of using the tool
         return Command(
             goto="agent",
-            update={"messages": [{"type": "human", "content": decision["message"]}]},
+            update={"messages": [{"type": "human", "content": human_response["args"]}]},
         )
-    elif decision["type"] == "reject":
+    elif human_response["type"] == "ignore":
         return Command(goto="__end__")
 ```
-
-<Note>
-  This payload and decision vocabulary matches LangChain's
-  `HumanInTheLoopMiddleware` (`langchain>=1.0`), so hand-written graphs and
-  prebuilt agents (`create_agent` / `create_deep_agent` with `interrupt_on`)
-  speak one shape and a single client drives both. Aegra passes
-  `command.resume` through to LangGraph verbatim, so any JSON-serialisable
-  convention still works — matching the middleware is just what saves you from
-  maintaining two client paths.
-</Note>
 
 ### Wire it into the graph
 
@@ -140,7 +130,7 @@ async def approve():
     async for chunk in client.runs.stream(
         thread_id=thread_id,
         assistant_id="agent_hitl",
-        command={"resume": {"decisions": [{"type": "approve"}]}},
+        command={"resume": [{"type": "accept", "args": None}]},
     ):
         print(chunk)
 
@@ -155,7 +145,7 @@ asyncio.run(approve())
 async for chunk in client.runs.stream(
     thread_id=thread_id,
     assistant_id="agent_hitl",
-    command={"resume": {"decisions": [{"type": "edit", "edited_action": {"name": "search", "args": {"query": "AI news 2026"}}}]}},
+    command={"resume": [{"type": "edit", "args": {"query": "AI news 2026"}}]},
 ):
     print(chunk)
 ```
@@ -167,19 +157,19 @@ async for chunk in client.runs.stream(
 async for chunk in client.runs.stream(
     thread_id=thread_id,
     assistant_id="agent_hitl",
-    command={"resume": {"decisions": [{"type": "respond", "message": "I already know the answer..."}]}},
+    command={"resume": [{"type": "response", "args": "I already know the answer..."}]},
 ):
     print(chunk)
 ```
 
-### 5. Reject the tool call
+### 5. Ignore the tool call
 
 ```python
-# Skip the tool; the message tells the model why
+# Skip the tool and end the turn
 async for chunk in client.runs.stream(
     thread_id=thread_id,
     assistant_id="agent_hitl",
-    command={"resume": {"decisions": [{"type": "reject", "message": "Not needed."}]}},
+    command={"resume": [{"type": "ignore", "args": None}]},
 ):
     print(chunk)
 ```
@@ -206,62 +196,25 @@ interrupt_before="*"  # Pause before every node
 interrupt_after="*"   # Pause after every node
 ```
 
-An unknown node name is ignored by LangGraph rather than rejected, so the run
-completes without pausing. Check the node names against
-`GET /assistants/{assistant_id}/graph` if a breakpoint appears not to fire.
-
-### Resuming a static breakpoint
-
-A static breakpoint carries no question, so there is no value to hand back —
-resume with a **checkpoint-only run** (`input=None`) and execution continues from
-the stored checkpoint:
-
-```python
-import httpx
-
-async with httpx.AsyncClient(base_url="http://localhost:2026") as http:
-    await http.post(
-        f"/threads/{thread_id}/runs/wait",
-        json={"assistant_id": "agent", "input": None, "checkpoint": {}},
-    )
-```
-
-This differs from a dynamic `interrupt()`, which resumes with
-`command={"resume": {"decisions": [...]}}` because the graph is waiting on a specific answer.
-
 ## Checking interrupt status
 
-Which field to read depends on how the run paused. Both kinds finalize the run as
-`interrupted`, but only a dynamic `interrupt()` produces interrupt objects:
-
 ```python
+# Get thread state to see interrupts
 state = await client.threads.get_state(thread_id)
 
-# Dynamic interrupt(): the pending questions, keyed by task id on the thread.
-thread = await client.threads.get(thread_id)
-for task_id, interrupts in (thread.get("interrupts") or {}).items():
-    print(f"{task_id}: {interrupts}")
-
-# Static breakpoint: no interrupt objects — the evidence is the queued nodes.
-if state["next"]:
-    print(f"Paused before: {state['next']}")
+if state["interrupts"]:
+    for interrupt_data in state["interrupts"]:
+        print(f"Interrupt: {interrupt_data}")
 ```
-
-A run whose status is `interrupted` with an empty `interrupts` map and a non-empty
-`next` paused on a static breakpoint.
 
 ## Response types
 
-| Type | Description | Extra field |
-|------|-------------|-------------|
-| `approve` | Run the action as-is | — |
-| `edit` | Run it with modified arguments | `edited_action: {name, args}` |
-| `reject` | Skip it; the model is told why | `message` (optional) |
-| `respond` | Answer on behalf of the tool, skipping it | `message` (required) |
-
-Supply one decision per entry in `action_requests`, in the same order. Only the
-types listed in that action's `allowed_decisions` are accepted — anything else
-raises rather than silently proceeding.
+| Type | Description | `args` |
+|------|-------------|--------|
+| `accept` | Approve the action as-is | `None` |
+| `edit` | Approve with modified arguments | Modified args dict |
+| `response` | Skip the action and provide a direct response | Response string |
+| `ignore` | Skip the action entirely | `None` |
 
 ## Important notes
 

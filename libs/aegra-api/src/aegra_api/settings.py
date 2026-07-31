@@ -313,20 +313,6 @@ class ObservabilitySettings(EnvBase):
     OTEL_TARGETS: str = ""  # Comma-separated: "LANGFUSE,PHOENIX"
     OTEL_CONSOLE_EXPORT: bool = False  # For local debugging
 
-    # --- LLM I/O redaction (PII / compliance) ---
-    # Redact LLM prompts/completions (end-user messages, tool inputs) before
-    # export. Off keeps current behavior; when off we defer to OpenInference's
-    # native OPENINFERENCE_HIDE_* env vars rather than forcing redaction off.
-    OTEL_HIDE_LLM_INPUTS: bool = False
-    OTEL_HIDE_LLM_OUTPUTS: bool = False
-
-    # --- Trace sampling ---
-    # Standard OTEL sampler. Empty keeps the SDK default (parentbased_always_on
-    # → export all). trace_id is derived from run_id, so ratio sampling stays
-    # consistent per run and never splits a single run's trace.
-    OTEL_TRACES_SAMPLER: str = ""
-    OTEL_TRACES_SAMPLER_ARG: float = 1.0
-
     # --- Generic OTLP Target (Default/Custom) ---
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     OTEL_EXPORTER_OTLP_HEADERS: str | None = None
@@ -383,10 +369,6 @@ class WorkerSettings(EnvBase):
     REAPER_INTERVAL_SECONDS: int = 15
     STUCK_PENDING_THRESHOLD_SECONDS: int = 120
     POSTGRES_POLL_INTERVAL_SECONDS: int = 5
-    # Delayed runs (after_seconds): how often to submit due runs, and the max
-    # submitted per tick.
-    DELAYED_RUN_POLL_INTERVAL_SECONDS: int = 5
-    DELAYED_RUN_BATCH_SIZE: int = 100
 
     @model_validator(mode="after")
     def _validate_lease_timing(self) -> "WorkerSettings":
@@ -409,7 +391,7 @@ class CronSettings(EnvBase):
     CRON_ENABLED: bool = True
     CRON_POLL_INTERVAL_SECONDS: int = 60
     # Maximum lease duration for an in-flight cron firing. Once a cron is
-    # claimed by ``claim_due_crons`` its ``claimed_until`` is set to
+    # claimed by ``get_due_crons`` its ``claimed_until`` is set to
     # ``now + CRON_CLAIM_DURATION_SECONDS`` so concurrent pollers and
     # subsequent ticks don't double-fire it. Should comfortably exceed the
     # worst-case ``_fire_cron`` duration. Defaults to 5 minutes.
@@ -422,51 +404,27 @@ class CronSettings(EnvBase):
     # Cap on how many crons a single tick will fire (prevents one slow
     # poll from queuing up unbounded work).
     CRON_TICK_BATCH_SIZE: int = 100
-    # How many of a tick's crons are fired at once. Firing serially lets one slow
-    # ``prepare_run`` push the batch past CRON_CLAIM_DURATION_SECONDS, at which point
-    # another poller re-claims the tail and double-fires it.
-    CRON_FIRE_CONCURRENCY: int = 8
-    # Soft cap on JSONB payload size (input + config + context + metadata
-    # combined) accepted on create/update.
+    # Soft cap on JSONB payload size (input + config + context + checkpoint
+    # + metadata combined) accepted on create/update.
     CRON_MAX_PAYLOAD_BYTES: int = 64 * 1024
-    # How late an occurrence may be and still fire. Past this the occurrence is
-    # written off and the schedule jumps to the next one, so a cron that was due
-    # during a long outage doesn't fire at restart hours off-schedule. 0 always
-    # fires, however overdue.
-    CRON_MISFIRE_GRACE_SECONDS: int = 0
-    # Consecutive failed firings before the cron is disabled. Without a cap a cron
-    # whose graph or payload is permanently broken retries every poll interval
-    # forever. 0 retries indefinitely.
-    CRON_MAX_CONSECUTIVE_FAILURES: int = 10
-
-    # How long a thread-bound cron waits for a human decision before giving up.
-    # While a fired run sits interrupted the schedule is held: firing again would
-    # advance the checkpoint and discard the context the approver is looking at.
-    # Past this the pause is answered with a rejection where the graph declares one
-    # is allowed, and written off otherwise, so one unattended approval cannot
-    # silently stop the cron forever. 0 waits.
-    CRON_APPROVAL_TIMEOUT_SECONDS: int = 86_400
 
     @model_validator(mode="after")
-    def _validate_bounds(self) -> "CronSettings":
-        """Reject out-of-range cron settings; a new knob is one entry, not one branch."""
-        for name in (
-            "CRON_POLL_INTERVAL_SECONDS",
-            "CRON_CLAIM_DURATION_SECONDS",
-            "CRON_TICK_BATCH_SIZE",
-            "CRON_FIRE_CONCURRENCY",
-            "CRON_MAX_PAYLOAD_BYTES",
-        ):
-            if getattr(self, name) <= 0:
-                raise ValueError(f"{name} must be greater than 0, got {getattr(self, name)}")
-        for name in (
-            "CRON_MAX_PER_USER",
-            "CRON_MISFIRE_GRACE_SECONDS",
-            "CRON_MAX_CONSECUTIVE_FAILURES",
-            "CRON_APPROVAL_TIMEOUT_SECONDS",
-        ):
-            if getattr(self, name) < 0:
-                raise ValueError(f"{name} must be >= 0, got {getattr(self, name)}")
+    def _validate_poll_interval(self) -> "CronSettings":
+        """Reject non-positive cron poll intervals during settings validation."""
+        if self.CRON_POLL_INTERVAL_SECONDS <= 0:
+            raise ValueError(
+                f"CRON_POLL_INTERVAL_SECONDS must be greater than 0, got {self.CRON_POLL_INTERVAL_SECONDS}"
+            )
+        if self.CRON_CLAIM_DURATION_SECONDS <= 0:
+            raise ValueError(
+                f"CRON_CLAIM_DURATION_SECONDS must be greater than 0, got {self.CRON_CLAIM_DURATION_SECONDS}"
+            )
+        if self.CRON_MAX_PER_USER < 0:
+            raise ValueError(f"CRON_MAX_PER_USER must be >= 0, got {self.CRON_MAX_PER_USER}")
+        if self.CRON_TICK_BATCH_SIZE <= 0:
+            raise ValueError(f"CRON_TICK_BATCH_SIZE must be greater than 0, got {self.CRON_TICK_BATCH_SIZE}")
+        if self.CRON_MAX_PAYLOAD_BYTES <= 0:
+            raise ValueError(f"CRON_MAX_PAYLOAD_BYTES must be greater than 0, got {self.CRON_MAX_PAYLOAD_BYTES}")
         return self
 
 
@@ -483,58 +441,6 @@ class EventStreamingSettings(EnvBase):
     FF_V2_EVENT_STREAMING: bool = True
 
 
-class WebhookSettings(EnvBase):
-    """Outbound run-completion webhook delivery via a transactional outbox."""
-
-    WEBHOOK_ENABLED: bool = True
-    WEBHOOK_TIMEOUT_SECONDS: float = 30.0
-    WEBHOOK_MAX_ATTEMPTS: int = 3
-    WEBHOOK_BACKOFF_BASE_SECONDS: float = 1.0
-    # Empty disables signing. When set, requests carry a Standard-Webhooks-style
-    # HMAC-SHA256 ``Webhook-Signature`` header over the timestamp + body.
-    WEBHOOK_SIGNING_SECRET: str = ""
-    # SSRF guard: block webhook hosts that resolve to private/loopback/reserved
-    # IPs. Set true only for trusted internal webhook targets (self-hosted).
-    WEBHOOK_ALLOW_PRIVATE_IPS: bool = False
-
-
-class McpSettings(EnvBase):
-    """MCP server (/mcp) exposing assistants as tools."""
-
-    MCP_ENABLED: bool = True
-
-
-class A2ASettings(EnvBase):
-    """A2A protocol endpoints (/a2a/{assistant_id}) exposing assistants as agents."""
-
-    A2A_ENABLED: bool = True
-
-
-class RunTTLSettings(EnvBase):
-    """Run-row retention (TTL). Opt-in; prunes old terminal run rows so the
-    ``runs`` table doesn't grow unbounded. Thread state + checkpoints are
-    untouched — only historical run rows past the age are deleted.
-    """
-
-    RUN_TTL_ENABLED: bool = False
-    RUN_TTL_MINUTES: int = 10080  # 7 days
-
-
-class CheckpointerSettings(EnvBase):
-    """Thread/checkpoint retention (TTL). Opt-in; deletes stale threads."""
-
-    # Off by default — enabling permanently deletes threads + their checkpoints.
-    CHECKPOINTER_TTL_ENABLED: bool = False
-    # Delete threads with no active run whose updated_at is older than this.
-    CHECKPOINTER_TTL_MINUTES: int = 43200  # 30 days
-    CHECKPOINTER_SWEEP_INTERVAL_MINUTES: int = 60
-    CHECKPOINTER_SWEEP_BATCH_SIZE: int = 100
-    # Materialize latest thread state into thread_state for search. Off = pure
-    # checkpointer-centric: GET thread reads state from the checkpointer and
-    # search's `values` filter is unsupported.
-    THREAD_STATE_MATERIALIZE: bool = True
-
-
 class Settings:
     """Container object that instantiates all application settings groups."""
 
@@ -548,11 +454,6 @@ class Settings:
         self.worker = WorkerSettings()
         self.cron = CronSettings()
         self.event_streaming = EventStreamingSettings()
-        self.webhook = WebhookSettings()
-        self.mcp = McpSettings()
-        self.a2a = A2ASettings()
-        self.run_ttl = RunTTLSettings()
-        self.checkpointer = CheckpointerSettings()
 
 
 settings = Settings()

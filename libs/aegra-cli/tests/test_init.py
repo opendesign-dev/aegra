@@ -602,7 +602,7 @@ class TestInitEdgeCases:
     ) -> None:
         project_dir = tmp_path / "force-test"
         project_dir.mkdir()
-        (project_dir / "aegra.json").write_text('{"old": true}', encoding="utf-8")
+        (project_dir / "aegra.json").write_text('{"old": true}')
 
         result = cli_runner.invoke(cli, ["init", str(project_dir), "-t", "1", "--force"])
         assert result.exit_code == 0
@@ -616,7 +616,7 @@ class TestInitEdgeCases:
     ) -> None:
         project_dir = tmp_path / "skip-test"
         project_dir.mkdir()
-        (project_dir / "aegra.json").write_text('{"old": true}', encoding="utf-8")
+        (project_dir / "aegra.json").write_text('{"old": true}')
 
         result = cli_runner.invoke(cli, ["init", str(project_dir), "-t", "1"])
         assert result.exit_code == 0
@@ -638,7 +638,7 @@ class TestInitEdgeCases:
     ) -> None:
         project_dir = tmp_path / "nonempty"
         project_dir.mkdir()
-        (project_dir / "existing.txt").write_text("keep me", encoding="utf-8")
+        (project_dir / "existing.txt").write_text("keep me")
 
         result = cli_runner.invoke(cli, ["init", str(project_dir), "-t", "1"])
         assert result.exit_code == 0

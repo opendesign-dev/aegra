@@ -1,42 +1,9 @@
 """Shared test helper functions and mock objects"""
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 from aegra_api.models import Assistant, Run, Thread
-
-
-def make_cron_row(
-    cron_id: str = "test-cron-123",
-    assistant_id: str = "test-assistant-123",
-    thread_id: str | None = None,
-    schedule: str = "*/5 * * * *",
-    user_id: str = "test-user",
-    payload: dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-) -> SimpleNamespace:
-    """Create a CronORM-shaped row that ``cron_to_response`` can serialize.
-
-    A plain Mock breaks Pydantic's from_attributes path, so the attribute set is
-    spelled out to match CronORM.
-    """
-    now = datetime.now(UTC)
-    return SimpleNamespace(
-        cron_id=cron_id,
-        assistant_id=assistant_id,
-        thread_id=thread_id,
-        schedule=schedule,
-        user_id=user_id,
-        payload=payload if payload is not None else {},
-        metadata_dict=metadata or {},
-        on_run_completed=None,
-        end_time=None,
-        next_run_date=None,
-        enabled=True,
-        created_at=now,
-        updated_at=now,
-    )
 
 
 def make_assistant(
@@ -117,20 +84,15 @@ class DummyRun:
         metadata: dict[str, Any] | None = None,
         input_data: dict[str, Any] | None = None,
         output_data: dict[str, Any] | None = None,
-        multitask_strategy: str = "reject",
     ):
         self.run_id = run_id
         self.thread_id = thread_id
         self.assistant_id = assistant_id
         self.status = status
         self.user_id = user_id
-        # ORM name-maps the "metadata" column to the ``metadata_dict`` attribute.
-        self.metadata_dict = metadata or {}
         self.metadata = metadata or {}
-        self.multitask_strategy = multitask_strategy
         self.input = input_data or {"message": "test"}
         self.output = output_data
-        self.error_message = None
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
 
@@ -154,19 +116,9 @@ class DummyThread:
 
 
 class DummyStoreItem:
-    """Mock store item for testing, mirroring langgraph's Item/SearchItem."""
+    """Mock store item for testing"""
 
-    def __init__(
-        self,
-        key: str,
-        value: Any,
-        namespace: tuple,
-        *,
-        score: float | None = None,
-    ):
+    def __init__(self, key: str, value: Any, namespace: tuple):
         self.key = key
         self.value = value
         self.namespace = namespace
-        self.created_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-        self.score = score

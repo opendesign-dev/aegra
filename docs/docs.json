@@ -51,16 +51,7 @@
               "guides/threads-and-state",
               "guides/streaming",
               "guides/human-in-the-loop",
-              "guides/cron",
-              "guides/webhooks"
-            ]
-          },
-          {
-            "group": "Protocols",
-            "icon": "plug",
-            "pages": [
-              "guides/mcp",
-              "guides/a2a"
+              "guides/cron"
             ]
           },
           {
@@ -69,8 +60,7 @@
             "pages": [
               "guides/store",
               "guides/semantic-store",
-              "guides/subgraphs",
-              "guides/retention"
+              "guides/subgraphs"
             ]
           },
           {

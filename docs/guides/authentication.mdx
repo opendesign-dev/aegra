@@ -72,32 +72,6 @@ The `@auth.authenticate` decorator registers your authentication function. It re
 
 Any additional fields you return (like `role`, `team_id`, etc.) are preserved and accessible via `ctx.user` in authorization handlers and via the `User` model in custom routes.
 
-### Recognized permissions
-
-`permissions` is free-form — your authorization handlers decide what the strings
-mean. These four are interpreted by the server itself, each lifting per-user
-scoping on one resource's search and count endpoints:
-
-| Permission | Endpoints it widens |
-|------------|--------|
-| `runs:search:all` | `POST /runs/search`, `POST /runs/count` |
-| `threads:search:all` | `POST /threads/search`, `POST /threads/count` |
-| `assistants:search:all` | `POST /assistants/search`, `POST /assistants/count` |
-| `crons:search:all` | `POST /runs/crons/search`, `POST /runs/crons/count` |
-
-Without the relevant permission those endpoints are pinned to the caller at the
-SQL layer, and **no request field can widen the scope** — scope is decided by the
-permission alone, so an unpermitted client cannot even express "other users'
-rows". The gates are independent: holding `runs:search:all` does nothing for
-thread search.
-
-Grant them only to operator or admin identities. Each lifts per-user isolation on
-that resource: run metadata includes inputs and outputs, thread metadata and state
-include conversation content, and assistant rows include their configuration.
-
-Assistants defined in `aegra.json` are owned by the `system` identity and stay
-visible to every caller regardless of permission.
-
 ### Denying access
 
 Raise any exception to deny authentication:
@@ -172,7 +146,7 @@ The `ctx` parameter provides:
 
 - `ctx.user` — Authenticated user object (with all fields you returned from `authenticate`)
 - `ctx.resource` — Resource name (`"threads"`, `"assistants"`, etc.)
-- `ctx.action` — Action name (`"create"`, `"read"`, `"update"`, `"delete"`, `"search"`, `"create_run"`)
+- `ctx.action` — Action name (`"create"`, `"read"`, `"update"`, `"delete"`, `"search"`)
 - `ctx.permissions` — User permissions list
 
 ### Return values
@@ -183,26 +157,6 @@ The `ctx` parameter provides:
 | `False` | Deny with 403 Forbidden |
 | `dict` | Allow with filters (e.g., `{"metadata": {"team_id": "123"}}`) |
 | Modified `value` | Allow with modified request data |
-
-### Authorizing run execution (`create_run`)
-
-The `threads.create_run` action governs **starting a graph run**. It is dispatched by **every
-run-creation entrypoint**, so an operator's policy applies uniformly and can't be sidestepped
-by choosing a different route: the REST create/stream/wait endpoints
-(`POST /threads/{thread_id}/runs`, `/runs/stream`, `/runs/wait`), their stateless equivalents
-(`POST /runs`, `/runs/stream`, `/runs/wait`, `/runs/batch`), and the inline A2A JSON-RPC
-(`/a2a/{assistant_id}`) and MCP tool (`/mcp`) surfaces — all applying the same handler, not
-just authentication. A denying handler returns 403; a handler returning a `config`/`context`
-filter has it merged into that run.
-
-```python
-@auth.on.threads.create_run
-async def scope_runs(ctx, value):
-    if not ctx.user.can_run:
-        return False
-    # Inject per-user config that reaches the graph on REST, A2A, and MCP
-    return {"config": {"configurable": {"team_id": ctx.user.team_id}}}
-```
 
 ## Accessing user data in your graph
 

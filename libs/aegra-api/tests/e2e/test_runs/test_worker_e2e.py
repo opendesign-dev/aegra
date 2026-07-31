@@ -122,13 +122,11 @@ async def test_worker_cancel_via_redis() -> None:
 
     await asyncio.sleep(1)
 
-    # wait=True is required: the worker writes the terminal status, so without it
-    # the cancel returns while the run is still 'running'.
-    await client.runs.cancel(
+    cancelled = await client.runs.cancel(
         thread_id=thread["thread_id"],
         run_id=run["run_id"],
-        wait=True,
     )
+    elog("Cancel response", cancelled)
 
     final_run = await client.runs.get(
         thread_id=thread["thread_id"],

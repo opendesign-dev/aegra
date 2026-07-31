@@ -100,29 +100,6 @@ class TestCreateThread:
         assert data["status"] == "idle"
         assert data["metadata"]["thread_name"] == "Test Thread"
 
-    def test_create_thread_accepts_sdk_snake_case_ids(self, client: TestClient) -> None:
-        """`thread_id` / `if_exists` are the wire names the LangGraph SDK sends.
-
-        Regression: both fields carried a camelCase `alias`, so the generated
-        OpenAPI advertised `threadId` / `ifExists` — a contract that disagreed
-        with every request the SDK actually makes.
-        """
-        resp = client.post(
-            "/threads",
-            json={"thread_id": "sdk-snake-1", "if_exists": "do_nothing"},
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["thread_id"] == "sdk-snake-1"
-
-    def test_create_thread_still_accepts_legacy_camel_case_ids(self, client: TestClient) -> None:
-        """The camelCase spelling stays accepted so older clients keep working."""
-        resp = client.post(
-            "/threads",
-            json={"threadId": "sdk-camel-1", "ifExists": "do_nothing"},
-        )
-        assert resp.status_code == 200, resp.text
-        assert resp.json()["thread_id"] == "sdk-camel-1"
-
     def test_create_thread_preserves_graph_id_from_metadata(self, client):
         """Test that client-provided graph_id in metadata is preserved (fixes #254)."""
         resp = client.post(
@@ -400,17 +377,9 @@ class TestDeleteThread:
         app.dependency_overrides[core_get_session] = override_get_session_dep(Session)
         client = make_client(app)
 
-        # The route also drops the thread's checkpoints, which needs a checkpointer.
-        checkpointer = AsyncMock()
-        manager = MagicMock()
-        manager.get_checkpointer.return_value = checkpointer
-
-        with patch("aegra_api.services.run_cleanup.db_manager", manager):
-            resp = client.delete("/threads/test-123")
-
+        resp = client.delete("/threads/test-123")
         assert resp.status_code == 200
         assert resp.json()["status"] == "deleted"
-        checkpointer.adelete_thread.assert_awaited_once_with("test-123")
 
 
 class TestSearchThreads:
@@ -481,6 +450,18 @@ class TestSearchThreads:
         data = resp.json()
         assert isinstance(data, list)
 
+    def test_search_accepts_order_by_asc(self, client):
+        """order_by='created_at ASC' is accepted without error."""
+        resp = client.post("/threads/search", json={"order_by": "created_at ASC"})
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_search_malformed_order_by_does_not_500(self, client):
+        """Malformed order_by falls back to default and returns 200."""
+        for bad in ["password; DROP TABLE", "nonexistent_col", ""]:
+            resp = client.post("/threads/search", json={"order_by": bad})
+            assert resp.status_code == 200, f"order_by={bad!r} raised {resp.status_code}"
+
     def test_search_accepts_sdk_sort_shape(self, client):
         """SDK-style sort_by/sort_order is accepted."""
         resp = client.post(
@@ -490,20 +471,24 @@ class TestSearchThreads:
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
 
-    def test_search_accepts_sdk_state_updated_at(self, client):
-        """sort_by='state_updated_at' is supported; it maps onto updated_at."""
+    def test_search_sdk_state_updated_at_returns_422(self, client):
+        """sort_by='state_updated_at' is in the SDK's literal but not in our schema → 422."""
         resp = client.post(
             "/threads/search",
             json={"sort_by": "state_updated_at", "sort_order": "desc"},
         )
-        assert resp.status_code == 200, resp.text
-        assert isinstance(resp.json(), list)
+        assert resp.status_code == 422
+        assert "sort_by" in resp.text
 
     def test_search_invalid_sort_by_returns_422(self, client):
-        """Unknown sort_by is rejected at the model layer rather than silently ignored."""
+        """Unknown sort_by is rejected at the model layer, regardless of order_by.
+
+        Regression: pre-fix code silently fell back to created_at DESC when
+        sort_by was invalid, dropping a valid order_by alongside it.
+        """
         resp = client.post(
             "/threads/search",
-            json={"sort_by": "definitely_not_a_column"},
+            json={"sort_by": "definitely_not_a_column", "order_by": "updated_at ASC"},
         )
         assert resp.status_code == 422
         assert "sort_by" in resp.text

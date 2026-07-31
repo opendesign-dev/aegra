@@ -1,28 +1,6 @@
 """Database fixtures for tests"""
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
-
-
-def make_mock_session(**overrides: Any) -> AsyncMock:
-    """AsyncMock AsyncSession whose result objects are sync, like the real ones.
-
-    A bare AsyncMock makes ``.all()`` awaitable, so callers doing
-    ``list((await session.scalars(stmt)).all())`` — e.g. multitask resolution on
-    run creation — get a coroutine and raise TypeError.
-    """
-    session = AsyncMock()
-    session.add = MagicMock()
-    result = MagicMock()
-    result.all.return_value = []
-    result.first.return_value = None
-    result.one_or_none.return_value = None
-    session.scalars = AsyncMock(return_value=result)
-    session.execute = AsyncMock(return_value=result)
-    for name, value in overrides.items():
-        setattr(session, name, value)
-    return session
 
 
 class DummySessionBase:
@@ -32,30 +10,28 @@ class DummySessionBase:
     appropriate rows for a test. By default, returns empty data.
     """
 
-    # Statement params are positional-only: subclasses name them freely (stmt,
-    # _stmt, query) without tripping an override mismatch.
-    async def __aenter__(self) -> "DummySessionBase":
+    async def __aenter__(self):
         return self
 
-    async def __aexit__(self, exc_type: object, exc: object, tb: object, /) -> bool:
+    async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    def add(self, obj: Any, /) -> None:
+    def add(self, _):
         """AsyncSession.add is sync in SQLAlchemy"""
         return None
 
-    async def commit(self) -> None:
+    async def commit(self):
         return None
 
-    async def refresh(self, obj: Any, /) -> None:
+    async def refresh(self, _obj):
         return None
 
-    async def scalar(self, stmt: Any, /) -> Any:
+    async def scalar(self, _stmt):
         return None
 
-    async def scalars(self, stmt: Any, /) -> Any:
+    async def scalars(self, _stmt):
         class Result:
-            def all(self) -> list[Any]:
+            def all(self_inner):
                 return []
 
         return Result()

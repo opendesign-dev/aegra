@@ -11,10 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any, Literal
 
-from langchain_protocol import ErrorCode
-
-# Envelope ``method`` values. langchain_protocol types each event separately with
-# no aggregate literal, so this stays hand-authored; ``ErrorCode`` is the official.
+# Server event channels (the envelope ``method``).
 EventMethod = Literal[
     "lifecycle",
     "messages",
@@ -25,6 +22,17 @@ EventMethod = Literal[
     "checkpoints",
     "custom",
     "tasks",
+]
+
+# Error codes a command response may carry.
+ErrorCode = Literal[
+    "invalid_argument",
+    "unknown_command",
+    "unknown_error",
+    "no_such_run",
+    "no_such_interrupt",
+    "permission_denied",
+    "not_supported",
 ]
 
 

@@ -29,20 +29,33 @@ async def _seed_three_threads(tag: str) -> list[str]:
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_search_sdk_sort_by_desc_e2e() -> None:
-    """SDK-style sort_by='created_at', sort_order='desc' sorts newest-first."""
-    tag = f"sdk-desc-{uuid.uuid4().hex[:8]}"
+async def test_search_order_by_created_at_asc_e2e() -> None:
+    """order_by='created_at ASC' returns threads in creation order."""
+    tag = f"sort-asc-{uuid.uuid4().hex[:8]}"
     created = await _seed_three_threads(tag)
 
     async with AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http_client:
         resp = await http_client.post(
             "/threads/search",
-            json={
-                "metadata": {"search_test_tag": tag},
-                "sort_by": "created_at",
-                "sort_order": "desc",
-                "limit": 100,
-            },
+            json={"metadata": {"search_test_tag": tag}, "order_by": "created_at ASC", "limit": 100},
+        )
+    assert resp.status_code == 200, resp.text
+    returned = [t["thread_id"] for t in resp.json()]
+    elog("ASC result", returned)
+    assert returned == created
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_order_by_created_at_desc_e2e() -> None:
+    """order_by='created_at DESC' returns threads newest-first."""
+    tag = f"sort-desc-{uuid.uuid4().hex[:8]}"
+    created = await _seed_three_threads(tag)
+
+    async with AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http_client:
+        resp = await http_client.post(
+            "/threads/search",
+            json={"metadata": {"search_test_tag": tag}, "order_by": "created_at DESC", "limit": 100},
         )
     assert resp.status_code == 200, resp.text
     returned = [t["thread_id"] for t in resp.json()]
@@ -71,6 +84,31 @@ async def test_search_sdk_sort_by_asc_e2e() -> None:
     returned = [t["thread_id"] for t in resp.json()]
     elog("SDK ASC result", returned)
     assert returned == created
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_sort_by_takes_precedence_over_order_by_e2e() -> None:
+    """When both sort_by and order_by are sent, sort_by wins."""
+    tag = f"precedence-{uuid.uuid4().hex[:8]}"
+    created = await _seed_three_threads(tag)
+
+    async with AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http_client:
+        # sort_by without sort_order → defaults to desc. order_by asks for asc.
+        # sort_by precedence means we should get desc order.
+        resp = await http_client.post(
+            "/threads/search",
+            json={
+                "metadata": {"search_test_tag": tag},
+                "sort_by": "created_at",
+                "order_by": "created_at ASC",
+                "limit": 100,
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    returned = [t["thread_id"] for t in resp.json()]
+    elog("Precedence result", returned)
+    assert returned == list(reversed(created)), "sort_by default-desc must beat order_by ASC"
 
 
 @pytest.mark.e2e
@@ -142,3 +180,21 @@ async def test_search_pagination_stable_with_tied_sort_key_e2e() -> None:
         f"pagination dropped or duplicated rows: collected={collected}, seeded={seeded}"
     )
     assert len(collected) == len(set(collected)), f"pagination returned dupes: {collected}"
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_search_malformed_order_by_falls_back_e2e() -> None:
+    """Unknown/malformed order_by must not 500 — falls back to default ordering."""
+    tag = f"sort-bad-{uuid.uuid4().hex[:8]}"
+    created = await _seed_three_threads(tag)
+
+    async with AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http_client:
+        for bad in ["nonexistent_col", "password; DROP TABLE", ""]:
+            resp = await http_client.post(
+                "/threads/search",
+                json={"metadata": {"search_test_tag": tag}, "order_by": bad, "limit": 100},
+            )
+            assert resp.status_code == 200, f"order_by={bad!r} → {resp.status_code}: {resp.text}"
+            returned = {t["thread_id"] for t in resp.json()}
+            assert returned == set(created), f"order_by={bad!r} dropped rows: {returned}"

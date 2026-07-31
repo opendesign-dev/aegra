@@ -5,6 +5,7 @@ tests consume the body and parse the JSON result from the concatenated chunks.
 """
 
 import json
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -16,8 +17,6 @@ from aegra_api.api.runs import wait_for_run
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.models import User
-from aegra_api.models.runs import RunCreate
-from tests.fixtures.database import make_mock_session
 
 
 def _make_session_maker(session: AsyncMock) -> MagicMock:
@@ -26,6 +25,11 @@ def _make_session_maker(session: AsyncMock) -> MagicMock:
     ctx.__aenter__ = AsyncMock(return_value=session)
     ctx.__aexit__ = AsyncMock(return_value=False)
     return MagicMock(return_value=ctx)
+
+
+async def _single_event_stream() -> AsyncGenerator:
+    """Minimal async generator standing in for the wait-response body."""
+    yield "data"
 
 
 def _make_multi_session_maker(*sessions: AsyncMock) -> MagicMock:
@@ -41,14 +45,22 @@ def _make_multi_session_maker(*sessions: AsyncMock) -> MagicMock:
     return MagicMock(side_effect=_factory)
 
 
-def _make_request() -> RunCreate:
-    """Build a standard RunCreate request.
-
-    A real model, not a Mock: prepare_run reads fields the mock did not define
-    (webhook, if_not_exists, durability), and an undefined Mock attribute is a
-    truthy Mock rather than the field's default.
-    """
-    return RunCreate(assistant_id="test-assistant", input={"message": "test"})
+def _make_request() -> MagicMock:
+    """Build a standard mock RunCreate request."""
+    request = MagicMock()
+    request.assistant_id = "test-assistant"
+    request.input = {"message": "test"}
+    request.command = None
+    request.config = {}
+    request.context = None
+    request.checkpoint = None
+    request.stream_mode = None
+    request.interrupt_before = None
+    request.interrupt_after = None
+    request.multitask_strategy = None
+    request.stream_subgraphs = False
+    request.metadata = None
+    return request
 
 
 def _make_assistant() -> AssistantORM:
@@ -94,7 +106,7 @@ async def _consume_streaming_response(response: object) -> dict:
     return json.loads(body) if body else {}
 
 
-# Standard patches for prepare_run dependencies
+# Standard patches for _prepare_run dependencies
 _PREPARE_RUN_PATCHES = {
     "aegra_api.services.run_preparation._validate_resume_command": AsyncMock,
     "aegra_api.services.run_preparation.set_thread_status": AsyncMock,
@@ -114,13 +126,13 @@ class TestWaitForRunExceptionPaths:
         user = User(identity="test-user", scopes=[])
         request = _make_request()
 
-        # Pre-execution session (for thread ownership check + prepare_run)
-        session_1 = make_mock_session()
+        # Pre-execution session (for thread ownership check + _prepare_run)
+        session_1 = AsyncMock()
         session_1.add = MagicMock()
         session_1.scalar.side_effect = [None, _make_assistant()]
 
         # Post-wait session (for _fetch_run_output)
-        session_2 = make_mock_session()
+        session_2 = AsyncMock()
         session_2.scalar.return_value = _make_run_orm(run_id, thread_id, status="running", output={"partial": "output"})
 
         mock_maker = _make_multi_session_maker(session_1, session_2)
@@ -129,8 +141,8 @@ class TestWaitForRunExceptionPaths:
             raise TimeoutError()
 
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -160,18 +172,18 @@ class TestWaitForRunExceptionPaths:
         user = User(identity="test-user", scopes=[])
         request = _make_request()
 
-        session_1 = make_mock_session()
+        session_1 = AsyncMock()
         session_1.add = MagicMock()
         session_1.scalar.side_effect = [None, _make_assistant()]
 
-        session_2 = make_mock_session()
+        session_2 = AsyncMock()
         session_2.scalar.return_value = _make_run_orm(run_id, thread_id, output={"result": "success"})
 
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -195,17 +207,17 @@ class TestWaitForRunExceptionPaths:
 
     @pytest.mark.asyncio
     async def test_wait_for_run_failed_status(self) -> None:
-        """Failed runs surface the SDK ``__error__`` envelope so wait() can raise."""
+        """Test that failed runs return their output as-is."""
         thread_id = "test-thread-123"
         run_id = str(uuid4())
         user = User(identity="test-user", scopes=[])
         request = _make_request()
 
-        session_1 = make_mock_session()
+        session_1 = AsyncMock()
         session_1.add = MagicMock()
         session_1.scalar.side_effect = [None, _make_assistant()]
 
-        session_2 = make_mock_session()
+        session_2 = AsyncMock()
         session_2.scalar.return_value = _make_run_orm(
             run_id,
             thread_id,
@@ -217,8 +229,8 @@ class TestWaitForRunExceptionPaths:
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -238,7 +250,7 @@ class TestWaitForRunExceptionPaths:
             response = await wait_for_run(thread_id, request, user)
             result = await _consume_streaming_response(response)
 
-        assert result == {"__error__": {"error": "error", "message": "Graph execution error"}}
+        assert result == {"error": "execution failed"}
 
     @pytest.mark.asyncio
     async def test_wait_for_run_interrupted_status(self) -> None:
@@ -249,11 +261,11 @@ class TestWaitForRunExceptionPaths:
         request = _make_request()
         request.interrupt_before = ["agent"]
 
-        session_1 = make_mock_session()
+        session_1 = AsyncMock()
         session_1.add = MagicMock()
         session_1.scalar.side_effect = [None, _make_assistant()]
 
-        session_2 = make_mock_session()
+        session_2 = AsyncMock()
         session_2.scalar.return_value = _make_run_orm(
             run_id,
             thread_id,
@@ -264,8 +276,8 @@ class TestWaitForRunExceptionPaths:
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -296,15 +308,15 @@ class TestWaitForRunExceptionPaths:
 
         assistant = _make_assistant()
         assistant.graph_id = "nonexistent-graph"
-        session = make_mock_session()
+        session = AsyncMock()
         session.add = MagicMock()
         session.scalar.side_effect = [None, assistant]
 
         mock_maker = _make_session_maker(session)
 
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -328,18 +340,18 @@ class TestWaitForRunExceptionPaths:
         user = User(identity="test-user", scopes=[])
         request = _make_request()
 
-        session_1 = make_mock_session()
+        session_1 = AsyncMock()
         session_1.add = MagicMock()
         session_1.scalar.side_effect = [None, _make_assistant()]
 
-        session_2 = make_mock_session()
+        session_2 = AsyncMock()
         session_2.scalar.return_value = _make_run_orm(run_id, thread_id, output={"ok": True})
 
         mock_maker = _make_multi_session_maker(session_1, session_2)
 
         with (
-            patch("aegra_api.api.runs.get_session_maker", return_value=mock_maker),
-            patch("aegra_api.services.run_waiters.get_session_maker", return_value=mock_maker),
+            patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker),
+            patch("aegra_api.services.run_waiters._get_session_maker", return_value=mock_maker),
             patch("aegra_api.services.run_preparation._validate_resume_command", new_callable=AsyncMock),
             patch("aegra_api.services.run_preparation.get_langgraph_service") as mock_lg_service,
             patch("aegra_api.services.run_preparation.resolve_assistant_id", return_value="test-assistant"),
@@ -364,3 +376,97 @@ class TestWaitForRunExceptionPaths:
         assert response.media_type == "application/json"
         assert "Location" in response.headers
         assert f"/runs/{run_id}/join" in response.headers["Location"]
+
+
+class TestWaitForRunAuthHandlers:
+    """Regression coverage for the threads.create_run auth dispatch in wait_for_run.
+
+    ``@auth.on.threads.create_run`` was previously silently skipped on the wait
+    endpoint. These tests pin the dispatch (deny, merge, invocation) so the
+    auth bypass cannot silently return.
+    """
+
+    @pytest.mark.asyncio
+    async def test_wait_for_run_invokes_create_run_auth_handler(self) -> None:
+        """The threads.create_run handler must fire for the wait endpoint."""
+        thread_id = "t"
+        run_id = str(uuid4())
+        user = User(identity="test-user", scopes=[])
+        request = _make_request()
+
+        session = AsyncMock()
+        session.scalar.return_value = None  # new thread passes ownership check
+
+        with (
+            patch("aegra_api.api.runs.handle_event", new_callable=AsyncMock) as mock_handle,
+            patch("aegra_api.api.runs._prepare_run", new_callable=AsyncMock) as mock_prepare,
+            patch("aegra_api.api.runs.heartbeat_wait_body", return_value=_single_event_stream()),
+            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(session)),
+        ):
+            mock_handle.return_value = None  # default-allow
+            mock_prepare.return_value = (run_id, MagicMock(), MagicMock())
+
+            response = await wait_for_run(thread_id, request, user)
+
+        from fastapi.responses import StreamingResponse
+
+        assert isinstance(response, StreamingResponse)
+        mock_handle.assert_awaited_once()
+        ctx, value = mock_handle.call_args[0]
+        assert ctx.resource == "threads"
+        assert ctx.action == "create_run"
+        assert value["thread_id"] == thread_id
+
+    @pytest.mark.asyncio
+    async def test_wait_for_run_auth_handler_denies_with_403(self) -> None:
+        """A create_run handler that denies must abort the wait before run prep."""
+        thread_id = "t"
+        user = User(identity="test-user", scopes=[])
+        request = _make_request()
+
+        session = AsyncMock()
+        session.scalar.return_value = None
+
+        with (
+            patch("aegra_api.api.runs.handle_event", new_callable=AsyncMock) as mock_handle,
+            patch("aegra_api.api.runs._prepare_run", new_callable=AsyncMock) as mock_prepare,
+            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(session)),
+            pytest.raises(HTTPException) as exc,
+        ):
+            mock_handle.side_effect = HTTPException(status_code=403, detail="forbidden")
+
+            await wait_for_run(thread_id, request, user)
+
+        assert exc.value.status_code == 403
+        assert exc.value.detail == "forbidden"
+        mock_prepare.assert_not_called()  # never reached run creation
+
+    @pytest.mark.asyncio
+    async def test_wait_for_run_auth_handler_merges_config_context(self) -> None:
+        """Handler-returned config/context overrides merge into the run request."""
+        thread_id = "t"
+        run_id = str(uuid4())
+        user = User(identity="test-user", scopes=[])
+        request = _make_request()
+        request.config = {"original": "kept"}
+        request.context = {"orig_ctx": "kept"}
+
+        session = AsyncMock()
+        session.scalar.return_value = None
+
+        with (
+            patch("aegra_api.api.runs.handle_event", new_callable=AsyncMock) as mock_handle,
+            patch("aegra_api.api.runs._prepare_run", new_callable=AsyncMock) as mock_prepare,
+            patch("aegra_api.api.runs.heartbeat_wait_body", return_value=_single_event_stream()),
+            patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(session)),
+        ):
+            mock_handle.return_value = {"config": {"injected": True}, "context": {"injected_ctx": 2}}
+            mock_prepare.return_value = (run_id, MagicMock(), MagicMock())
+
+            await wait_for_run(thread_id, request, user)
+
+        # Originals preserved, handler overrides merged on top.
+        assert request.config == {"original": "kept", "injected": True}
+        assert request.context == {"orig_ctx": "kept", "injected_ctx": 2}
+        # Merged request reached run preparation.
+        assert mock_prepare.call_args[0][2] is request

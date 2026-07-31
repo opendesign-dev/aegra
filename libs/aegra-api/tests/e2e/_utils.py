@@ -54,21 +54,6 @@ def check_server_has_auth(url: str | None = None) -> bool | None:
     return None
 
 
-def check_and_skip_if_model_unavailable(run_data: dict) -> None:
-    """Skip when the run failed because the configured key can't serve the model.
-
-    Gateways (LiteLLM and friends) allowlist models per key, so a test naming a
-    model the key lacks is an environment limit, not a regression. Same intent as
-    check_and_skip_if_geo_blocked.
-    """
-    if run_data.get("status") != "error":
-        return
-    msg = str(run_data.get("error_message", "")).lower()
-    markers = ("key_model_access_denied", "not allowed to access model", "model_not_found", "does not exist")
-    if any(marker in msg for marker in markers):
-        pytest.skip(f"⛔️ Skipped: model not available to this API key. ({msg[:80]}...)")
-
-
 def check_and_skip_if_geo_blocked(run_data: dict) -> None:
     """
     Checks if a run failed due to OpenAI geo-blocking/unsupported region.

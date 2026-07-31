@@ -10,14 +10,10 @@ import asyncio
 from typing import Any
 
 import structlog
-from sqlalchemy import update
 
 from aegra_api.core.active_runs import active_runs
 from aegra_api.core.auth_ctx import with_auth_ctx
-from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import get_session_maker
 from aegra_api.core.redis_manager import redis_manager
-from aegra_api.core.serializers.langgraph import LangGraphSerializer
 from aegra_api.models.run_job import RunJob
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.event_streaming.native_stream import stream_native_v3_events
@@ -42,19 +38,6 @@ _DEFAULT_STREAM_MODES = ["values"]
 # worker's status.
 _lease_loss_cancellations: set[str] = set()
 
-# Run IDs whose cancellation was triggered by graceful worker shutdown (rolling
-# upgrade / scale-down), not user action. WorkerExecutor.stop() adds the run_id
-# here before cancelling the drained job task. execute_run's CancelledError
-# handler reverts the run to ``pending`` (clearing the lease) instead of writing
-# a terminal ``interrupted`` — the run is still viable and resumes from its last
-# checkpoint on another instance. Mirrors the ``_lease_loss_cancellations`` idiom.
-_shutdown_cancellations: set[str] = set()
-
-# Run IDs cancelled by the job-timeout guard. The worker marks the run before
-# cancelling, so execute_run skips its own finalize (the worker writes the single
-# ``timeout`` status) and the webhook, but still tears down the stream.
-_timeout_cancellations: set[str] = set()
-
 
 async def execute_run(job: RunJob) -> None:
     """Execute a graph run, stream events to the broker, and update DB.
@@ -64,26 +47,20 @@ async def execute_run(job: RunJob) -> None:
     """
     run_id = job.identity.run_id
     thread_id = job.identity.thread_id
-    # finalize_run enqueues the outbox row transactionally when it wins, so a
-    # double-execution loser can't double-post and no in-process task is needed.
-    webhook = job.execution.webhook
-    handed_off = False
+    is_lease_loss = False
 
     try:
         await update_run_status(run_id, "running")
 
         final_output = await _stream_graph(job)
 
-        if _is_paused(final_output):
+        if final_output.has_interrupt:
             await finalize_run(
                 run_id,
                 thread_id,
                 status="interrupted",
                 thread_status="interrupted",
                 output=final_output.data,
-                interrupts=final_output.interrupts,
-                state_values=final_output.state_values,
-                webhook=webhook,
             )
         else:
             await finalize_run(
@@ -92,31 +69,31 @@ async def execute_run(job: RunJob) -> None:
                 status="success",
                 thread_status="idle",
                 output=final_output.data,
-                state_values=final_output.state_values,
-                webhook=webhook,
             )
 
     except asyncio.CancelledError:
-        settlement = await _handle_cancel(run_id, thread_id, webhook)
-        handed_off = settlement == "handed_off"
+        if run_id in _lease_loss_cancellations:
+            # Lease was lost — the reaper re-enqueued this run for another
+            # worker.  Do NOT finalize, signal done, or clean up the broker.
+            # The new worker owns the run now.
+            is_lease_loss = True
+            logger.info("Lease-loss cancel, skipping finalize", run_id=run_id)
+        else:
+            await finalize_run(run_id, thread_id, status="interrupted", thread_status="idle", output={})
+            await _best_effort_signal(streaming_service.signal_run_cancelled, run_id)
         raise
     except Exception as exc:
         logger.exception("Run failed", run_id=run_id)
         safe_message = f"{type(exc).__name__}: execution failed"
-        # No output: a failed run has no new state to materialize into thread_state.
-        await finalize_run(run_id, thread_id, status="error", thread_status="error", error=str(exc), webhook=webhook)
+        await finalize_run(run_id, thread_id, status="error", thread_status="error", output={}, error=str(exc))
         await _best_effort_signal(streaming_service.signal_run_error, run_id, safe_message, type(exc).__name__)
     else:
-        status = "interrupted" if _is_paused(final_output) else "success"
+        status = "interrupted" if final_output.has_interrupt else "success"
         await _best_effort_signal(_signal_end_event, run_id, status)
     finally:
         _lease_loss_cancellations.discard(run_id)
-        _shutdown_cancellations.discard(run_id)
-        _timeout_cancellations.discard(run_id)
         active_runs.pop(run_id, None)
-        # A handed-off run (lease loss or graceful shutdown) is owned by another
-        # worker now — skip finalize signaling, done-key, and cleanup.
-        if not handed_off:
+        if not is_lease_loss:
             await streaming_service.cleanup_run(run_id)
             await _signal_run_done(run_id)
 
@@ -138,105 +115,14 @@ async def _best_effort_signal(fn: Any, *args: Any) -> None:
         logger.warning("Signal failed (best-effort, DB status already committed)", fn=fn.__name__)
 
 
-async def _handle_cancel(run_id: str, thread_id: str, webhook: str | None) -> str:
-    """Settle a CancelledError by its source. Returns the settlement kind.
-
-    Four sources, three settlement kinds:
-    - lease loss / graceful shutdown → ``"handed_off"``: another worker owns the
-      run now (or it was reverted to pending), so skip finalize AND teardown.
-    - job timeout → ``"timeout"``: the worker writes the authoritative ``timeout``
-      status, so skip finalize here and suppress the webhook, but still tear down.
-    - user cancel → ``"cancelled"``: finalize ``interrupted`` and signal SSE.
-    """
-    if run_id in _lease_loss_cancellations:
-        logger.info("Lease-loss cancel, skipping finalize", run_id=run_id)
-        return "handed_off"
-    if run_id in _shutdown_cancellations:
-        await _release_for_recovery(run_id)
-        logger.info("Shutdown cancel, reverted run to pending for recovery", run_id=run_id)
-        return "handed_off"
-    if run_id in _timeout_cancellations:
-        logger.info("Timeout cancel, worker finalizes as timeout", run_id=run_id)
-        return "timeout"
-    # No output: a cancel has no new state, so don't materialize thread_state
-    # (an empty output would wipe the thread's real materialized values).
-    await finalize_run(run_id, thread_id, status="interrupted", thread_status="idle", webhook=webhook)
-    await _best_effort_signal(streaming_service.signal_run_cancelled, run_id)
-    return "cancelled"
-
-
-async def _release_for_recovery(run_id: str) -> None:
-    """Revert a shutdown-cancelled run to ``pending`` and drop its lease.
-
-    Guarded on ``status='running'`` so a run that finalized during the drain
-    window is left untouched. A re-enqueue from WorkerExecutor.stop (or, failing
-    that, the reaper's stuck-pending sweep) then hands it to another instance,
-    which resumes from the last checkpoint. No retry budget is charged — a
-    rolling deploy is not a failure.
-    """
-    maker = get_session_maker()
-    async with maker() as session:
-        await session.execute(
-            update(RunORM)
-            .where(RunORM.run_id == run_id, RunORM.status == "running")
-            .values(status="pending", claimed_by=None, lease_expires_at=None)
-        )
-        await session.commit()
-
-
 class _GraphResult:
-    """Accumulates output and interrupt state during graph streaming.
+    """Accumulates output and interrupt state during graph streaming."""
 
-    ``data`` is the run's stream output (persisted to ``run.output``).
-    ``state_values`` is the checkpointer snapshot used to materialize thread
-    state — the single source of truth, distinct from the stream output which
-    is empty for non-``values`` stream modes. ``None`` means the state read
-    failed, so finalize skips materialization rather than wiping real state.
-    """
-
-    __slots__ = ("data", "has_interrupt", "interrupts", "pending_nodes", "state_values")
+    __slots__ = ("data", "has_interrupt")
 
     def __init__(self) -> None:
         self.data: dict[str, Any] = {}
         self.has_interrupt: bool = False
-        self.interrupts: dict[str, list[Any]] = {}
-        self.state_values: dict[str, Any] | None = None
-        # Nodes the graph still has queued. Non-empty after a static breakpoint
-        # (interrupt_before/after), which raises no __interrupt__ event.
-        self.pending_nodes: list[str] = []
-
-
-def _is_paused(result: _GraphResult) -> bool:
-    """Whether the run stopped mid-graph and needs a resume to continue.
-
-    Two ways to pause: a dynamic ``interrupt()`` raises ``__interrupt__``, while a
-    static breakpoint (``interrupt_before``/``interrupt_after``) raises nothing and
-    only shows up as nodes still queued in the checkpoint. Both must finalize as
-    ``interrupted`` — reporting ``success`` would tell the caller (and the webhook)
-    the run finished when half the graph never ran.
-    """
-    return result.has_interrupt or bool(result.pending_nodes)
-
-
-async def _read_state(
-    graph: Any, run_config: dict[str, Any], run_id: str
-) -> tuple[dict[str, Any] | None, dict[str, list[Any]], list[str]]:
-    """Read the checkpointer snapshot: values, task-keyed interrupts, pending nodes.
-
-    The checkpointer is the single source of truth for materialized thread
-    state. Returns ``(values, interrupts_map, next_nodes)`` where
-    ``interrupts_map`` matches the SDK ``Thread.interrupts`` shape. On read
-    failure returns ``(None, {}, [])`` so finalize skips materialization instead
-    of overwriting real state with an empty dict.
-    """
-    try:
-        state = await graph.aget_state(run_config)
-    except Exception as exc:
-        logger.warning("Could not read checkpointer state", run_id=run_id, error=str(exc))
-        return None, {}, []
-    serializer = LangGraphSerializer()
-    values = serializer.serialize(getattr(state, "values", None) or {})
-    return values, serializer.build_interrupts_map(state), [str(n) for n in getattr(state, "next", None) or ()]
 
 
 async def _stream_graph(job: RunJob) -> _GraphResult:
@@ -263,15 +149,6 @@ async def _stream_graph(job: RunJob) -> _GraphResult:
         else:
             await _stream_legacy(job, graph, execution_input, run_config, stream_modes, result)
 
-        # Read the checkpointer snapshot once — for every run, not just interrupts.
-        # It is the single source of truth for materialized thread state (the
-        # stream output is empty under non-``values`` modes) and carries the
-        # authoritative task-keyed interrupts (the streamed __interrupt__ channel
-        # is flat). Done inside the graph context.
-        result.state_values, result.interrupts, result.pending_nodes = await _read_state(
-            graph, run_config, job.identity.run_id
-        )
-
     return result
 
 
@@ -292,9 +169,6 @@ async def _stream_legacy(
         stream_mode=stream_modes,
         context=job.execution.context,
         subgraphs=job.behavior.subgraphs,
-        durability=job.execution.durability,
-        interrupt_before=_breakpoints(job.behavior.interrupt_before),
-        interrupt_after=_breakpoints(job.behavior.interrupt_after),
         on_checkpoint=lambda _: None,
         on_task_result=lambda _: None,
     ):
@@ -342,24 +216,20 @@ async def _stream_native_v2(
 
 def _build_run_config(job: RunJob) -> dict[str, Any]:
     """Assemble the LangGraph run config from a RunJob."""
-    return create_run_config(
+    config = create_run_config(
         job.identity.run_id,
         job.identity.thread_id,
         job.user,
         additional_config=job.execution.config,
         checkpoint=job.execution.checkpoint,
     )
-
-
-def _breakpoints(value: str | list[str] | None) -> str | list[str] | None:
-    """Normalize an interrupt_before/after value for langgraph.
-
-    langgraph takes ``All | Sequence[str]``, where ``All`` is the literal ``"*"``
-    (every node) — so ``"*"`` passes through as-is and a bare node name is wrapped.
-    """
-    if value is None or value == "*":
-        return value
-    return value if isinstance(value, list) else [value]
+    if job.behavior.interrupt_before is not None:
+        items = job.behavior.interrupt_before
+        config["interrupt_before"] = items if isinstance(items, list) else [items]
+    if job.behavior.interrupt_after is not None:
+        items = job.behavior.interrupt_after
+        config["interrupt_after"] = items if isinstance(items, list) else [items]
+    return config
 
 
 def _resolve_input(job: RunJob) -> Any:

@@ -16,9 +16,8 @@ from aegra_api.models.crons import (
     CronSearchRequest,
     CronUpdate,
 )
-from aegra_api.models.enums import RunSelectField
 from aegra_api.models.errors import AgentProtocolError, get_error_type
-from aegra_api.models.runs import Run, RunCreate, RunSearchRequest, RunStatus
+from aegra_api.models.runs import Run, RunCreate, RunStatus
 from aegra_api.models.store import (
     StoreDeleteRequest,
     StoreGetResponse,
@@ -26,7 +25,6 @@ from aegra_api.models.store import (
     StoreListNamespacesRequest,
     StoreListNamespacesResponse,
     StorePutRequest,
-    StoreSearchItem,
     StoreSearchRequest,
     StoreSearchResponse,
 )
@@ -68,8 +66,6 @@ __all__ = [
     # Runs
     "Run",
     "RunCreate",
-    "RunSearchRequest",
-    "RunSelectField",
     "RunStatus",
     # Crons
     "CronCreate",
@@ -83,7 +79,6 @@ __all__ = [
     "StoreSearchRequest",
     "StoreSearchResponse",
     "StoreItem",
-    "StoreSearchItem",
     "StoreDeleteRequest",
     "StoreListNamespacesRequest",
     "StoreListNamespacesResponse",

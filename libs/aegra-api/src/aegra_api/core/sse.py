@@ -1,13 +1,13 @@
 """Server-Sent Events utilities and formatting"""
 
 import contextlib
+import json
 import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import orjson
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from aegra_api.core.serializers import GeneralSerializer
@@ -15,10 +15,6 @@ from aegra_api.settings import settings
 
 # Global serializer instance
 _serializer = GeneralSerializer()
-
-# Match stdlib json's default-handler behavior: route datetime through ``default``
-# (so custom/GeneralSerializer overrides win) and coerce non-str dict keys.
-_ORJSON_OPTS = orjson.OPT_PASSTHROUGH_DATETIME | orjson.OPT_NON_STR_KEYS
 
 # Cached SSE keepalive payload: ``: heartbeat\r\n\r\n`` (15 bytes).
 # Matches langgraph-api's wire-format so tcpdump/logs line up with LangGraph
@@ -121,7 +117,14 @@ def format_sse_message(
     event_id: str | None = None,
     serializer: Callable[[Any], Any] | None = None,
 ) -> str:
-    """Format a message as Server-Sent Event following SSE standard"""
+    """Format a message as Server-Sent Event following SSE standard
+
+    Args:
+        event: SSE event type
+        data: Data to serialize and send
+        event_id: Optional event ID
+        serializer: Optional custom serializer function
+    """
     lines = []
 
     lines.append(f"event: {event}")
@@ -130,10 +133,9 @@ def format_sse_message(
     if data is None:
         data_str = ""
     else:
-        # orjson is compact + UTF-8 by default (≈ separators=(",",":"), ensure_ascii=False);
-        # GeneralSerializer handles objects orjson can't (routed via default).
+        # Use our general serializer by default to handle complex objects
         default_serializer = serializer or _serializer.serialize
-        data_str = orjson.dumps(data, default=default_serializer, option=_ORJSON_OPTS).decode("utf-8")
+        data_str = json.dumps(data, default=default_serializer, separators=(",", ":"), ensure_ascii=False)
         data_str = _decode_literal_unicode_escapes(data_str)
 
     lines.append(f"data: {data_str}")
@@ -198,6 +200,14 @@ def create_error_event(error: str | dict[str, Any], event_id: str | None = None)
 
     Error format: {"error": str, "message": str}
     This format ensures compatibility with standard SSE error event consumers.
+
+    Args:
+        error: Either a simple error string, or a dict with structured error info.
+               Dict format: {"error": "ErrorType", "message": "detailed message"}
+        event_id: Optional SSE event ID for reconnection support.
+
+    Returns:
+        SSE-formatted error event string with standard error format.
     """
     if isinstance(error, dict):
         # Structured error format - standard format: {error: str, message: str}

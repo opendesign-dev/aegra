@@ -1,19 +1,15 @@
 """FastAPI application for Aegra (Agent Protocol Server)"""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, APIRouter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from starlette.routing import Route
 
 from aegra_api import __version__
 from aegra_api.api.assistants import router as assistants_router
@@ -22,7 +18,6 @@ from aegra_api.api.event_streaming import router as event_streaming_router
 from aegra_api.api.runs import router as runs_router
 from aegra_api.api.stateless_runs import router as stateless_runs_router
 from aegra_api.api.store import router as store_router
-from aegra_api.api.thread_state import router as thread_state_router
 from aegra_api.api.threads import router as threads_router
 from aegra_api.config import CorsConfig, HttpConfig, get_config_dir, load_http_config
 from aegra_api.core.app_loader import load_custom_app
@@ -38,20 +33,12 @@ from aegra_api.core.route_merger import (
 from aegra_api.middleware import ContentTypeFixMiddleware, StructLogMiddleware
 from aegra_api.models.errors import AgentProtocolError, get_error_type
 from aegra_api.observability.metrics import setup_prometheus_metrics
-from aegra_api.observability.otel import otel_provider
 from aegra_api.observability.setup import setup_observability
-from aegra_api.services.a2a_server import a2a_routes
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.cron_scheduler import cron_scheduler
-from aegra_api.services.delayed_run_scheduler import delayed_run_scheduler
 from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.lease_reaper import lease_reaper
-from aegra_api.services.mcp_server import mcp as mcp_server
-from aegra_api.services.mcp_server import mcp_asgi
-from aegra_api.services.run_ttl_sweeper import run_ttl_sweeper
-from aegra_api.services.thread_ttl_sweeper import thread_ttl_sweeper
-from aegra_api.services.webhook_deliverer import webhook_deliverer
 from aegra_api.settings import settings
 from aegra_api.utils.setup_logging import setup_logging
 
@@ -151,28 +138,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if settings.cron.CRON_ENABLED:
         await cron_scheduler.start()
 
-    # Start delayed-run scheduler (submits due after_seconds runs)
-    await delayed_run_scheduler.start()
+    yield
 
-    # Start thread TTL sweeper (no-op unless CHECKPOINTER_TTL_ENABLED)
-    await thread_ttl_sweeper.start()
-
-    # Start run TTL sweeper (no-op unless RUN_TTL_ENABLED)
-    await run_ttl_sweeper.start()
-
-    # Start webhook deliverer (drains the transactional outbox)
-    await webhook_deliverer.start()
-
-    # Run the MCP session manager backing the /mcp route (when enabled).
-    mcp_ctx = mcp_server.session_manager.run() if _mcp_enabled() else nullcontext()
-    async with mcp_ctx:
-        yield
-
-    # Shutdown order: webhook → run-ttl → thread-ttl → delayed-run → cron → reaper → executor (drains) → broker → Redis → DB
-    await webhook_deliverer.stop()
-    await run_ttl_sweeper.stop()
-    await thread_ttl_sweeper.stop()
-    await delayed_run_scheduler.stop()
+    # Shutdown order: cron → reaper → executor (drains jobs) → broker → Redis → DB
     if settings.cron.CRON_ENABLED:
         await cron_scheduler.stop()
     if settings.redis.REDIS_BROKER_ENABLED:
@@ -200,31 +168,6 @@ async def agent_protocol_exception_handler(_request: Request, exc: HTTPException
     )
 
 
-async def validation_exception_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
-    """Return request-validation errors in the Agent Protocol envelope.
-
-    FastAPI's default 422 body is ``{"detail": [...]}`` with a list detail; the
-    SDK only reads a string ``message`` and would fall back to a generic
-    "422 Unprocessable Entity". Flatten the first error into ``message`` and keep
-    the full list under ``details`` so all status codes share one envelope.
-    """
-    errors = exc.errors()
-    first = errors[0] if errors else None
-    if first is not None:
-        loc = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
-        message = f"{loc}: {first.get('msg')}" if loc else str(first.get("msg"))
-    else:
-        message = "Validation error"
-    return JSONResponse(
-        status_code=422,
-        content=AgentProtocolError(
-            error=get_error_type(422),
-            message=message,
-            details={"errors": jsonable_encoder(errors)},
-        ).model_dump(),
-    )
-
-
 async def general_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
     """Handle unexpected exceptions"""
     return JSONResponse(
@@ -232,13 +175,12 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
         content=AgentProtocolError(
             error="internal_error",
             message="An unexpected error occurred",
-            details=None,  # Never echo internal exception details to the client.
+            details=None,  # FIX: do not leak internal exception details
         ).model_dump(),
     )
 
 
 exception_handlers = {
-    RequestValidationError: validation_exception_handler,
     HTTPException: agent_protocol_exception_handler,
     Exception: general_exception_handler,
 }
@@ -349,13 +291,20 @@ def _add_common_middleware(app: FastAPI, cors_config: CorsConfig | None) -> None
 def _include_core_routers(app: FastAPI) -> None:
     """Include all core API routers with auth dependency.
 
-    Order matters only for health (no auth) going first; the rest are disjoint
-    path sets. Thread state routes register before the thread record routes so
-    ``/threads/{id}/state`` is never shadowed by a broader pattern.
+    Routers are included in consistent order:
+    1. Health (no auth)
+    2. Assistants (with auth)
+    3. Threads (with auth)
+    4. Runs (with auth)
+    5. Stateless Runs (with auth)
+    6. Crons (with auth)
+    7. Store (with auth)
+
+    Args:
+        app: FastAPI application instance
     """
     app.include_router(health_router)
     app.include_router(assistants_router)
-    app.include_router(thread_state_router)
     app.include_router(threads_router)
     app.include_router(runs_router)
     app.include_router(stateless_runs_router)
@@ -363,38 +312,13 @@ def _include_core_routers(app: FastAPI) -> None:
     app.include_router(store_router)
     app.include_router(event_streaming_router)
 
-    if _mcp_enabled():
-        # Route, not Mount: Mount only matches with a trailing slash and 307s
-        # ``/mcp``, which MCP clients don't follow. Auth is handler-enforced.
-        app.router.routes.append(Route("/mcp", mcp_asgi, methods=["GET", "POST", "DELETE"]))
-        logger.info("MCP server registered at /mcp")
-
-    if settings.a2a.A2A_ENABLED:
-        # A2A routes live outside the authed routers and enforce auth per
-        # handler (same backend as REST), mirroring the MCP route.
-        app.router.routes.extend(a2a_routes())
-        logger.info("A2A endpoints registered at /a2a")
-
-
-def _mcp_enabled() -> bool:
-    """MCP is on when MCP_ENABLED and not disabled via http config."""
-    if not settings.mcp.MCP_ENABLED:
-        return False
-    http_config = load_http_config()
-    return not (http_config and http_config.get("disable_mcp", False))
-
-
-def _instrument_fastapi(app: FastAPI) -> None:
-    """Add OTEL HTTP server spans for every route (core, custom, mounted) when
-    tracing is enabled. Excludes health/metrics to avoid span spam. The tracer
-    provider is set later in lifespan; OTEL's proxy forwards spans once it is."""
-    if not otel_provider.is_enabled():
-        return
-    FastAPIInstrumentor.instrument_app(app, excluded_urls="health,metrics")
-
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+    """Create and configure the FastAPI application.
+
+    Returns:
+        Configured FastAPI application instance
+    """
     http_config: HttpConfig | None = load_http_config()
     cors_config: CorsConfig | None = http_config.get("cors") if http_config else None
 
@@ -451,7 +375,6 @@ def create_app() -> FastAPI:
 
         application.get("/")(root_handler)
 
-    _instrument_fastapi(application)
     setup_prometheus_metrics(application)
 
     return application

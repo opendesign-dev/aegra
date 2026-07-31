@@ -60,9 +60,9 @@ def _make_app(
     user = User(identity=_USER)
     app.dependency_overrides[require_auth] = lambda: user
     app.dependency_overrides[get_current_user] = lambda: user
-    # Routes open short-lived sessions via get_session_maker(); patch it (per
+    # Routes open short-lived sessions via _get_session_maker(); patch it (per
     # test, auto-restored) to return a maker yielding the in-memory test session.
-    monkeypatch.setattr(es_module, "get_session_maker", lambda: lambda: _Session(owner=owner, run_ids=run_ids))
+    monkeypatch.setattr(es_module, "_get_session_maker", lambda: lambda: _Session(owner=owner, run_ids=run_ids))
     app.include_router(es_module.router)
     return app
 
@@ -81,7 +81,7 @@ class TestCommandRoute:
         async def fake_prepare(*_args: Any, **_kwargs: Any) -> tuple[str, object, object]:
             return "run-1", object(), object()
 
-        monkeypatch.setattr(cmd_module, "prepare_run", fake_prepare)
+        monkeypatch.setattr(cmd_module, "_prepare_run", fake_prepare)
         client = TestClient(_make_app(monkeypatch))
 
         resp = client.post(
@@ -114,7 +114,7 @@ class TestCommandRoute:
         async def fake_prepare(*_args: Any, **_kwargs: Any) -> tuple[str, object, object]:
             return "run-1", object(), object()
 
-        monkeypatch.setattr(cmd_module, "prepare_run", fake_prepare)
+        monkeypatch.setattr(cmd_module, "_prepare_run", fake_prepare)
         client = TestClient(_make_app(monkeypatch, owner=None))  # thread does not exist yet
         resp = client.post(
             "/threads/new-thread/commands",

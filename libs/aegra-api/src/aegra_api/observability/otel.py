@@ -6,23 +6,14 @@ Orchestrates trace generation and fan-out export to multiple targets.
 import logging
 from typing import Any
 
-from openinference.instrumentation import TraceConfig
 from openinference.instrumentation.langchain import LangChainInstrumentor
 from opentelemetry import trace
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.sdk.trace.sampling import (
-    ALWAYS_OFF,
-    ALWAYS_ON,
-    ParentBased,
-    ParentBasedTraceIdRatio,
-    Sampler,
-    TraceIdRatioBased,
-)
 
-from aegra_api.observability.span_enrichment import RunIdGenerator, SpanEnrichmentProcessor
+from aegra_api.observability.base import ObservabilityProvider
+from aegra_api.observability.span_enrichment import SpanEnrichmentProcessor
 from aegra_api.observability.targets import (
     BaseOtelTarget,
     GenericOtelTarget,
@@ -34,13 +25,16 @@ from aegra_api.settings import settings
 logger = logging.getLogger(__name__)
 
 
-class OpenTelemetryProvider:
-    """Configures the global OpenTelemetry tracer and fans out to targets."""
+class OpenTelemetryProvider(ObservabilityProvider):
+    """
+    Main provider that configures the global OpenTelemetry Tracer.
+    """
 
     def __init__(self) -> None:
         self._enabled = False
         self._tracer_provider: TracerProvider | None = None
 
+        # Defining the list of active targets
         self._active_targets: list[BaseOtelTarget] = self._resolve_targets()
         self._has_langfuse = any(isinstance(target, LangfuseTarget) for target in self._active_targets)
 
@@ -73,51 +67,6 @@ class OpenTelemetryProvider:
 
         return targets
 
-    def _resolve_sampler(self) -> Sampler | None:
-        """Map ``OTEL_TRACES_SAMPLER`` to a Sampler; None keeps the SDK default.
-
-        Ratio sampling is consistent per run: the trace id is derived from
-        run_id (``span_enrichment.trace_id_from_run``), so every span in a run
-        shares one trace id and one decision — a run's trace is never split.
-        """
-        name = settings.observability.OTEL_TRACES_SAMPLER.strip().lower()
-        if not name:
-            return None
-
-        if name == "always_on":
-            return ALWAYS_ON
-        if name == "always_off":
-            return ALWAYS_OFF
-        if name == "parentbased_always_on":
-            return ParentBased(ALWAYS_ON)
-        if name == "parentbased_always_off":
-            return ParentBased(ALWAYS_OFF)
-
-        if name in ("traceidratio", "parentbased_traceidratio"):
-            ratio = settings.observability.OTEL_TRACES_SAMPLER_ARG
-            if not 0.0 <= ratio <= 1.0:
-                logger.warning(f"OTEL_TRACES_SAMPLER_ARG={ratio} outside [0.0, 1.0]; keeping default sampler")
-                return None
-            if name == "traceidratio":
-                return TraceIdRatioBased(ratio)
-            return ParentBasedTraceIdRatio(ratio)
-
-        logger.warning(f"Unknown OTEL_TRACES_SAMPLER in settings: {name}; keeping default sampler")
-        return None
-
-    def _build_trace_config(self) -> TraceConfig:
-        """Build the OpenInference TraceConfig from the LLM redaction toggles.
-
-        A disabled toggle stays None (not False) so OpenInference still honors
-        its native OPENINFERENCE_HIDE_* env vars — off must not silently undo a
-        pre-existing redaction.
-        """
-        obs = settings.observability
-        return TraceConfig(
-            hide_inputs=True if obs.OTEL_HIDE_LLM_INPUTS else None,
-            hide_outputs=True if obs.OTEL_HIDE_LLM_OUTPUTS else None,
-        )
-
     def add_custom_target(self, target: BaseOtelTarget) -> None:
         """Allow registering custom targets dynamically."""
         self._active_targets.append(target)
@@ -139,6 +88,7 @@ class OpenTelemetryProvider:
         if self._tracer_provider:
             return
 
+        # 1. Resource
         resource = Resource.create(
             attributes={
                 "service.name": settings.observability.OTEL_SERVICE_NAME,
@@ -147,12 +97,11 @@ class OpenTelemetryProvider:
             }
         )
 
-        self._tracer_provider = TracerProvider(
-            resource=resource, id_generator=RunIdGenerator(), sampler=self._resolve_sampler()
-        )
+        self._tracer_provider = TracerProvider(resource=resource)
         self._tracer_provider.add_span_processor(SpanEnrichmentProcessor())
         processors_count = 0
 
+        # 2. Attach Exporters
         for target in self._active_targets:
             try:
                 exporter = target.get_exporter()
@@ -164,16 +113,22 @@ class OpenTelemetryProvider:
             except Exception as e:
                 logger.error(f"Observability: Failed to attach target '{target.name}': {e}")
 
+        # 3. Console Exporter
         if settings.observability.OTEL_CONSOLE_EXPORT:
             self._tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
             processors_count += 1
             logger.info("Observability: Console export enabled")
 
+        # 4. Set Global Tracer & Instrument
         if processors_count > 0:
             trace.set_tracer_provider(self._tracer_provider)
-            LangChainInstrumentor().instrument(tracer_provider=self._tracer_provider, config=self._build_trace_config())
-            HTTPXClientInstrumentor().instrument(tracer_provider=self._tracer_provider)
-            logger.info("Observability: Auto-instrumentation enabled (LangChain + HTTPX)")
+            LangChainInstrumentor().instrument(tracer_provider=self._tracer_provider)
+            logger.info("Observability: Auto-instrumentation enabled")
+
+    def get_callbacks(self) -> list[Any]:
+        if self.is_enabled():
+            self.setup()
+        return []
 
     def get_metadata(self, run_id: str, thread_id: str, user_identity: str | None = None) -> dict[str, Any]:
         if not self.is_enabled():

@@ -28,7 +28,7 @@ class TestFindRecoverable:
         session.execute = AsyncMock(side_effect=[crashed_result, stuck_result])
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
             crashed, stuck = await LeaseReaper._find_recoverable()
 
         assert crashed == ["run-1"]
@@ -42,45 +42,11 @@ class TestFindRecoverable:
         session.execute = AsyncMock(return_value=empty_result)
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
             crashed, stuck = await LeaseReaper._find_recoverable()
 
         assert crashed == []
         assert stuck == []
-
-
-class TestReaperUsesDbClock:
-    """P1-4: expiry/threshold compare against the DB clock (now()), never the
-    reaper pod's wall clock — closing the cross-pod skew reclaim window."""
-
-    @pytest.mark.asyncio
-    async def test_find_recoverable_compares_against_db_now(self) -> None:
-        session = AsyncMock()
-        empty = MagicMock()
-        empty.fetchall.return_value = []
-        session.execute = AsyncMock(return_value=empty)
-        maker = _make_session_maker(session)
-
-        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
-            await LeaseReaper._find_recoverable()
-
-        sqls = [str(call.args[0]).lower() for call in session.execute.await_args_list]
-        assert len(sqls) == 2
-        assert all("now()" in sql for sql in sqls)
-
-    @pytest.mark.asyncio
-    async def test_reset_to_pending_rechecks_with_db_now(self) -> None:
-        session = AsyncMock()
-        result = MagicMock()
-        result.fetchall.return_value = []
-        session.execute = AsyncMock(return_value=result)
-        session.commit = AsyncMock()
-        maker = _make_session_maker(session)
-
-        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
-            await LeaseReaper._reset_to_pending(["run-1"])
-
-        assert "now()" in str(session.execute.await_args.args[0]).lower()
 
 
 class TestResetToPending:
@@ -94,7 +60,7 @@ class TestResetToPending:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
             result = await LeaseReaper._reset_to_pending(["run-1", "run-2"])
 
         assert result == ["run-1"]
@@ -109,7 +75,7 @@ class TestResetToPending:
         session.commit = AsyncMock()
         maker = _make_session_maker(session)
 
-        with patch("aegra_api.services.lease_reaper.get_session_maker", return_value=maker):
+        with patch("aegra_api.services.lease_reaper._get_session_maker", return_value=maker):
             result = await LeaseReaper._reset_to_pending(["run-1"])
 
         assert result == []

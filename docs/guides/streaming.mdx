@@ -232,23 +232,6 @@ Aegra stores streaming events in a replay buffer (Redis Lists when `REDIS_BROKER
 
 Events are retained for 1 hour after the run completes.
 
-The SDK's `client.runs.join_stream()` drives this endpoint and accepts two options that scope the reconnection:
-
-```python
-async for part in client.runs.join_stream(
-    thread_id=thread_id,
-    run_id=run["run_id"],
-    stream_mode=["values"],        # narrow to a subset of the run's modes
-    cancel_on_disconnect=False,    # default: leave the run alone when this client drops
-):
-    print(part)
-```
-
-| Option | Behavior |
-|--------|----------|
-| `stream_mode` | Must be a subset of the modes the run was created with. Control events (`metadata`, `error`, `end`) are always delivered. Omit to receive everything the run produced. |
-| `cancel_on_disconnect` | `false` (default) keeps the run alive — several clients can attach to the same run, so one dropping must not stop it. Set `true` when this client owns the run's lifetime. |
-
 <Note>
   In production deployments, SSE events are delivered via Redis pub/sub from workers — the client's SSE connection and the worker executing the run can be on different instances. See the [worker architecture guide](/guides/worker-architecture) for details on how this works.
 </Note>
@@ -302,7 +285,7 @@ curl -X POST http://localhost:8000/threads/$THREAD/commands \
 
 ### Streaming events
 
-The SSE filter is a POST body listing the channels you want — no run id. Pass `since` (the last `seq` you saw) to resume after a dropped connection. If `since` is omitted, the `Last-Event-ID` header is honored instead, so a browser `EventSource` auto-reconnect resumes without extra client code.
+The SSE filter is a POST body listing the channels you want — no run id. Pass `since` (the last `seq` you saw) to resume after a dropped connection.
 
 ```bash
 curl -N -X POST http://localhost:8000/threads/$THREAD/stream/events \

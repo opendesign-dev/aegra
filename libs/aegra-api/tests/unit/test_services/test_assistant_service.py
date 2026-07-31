@@ -8,13 +8,12 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
-from aegra_api.models.assistants import AssistantVersionsRequest
 from aegra_api.models.auth import User
 from aegra_api.services.assistant_service import AssistantService, to_pydantic
 
@@ -349,6 +348,7 @@ class TestAssistantServiceCreate:
         request = AssistantCreate(
             graph_id="test-graph",
             config={"configurable": {"key": "value"}},
+            context=None,
         )
 
         assistant_service.langgraph_service.list_graphs.return_value = {"test-graph": {}}
@@ -464,7 +464,7 @@ class TestAssistantServiceCreate:
         """Test duplicate assistant handling with error policy"""
         request = AssistantCreate(
             graph_id="test-graph",
-            if_exists="raise",
+            if_exists="error",
         )
 
         # Mock existing assistant
@@ -641,6 +641,64 @@ class TestAssistantServiceUpdate:
         assistant_service.session.commit.assert_called()
 
     @pytest.mark.asyncio
+    async def test_update_assistant_preserves_graph_id_when_omitted(
+        self,
+        assistant_service: AssistantService,
+    ) -> None:
+        """回归：PATCH 未传 graph_id 时必须保留原值。
+
+        AssistantUpdate.graph_id 一旦带上 truthy 默认值，服务层的
+        `request.graph_id or assistant.graph_id` 就会把它当成用户输入，
+        静默改写 assistant 的 graph_id 并写进新版本记录。
+        """
+        mock_assistant = Mock()
+        mock_assistant.assistant_id = "test-id"
+        mock_assistant.name = "Old Name"
+        mock_assistant.description = "Old Description"
+        mock_assistant.user_id = "user-123"
+        mock_assistant.graph_id = "old-graph"
+        mock_assistant.version = 1
+        mock_assistant.created_at = datetime.now(UTC)
+        mock_assistant.updated_at = datetime.now(UTC)
+        mock_assistant.config = {}
+        mock_assistant.context = {}
+        mock_assistant.metadata_dict = {}
+
+        mock_updated_assistant = Mock()
+        mock_updated_assistant.assistant_id = "test-id"
+        mock_updated_assistant.name = "Renamed"
+        mock_updated_assistant.description = "Old Description"
+        mock_updated_assistant.user_id = "user-123"
+        mock_updated_assistant.graph_id = "old-graph"
+        mock_updated_assistant.version = 2
+        mock_updated_assistant.created_at = datetime.now(UTC)
+        mock_updated_assistant.updated_at = datetime.now(UTC)
+        mock_updated_assistant.config = {}
+        mock_updated_assistant.context = {}
+        mock_updated_assistant.metadata_dict = {}
+
+        assistant_service.session.scalar.side_effect = [
+            mock_assistant,
+            1,
+            mock_updated_assistant,
+        ]
+        assistant_service.session.execute = AsyncMock()
+        assistant_service.session.commit = AsyncMock()
+
+        await assistant_service.update_assistant("test-id", AssistantUpdate(name="Renamed"))
+
+        version_record = assistant_service.session.add.call_args.args[0]
+        assert version_record.graph_id == "old-graph"
+
+        executed_stmt = assistant_service.session.execute.call_args.args[0]
+        updated_graph_id = None
+        for column, value in executed_stmt._values.items():
+            if getattr(column, "name", None) == "graph_id":
+                updated_graph_id = getattr(value, "value", value)
+                break
+        assert updated_graph_id == "old-graph"
+
+    @pytest.mark.asyncio
     async def test_update_assistant_not_found(
         self,
         assistant_service: AssistantService,
@@ -799,13 +857,10 @@ class TestAssistantServiceSearch:
         mock_result.all.return_value = []
 
         assistant_service.session.scalars.return_value = mock_result
-        assistant_service.session.scalar.return_value = 0
 
         result = await assistant_service.search_assistants(mock_request)
 
-        assert result.items == []
-        assert result.total == 0
-        assert result.next_offset is None
+        assert isinstance(result, list)
         assistant_service.session.scalars.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1108,60 +1163,6 @@ class TestAuthDispatch:
         assert value == {"assistant_id": "asst-1", "metadata": None}
 
     @pytest.mark.asyncio
-    async def test_versions_forwards_metadata_filter_to_dispatch(self, assistant_service: AssistantService) -> None:
-        """A metadata filter in the body reaches the auth handler, not just the query."""
-        assistant_service.session.scalar.return_value = None  # 404 after dispatch
-        request = AssistantVersionsRequest(metadata={"env": "prod"})
-        with patch(_DISPATCH, new=AsyncMock(return_value=None)) as handle, pytest.raises(HTTPException):
-            await assistant_service.list_assistant_versions("asst-1", request)
-        _ctx, value = handle.await_args.args
-        assert value == {"assistant_id": "asst-1", "metadata": {"env": "prod"}}
-
-    @pytest.mark.asyncio
-    async def test_versions_applies_limit_and_offset(self, assistant_service: AssistantService) -> None:
-        """The SDK always sends limit/offset; the query must carry them.
-
-        Regression: the endpoint took no body at all, so `get_versions(limit=1)`
-        silently returned every version an assistant had ever had.
-        """
-        assistant_service.session.scalar.return_value = MagicMock(assistant_id="asst-1")
-        empty = Mock()
-        empty.all.return_value = []
-        assistant_service.session.scalars.return_value = empty
-
-        with patch(_DISPATCH, new=AsyncMock(return_value=None)):
-            await assistant_service.list_assistant_versions("asst-1", AssistantVersionsRequest(limit=5, offset=10))
-
-        stmt = assistant_service.session.scalars.await_args.args[0]
-        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-        assert "LIMIT 5" in compiled
-        assert "OFFSET 10" in compiled
-
-    @pytest.mark.asyncio
-    async def test_versions_empty_page_past_the_first_is_not_404(self, assistant_service: AssistantService) -> None:
-        """Running off the end of the list returns [], not a 404."""
-        assistant_service.session.scalar.return_value = MagicMock(assistant_id="asst-1")
-        empty = Mock()
-        empty.all.return_value = []
-        assistant_service.session.scalars.return_value = empty
-
-        with patch(_DISPATCH, new=AsyncMock(return_value=None)):
-            result = await assistant_service.list_assistant_versions("asst-1", AssistantVersionsRequest(offset=999))
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_versions_first_page_empty_still_404s(self, assistant_service: AssistantService) -> None:
-        """An assistant with no versions at all is still a 404."""
-        assistant_service.session.scalar.return_value = MagicMock(assistant_id="asst-1")
-        empty = Mock()
-        empty.all.return_value = []
-        assistant_service.session.scalars.return_value = empty
-
-        with patch(_DISPATCH, new=AsyncMock(return_value=None)), pytest.raises(HTTPException) as exc:
-            await assistant_service.list_assistant_versions("asst-1")
-        assert exc.value.status_code == 404
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method", "args"),
         [
@@ -1208,8 +1209,6 @@ class TestAuthDispatch:
         result = Mock()
         result.all.return_value = []
         assistant_service.session.scalars.return_value = result
-        # search_assistants also runs a COUNT for the page total.
-        assistant_service.session.scalar.return_value = 0
         with patch(_DISPATCH, new=AsyncMock(return_value={"owner": "user-123"})):
             await assistant_service.search_assistants(request)
 
@@ -1217,62 +1216,3 @@ class TestAuthDispatch:
         stmt = assistant_service.session.scalars.call_args.args[0]
         compiled = stmt.compile(dialect=postgresql.dialect())
         assert {"owner": "user-123"} in compiled.params.values()
-
-
-class TestAssistantSearchScope:
-    """`assistants:search:all` decides scope; deployment assistants stay visible."""
-
-    @staticmethod
-    def _search_sql(service: AssistantService) -> str:
-        from sqlalchemy.dialects import postgresql
-
-        return str(service.session.scalars.await_args.args[0].compile(dialect=postgresql.dialect()))
-
-    @staticmethod
-    async def _run_search(service: AssistantService) -> None:
-        request = Mock(
-            name=None, description=None, graph_id=None, metadata=None, offset=0, limit=20, sort_by=None, select=None
-        )
-        empty = Mock()
-        empty.all.return_value = []
-        service.session.scalars.return_value = empty
-        service.session.scalar.return_value = 0
-        with patch(_DISPATCH, new=AsyncMock(return_value=None)):
-            await service.search_assistants(request)
-
-    @pytest.mark.asyncio
-    async def test_scoped_to_caller_and_system_without_permission(
-        self, mock_session: AsyncMock, mock_langgraph_service: Mock
-    ) -> None:
-        """Without the permission: own rows OR the deployment's shared ones."""
-        service = AssistantService(mock_session, User(identity="user-123"), mock_langgraph_service)
-        await self._run_search(service)
-        sql = self._search_sql(service)
-        where = sql.split("WHERE", 1)[1]
-        assert where.count("assistant.user_id = ") == 2
-        assert " OR " in where
-
-    @pytest.mark.asyncio
-    async def test_permission_drops_ownership_predicate(
-        self, mock_session: AsyncMock, mock_langgraph_service: Mock
-    ) -> None:
-        service = AssistantService(
-            mock_session,
-            User(identity="user-123", permissions=["assistants:search:all"]),
-            mock_langgraph_service,
-        )
-        await self._run_search(service)
-        sql = self._search_sql(service)
-        assert "WHERE" not in sql or "assistant.user_id = " not in sql.split("WHERE", 1)[1]
-
-    @pytest.mark.asyncio
-    async def test_other_resource_permission_does_not_widen_scope(
-        self, mock_session: AsyncMock, mock_langgraph_service: Mock
-    ) -> None:
-        service = AssistantService(
-            mock_session,
-            User(identity="user-123", permissions=["runs:search:all"]),
-            mock_langgraph_service,
-        )
-        await self._run_search(service)
-        assert "assistant.user_id = " in self._search_sql(service).split("WHERE", 1)[1]

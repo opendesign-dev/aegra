@@ -22,12 +22,23 @@ logger = structlog.get_logger(__name__)
 
 
 def find_alembic_ini() -> Path:
-    """Find the bundled alembic.ini — the installed package first, then the repo layout.
+    """Find the bundled alembic.ini, never a foreign one in CWD.
 
-    Never resolves from CWD: that would match a host project's own alembic.ini and silently
-    skip our migrations, leaving a fresh DB to crash on a missing "assistant" relation
-    (GH #306). Both branches resolve relative to this module, so CWD cannot interfere.
-    Raises FileNotFoundError when neither exists.
+    Resolution order:
+    1. Bundled with aegra_api package (pip install)
+    2. Development layout (repo/editable install)
+
+    Resolving CWD first would match a host project's own alembic.ini and
+    silently skip our migrations, so a fresh DB crashes with relation
+    "assistant" does not exist (GH #306). Both branches resolve relative to
+    this module, so CWD is irrelevant — including Docker, where the package
+    branch wins regardless of workdir.
+
+    Returns:
+        Absolute path to alembic.ini
+
+    Raises:
+        FileNotFoundError: If alembic.ini cannot be found
     """
     # 1. Package bundled (pip install aegra-api)
     # In installed package: site-packages/aegra_api/alembic.ini
@@ -53,6 +64,9 @@ def get_alembic_config() -> Config:
     Works in both development (repo) and production (pip install) environments.
     Resolves relative script_location to absolute path so migrations work
     regardless of CWD.
+
+    Returns:
+        Configured Alembic Config object
     """
     ini_path = find_alembic_ini()
     cfg = Config(str(ini_path))

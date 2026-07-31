@@ -22,15 +22,6 @@ class CorsConfig(TypedDict, total=False):
     max_age: int
 
 
-class ConfigurableHeadersConfig(TypedDict, total=False):
-    """Header allowlist for injecting request headers into run config."""
-
-    includes: list[str]
-    """fnmatch patterns for header names to forward into config['configurable']."""
-    excludes: list[str]
-    """fnmatch patterns that override includes (take precedence)."""
-
-
 class HttpConfig(TypedDict, total=False):
     """HTTP configuration options for custom routes"""
 
@@ -40,10 +31,6 @@ class HttpConfig(TypedDict, total=False):
     """Apply Aegra authentication dependency to custom routes (uses FastAPI dependencies, not middleware)"""
     cors: CorsConfig | None
     """Custom CORS configuration"""
-    disable_mcp: bool
-    """Disable the /mcp MCP server even when MCP_ENABLED"""
-    configurable_headers: ConfigurableHeadersConfig
-    """Request headers to forward into each run's config['configurable']"""
 
 
 class StoreIndexConfig(TypedDict, total=False):
@@ -72,24 +59,11 @@ class StoreIndexConfig(TypedDict, total=False):
     """
 
 
-class StoreTTLConfig(TypedDict, total=False):
-    """TTL configuration for store items. All durations are in minutes."""
-
-    refresh_on_read: bool
-    """Reset an item's expiry on get/search (default True in langgraph)."""
-    default_ttl: float
-    """Lifespan of a new item after last access, in minutes. None = no expiry."""
-    sweep_interval_minutes: int
-    """How often the store deletes expired items. Omit to disable sweeping."""
-
-
 class StoreConfig(TypedDict, total=False):
     """Store configuration options"""
 
     index: StoreIndexConfig | None
     """Vector index configuration for semantic search"""
-    ttl: StoreTTLConfig | None
-    """Item time-to-live and background sweeping"""
 
 
 class AuthConfig(TypedDict, total=False):
@@ -113,6 +87,9 @@ def _resolve_config_path() -> Path | None:
     1) AEGRA_CONFIG env var (if set and file exists)
     2) aegra.json in CWD
     3) langgraph.json in CWD (fallback for compatibility)
+
+    Returns:
+        Path to config file or None if not found
     """
     # 1) Env var override - only use if file actually exists
     if env_path := settings.app.AEGRA_CONFIG:
@@ -135,7 +112,11 @@ def _resolve_config_path() -> Path | None:
 
 
 def load_config() -> dict | None:
-    """Load full config file using standard resolution order."""
+    """Load full config file using standard resolution order.
+
+    Returns:
+        Full config dict or None if not found
+    """
     config_path = _resolve_config_path()
     if not config_path:
         return None
@@ -156,6 +137,9 @@ def load_http_config() -> HttpConfig | None:
     """Load HTTP config from aegra.json or langgraph.json.
 
     Uses standard config resolution order.
+
+    Returns:
+        HTTP configuration dict or None if not found
     """
     config = load_config()
     if config is None:
@@ -174,6 +158,9 @@ def load_store_config() -> StoreConfig | None:
     """Load store config from aegra.json or langgraph.json.
 
     Uses standard config resolution order.
+
+    Returns:
+        Store configuration dict or None if not found
     """
     config = load_config()
     if config is None:
@@ -192,6 +179,9 @@ def load_auth_config() -> AuthConfig | None:
     """Load auth config from aegra.json or langgraph.json.
 
     Uses standard config resolution order.
+
+    Returns:
+        Auth configuration dict or None if not found
     """
     config = load_config()
     if config is None:
@@ -211,6 +201,9 @@ def get_config_dir() -> Path | None:
 
     This is used to resolve relative paths in the config file
     (graphs, http.app, auth.path) relative to the config location.
+
+    Returns:
+        Path to config directory or None if no config found
     """
     config_path = _resolve_config_path()
     if config_path and config_path.exists():

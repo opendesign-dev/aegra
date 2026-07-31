@@ -6,18 +6,13 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from aegra_api.models.enums import (
-    CronSelectField,
-    CronSortBy,
-    MultitaskStrategy,
-    SortOrder,
-)
 from aegra_api.settings import settings
 
 # Field length caps. Keep these conservative; cron metadata is small by nature.
 _SCHEDULE_MAX_LEN = 256
 _TIMEZONE_MAX_LEN = 64
 _WEBHOOK_MAX_LEN = 2048
+_STREAM_MODE_MAX_LEN = 64
 _STR_FIELD_MAX_LEN = 256
 
 OnRunCompleted = Literal["delete", "keep"]
@@ -26,8 +21,8 @@ OnRunCompleted = Literal["delete", "keep"]
 def _validate_webhook_url(value: str | None) -> str | None:
     """Reject malformed or non-http(s) webhook URLs at the API boundary.
 
-    Cron-fired runs forward this ``webhook`` to the run, which delivers it on
-    terminal state (services/webhooks.py) after a full SSRF re-check.
+    The cron record stores ``webhook`` verbatim. When a future runtime wires
+    webhook delivery this is the SSRF entry point, so we constrain it now.
     """
     if value is None:
         return None
@@ -37,13 +32,6 @@ def _validate_webhook_url(value: str | None) -> str | None:
     if not parsed.netloc:
         raise ValueError("webhook must include a host")
     return value
-
-
-def _map_checkpoint_during(model: "CronCreate | CronUpdate") -> None:
-    """Fold the deprecated ``checkpoint_during`` flag into ``durability``."""
-    if model.checkpoint_during is not None and model.durability is None:
-        model.durability = "async" if model.checkpoint_during else "exit"
-    model.checkpoint_during = None
 
 
 def _validate_payload_size(model: BaseModel) -> None:
@@ -57,11 +45,6 @@ def _validate_payload_size(model: BaseModel) -> None:
 class CronCreate(BaseModel):
     """Request body for creating a cron job (stateless or thread-bound)."""
 
-    cron_id: str | None = Field(
-        default=None,
-        max_length=_STR_FIELD_MAX_LEN,
-        description="Client-supplied id for idempotent creation. Generated when omitted; 409 if taken.",
-    )
     assistant_id: str = Field(..., max_length=_STR_FIELD_MAX_LEN)
     schedule: str = Field(..., max_length=_SCHEDULE_MAX_LEN)
     input: dict[str, Any] | None = None
@@ -70,29 +53,23 @@ class CronCreate(BaseModel):
     context: dict[str, Any] | None = None
     interrupt_before: Literal["*"] | list[str] | None = None
     interrupt_after: Literal["*"] | list[str] | None = None
-    webhook: str | None = Field(default=None, max_length=_WEBHOOK_MAX_LEN)
+    webhook: str | None = Field(None, max_length=_WEBHOOK_MAX_LEN)
     on_run_completed: OnRunCompleted | None = None
-    multitask_strategy: MultitaskStrategy | None = None
+    multitask_strategy: str | None = Field(None, max_length=_STR_FIELD_MAX_LEN)
     end_time: datetime | None = None
     enabled: bool | None = None
     stream_mode: str | list[str] | None = None
     stream_subgraphs: bool | None = None
-    timezone: str | None = Field(default=None, max_length=_TIMEZONE_MAX_LEN)
-    command: dict[str, Any] | None = None
-    durability: Literal["sync", "async", "exit"] | None = None
-    checkpoint_during: bool | None = Field(
-        default=None,
-        description="Deprecated alias for durability: true → 'async', false → 'exit'.",
-    )
-    after_seconds: int | None = Field(default=None, ge=0)
-    # Transport-only RunCreate params (stream, on_disconnect) are not exposed:
-    # cron fires background runs with no client. on_completion is expressed as
-    # on_run_completed above.
+    timezone: str | None = Field(None, max_length=_TIMEZONE_MAX_LEN)
+    # NOTE: checkpoint_during, stream_resumable, and durability are NOT exposed
+    # here because RunCreate has no matching fields yet. Accepting them silently
+    # drops the value at firing time. Re-add once those land on RunCreate.
 
     @model_validator(mode="after")
     def _check(self) -> "CronCreate":
         self.webhook = _validate_webhook_url(self.webhook)
-        _map_checkpoint_during(self)
+        if isinstance(self.stream_mode, str) and len(self.stream_mode) > _STREAM_MODE_MAX_LEN:
+            raise ValueError("stream_mode is too long")
         if self.end_time is not None:
             now = datetime.now(UTC)
             end = self.end_time if self.end_time.tzinfo else self.end_time.replace(tzinfo=UTC)
@@ -113,7 +90,6 @@ class CronResponse(BaseModel):
     on_run_completed: OnRunCompleted | None = None
     end_time: datetime | None = None
     schedule: str
-    timezone: str | None = None
     created_at: datetime
     updated_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -126,33 +102,29 @@ class CronResponse(BaseModel):
 class CronUpdate(BaseModel):
     """Request body for updating an existing cron job."""
 
-    schedule: str | None = Field(default=None, max_length=_SCHEDULE_MAX_LEN)
+    schedule: str | None = Field(None, max_length=_SCHEDULE_MAX_LEN)
     end_time: datetime | None = None
     input: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
     config: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
-    webhook: str | None = Field(default=None, max_length=_WEBHOOK_MAX_LEN)
+    webhook: str | None = Field(None, max_length=_WEBHOOK_MAX_LEN)
     interrupt_before: Literal["*"] | list[str] | None = None
     interrupt_after: Literal["*"] | list[str] | None = None
     on_run_completed: OnRunCompleted | None = None
-    multitask_strategy: MultitaskStrategy | None = None
+    multitask_strategy: str | None = Field(None, max_length=_STR_FIELD_MAX_LEN)
     enabled: bool | None = None
     stream_mode: str | list[str] | None = None
     stream_subgraphs: bool | None = None
-    timezone: str | None = Field(default=None, max_length=_TIMEZONE_MAX_LEN)
-    command: dict[str, Any] | None = None
-    durability: Literal["sync", "async", "exit"] | None = None
-    checkpoint_during: bool | None = Field(
-        default=None,
-        description="Deprecated alias for durability: true → 'async', false → 'exit'.",
-    )
-    after_seconds: int | None = Field(default=None, ge=0)
+    timezone: str | None = Field(None, max_length=_TIMEZONE_MAX_LEN)
+    # See CronCreate: checkpoint_during/stream_resumable/durability omitted
+    # until RunCreate gains matching fields.
 
     @model_validator(mode="after")
     def _check(self) -> "CronUpdate":
         self.webhook = _validate_webhook_url(self.webhook)
-        _map_checkpoint_during(self)
+        if isinstance(self.stream_mode, str) and len(self.stream_mode) > _STREAM_MODE_MAX_LEN:
+            raise ValueError("stream_mode is too long")
         if self.end_time is not None:
             now = datetime.now(UTC)
             end = self.end_time if self.end_time.tzinfo else self.end_time.replace(tzinfo=UTC)
@@ -168,12 +140,10 @@ class CronSearchRequest(BaseModel):
     assistant_id: str | None = None
     thread_id: str | None = None
     enabled: bool | None = None
-    limit: int = Field(default=10, ge=1, le=1000)
-    offset: int = Field(default=0, ge=0)
-    metadata: dict[str, Any] | None = None
-    sort_by: CronSortBy | None = None
-    sort_order: SortOrder | None = None
-    select: list[CronSelectField] | None = None
+    limit: int = Field(10, ge=1, le=1000)
+    offset: int = Field(0, ge=0)
+    sort_by: str | None = None
+    sort_order: str | None = None
 
 
 class CronCountRequest(BaseModel):
@@ -181,5 +151,3 @@ class CronCountRequest(BaseModel):
 
     assistant_id: str | None = None
     thread_id: str | None = None
-    enabled: bool | None = None
-    metadata: dict[str, Any] | None = None

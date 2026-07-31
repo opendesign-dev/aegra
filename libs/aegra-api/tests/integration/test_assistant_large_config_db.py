@@ -33,8 +33,8 @@ async def test_insert_assistant_with_large_configurable_prompt_succeeds() -> Non
             async with engine.begin() as conn:
                 await conn.execute(text("SELECT 1"))
                 assistant_table = await conn.scalar(text("SELECT to_regclass('public.assistant')"))
-        # asyncpg raises PostgresConnectionError (not an OSError/OperationalError)
-        # when the port is answered by a server without this database.
+        # 端口被一个没有该数据库的服务器应答时，asyncpg 抛的是
+        # PostgresConnectionError，既不是 OSError 也不是 OperationalError。
         except (OperationalError, OSError, PostgresConnectionError) as exc:
             pytest.skip(f"PostgreSQL test database is unavailable: {exc}")
 

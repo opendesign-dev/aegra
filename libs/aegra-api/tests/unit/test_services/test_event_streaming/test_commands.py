@@ -16,9 +16,9 @@ def user() -> User:
 
 @pytest.fixture
 def prepared_run(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    """Stub prepare_run to return a fixed run_id without touching the DB."""
+    """Stub _prepare_run to return a fixed run_id without touching the DB."""
     mock = AsyncMock(return_value=("run-xyz", object(), object()))
-    monkeypatch.setattr(cmd, "prepare_run", mock)
+    monkeypatch.setattr(cmd, "_prepare_run", mock)
     return mock
 
 
@@ -55,19 +55,6 @@ class TestRunStart:
         assert request.config == {"c": 2}
         # v2 runs are flagged for the native v3 stream path.
         assert prepared_run.call_args.kwargs["event_streaming_v2"] is True
-
-    async def test_run_start_creates_a_client_minted_thread(self, prepared_run: AsyncMock, user: User) -> None:
-        """The v2 client mints the thread id, so run.start must not 404 on a new thread.
-
-        RunCreate defaults if_not_exists to 'reject'; leaving that default made
-        every stock-SDK ``client.threads.stream()`` fail with no_such_run.
-        """
-        await _dispatch(
-            {"id": 1, "method": "run.start", "params": {"assistant_id": "agent", "input": {"x": 1}}},
-            user,
-        )
-        request = prepared_run.call_args.args[2]
-        assert request.if_not_exists == "create"
 
     async def test_run_start_forwards_interrupt_breakpoints(self, prepared_run: AsyncMock, user: User) -> None:
         """interrupt_before/after must reach RunCreate so v2 clients can set HITL breakpoints."""
@@ -257,7 +244,7 @@ class TestErrors:
         async def boom(*_a: Any, **_k: Any) -> None:
             raise RuntimeError("db exploded")
 
-        monkeypatch.setattr(cmd, "prepare_run", boom)
+        monkeypatch.setattr(cmd, "_prepare_run", boom)
         resp, run_id = await _dispatch(
             {"id": 9, "method": "run.start", "params": {"assistant_id": "x", "input": {}}}, user
         )
@@ -280,7 +267,7 @@ class TestErrors:
         async def boom(*_a: Any, **_k: Any) -> None:
             raise HTTPException(404, "Assistant 'x' not found")
 
-        monkeypatch.setattr(cmd, "prepare_run", boom)
+        monkeypatch.setattr(cmd, "_prepare_run", boom)
         resp, run_id = await _dispatch(
             {"id": 5, "method": "run.start", "params": {"assistant_id": "x", "input": {}}}, user
         )
@@ -295,7 +282,7 @@ class TestErrors:
         async def boom(*_a: Any, **_k: Any) -> None:
             raise HTTPException(403, "nope")
 
-        monkeypatch.setattr(cmd, "prepare_run", boom)
+        monkeypatch.setattr(cmd, "_prepare_run", boom)
         resp, _ = await _dispatch({"id": 6, "method": "run.start", "params": {"assistant_id": "x", "input": {}}}, user)
         assert resp["error"] == "permission_denied"
 

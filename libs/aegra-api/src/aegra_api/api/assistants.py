@@ -1,11 +1,17 @@
-"""Assistant endpoints for Agent Protocol.
+"""Assistant endpoints for Agent Protocol
 
-Thin route handlers; the business logic lives in ``services/assistant_service``.
+NOTE: This API follows a layered architecture pattern with business logic
+separated into a service layer (assistant_service.py). This was the first
+API to be refactored, and the plan is to gradually refactor all other APIs
+(runs, threads, etc.) to follow this same pattern for better code
+organization, testability, and maintainability.
+
+Architecture:
+- API Layer (this file): Thin FastAPI route handlers, request/response handling
+- Service Layer (assistant_service.py): Business logic, validation, orchestration
 """
 
-from typing import Any
-
-from fastapi import APIRouter, Body, Depends, Query, Response
+from fastapi import APIRouter, Body, Depends, Query
 
 from aegra_api.core.auth_deps import auth_dependency
 from aegra_api.core.orm import Assistant as AssistantORM
@@ -17,7 +23,6 @@ from aegra_api.models import (
     AssistantSearchRequest,
     AssistantUpdate,
 )
-from aegra_api.models.assistants import AssistantVersionsRequest
 from aegra_api.models.errors import NOT_FOUND
 from aegra_api.services.assistant_service import AssistantService, get_assistant_service
 
@@ -63,27 +68,18 @@ async def list_assistants(
     return AssistantList(assistants=assistants, total=len(assistants))
 
 
-# response_model=None: with `select` the items are partial dicts, so the
-# service serializes and the route passes them through untouched.
-@router.post("/assistants/search", response_model=None)
+@router.post("/assistants/search", response_model=list[Assistant], response_model_by_alias=False)
 async def search_assistants(
     request: AssistantSearchRequest,
-    response: Response,
     service: AssistantService = Depends(get_assistant_service),
-) -> list[dict[str, Any]]:
+):
     """Search assistants with filters.
 
     Filter by name, description, graph ID, or metadata. Results are paginated
-    via `limit` and `offset`; use `select` to return only specific fields.
-    Pagination info is exposed via the `X-Pagination-Total` header, plus
-    `X-Pagination-Next` when more results exist.
+    via `limit` and `offset`.
     """
     column, asc = _resolve_sort(request)
-    page = await service.search_assistants(request, sort_column=column, sort_asc=asc)
-    response.headers["X-Pagination-Total"] = str(page.total)
-    if page.next_offset is not None:
-        response.headers["X-Pagination-Next"] = str(page.next_offset)
-    return page.items
+    return await service.search_assistants(request, sort_column=column, sort_asc=asc)
 
 
 @router.post("/assistants/count", response_model=int)
@@ -139,16 +135,14 @@ async def update_assistant(
 @router.delete("/assistants/{assistant_id}", responses={**NOT_FOUND})
 async def delete_assistant(
     assistant_id: str,
-    delete_threads: bool = Query(False, description="Also delete threads whose metadata binds them to this assistant."),
     service: AssistantService = Depends(get_assistant_service),
-) -> dict[str, str]:
+):
     """Delete an assistant by its ID.
 
     Permanently removes the assistant and all of its versions. This action
-    cannot be undone. Pass `delete_threads=true` to also delete the caller's
-    threads created by this assistant.
+    cannot be undone.
     """
-    return await service.delete_assistant(assistant_id, delete_threads=delete_threads)
+    return await service.delete_assistant(assistant_id)
 
 
 @router.post(
@@ -178,16 +172,14 @@ async def set_assistant_latest(
 )
 async def list_assistant_versions(
     assistant_id: str,
-    request: AssistantVersionsRequest | None = None,
     service: AssistantService = Depends(get_assistant_service),
 ):
-    """List versions of an assistant.
+    """List all versions of an assistant.
 
-    Returns versions ordered from newest to oldest, paginated by `limit` and
-    `offset`. Each version captures the assistant's configuration at the time
-    of creation or update.
+    Returns versions ordered from newest to oldest. Each version captures the
+    assistant's configuration at the time of creation or update.
     """
-    return await service.list_assistant_versions(assistant_id, request)
+    return await service.list_assistant_versions(assistant_id)
 
 
 @router.get(
@@ -231,22 +223,11 @@ async def get_assistant_subgraphs(
     recurse: bool = Query(False, description="Recursively include nested subgraphs."),
     namespace: str | None = Query(None, description="Filter to a specific subgraph namespace."),
     service: AssistantService = Depends(get_assistant_service),
-) -> dict[str, Any]:
+):
     """Get subgraphs of an assistant.
 
     Returns the subgraph definitions used by this assistant's graph. Set
     `recurse=true` to include deeply nested subgraphs, or filter to a single
     namespace.
     """
-    return await service.get_assistant_subgraphs(assistant_id, namespace, recurse)
-
-
-@router.get("/assistants/{assistant_id}/subgraphs/{namespace}", responses={**NOT_FOUND})
-async def get_assistant_subgraphs_namespace(
-    assistant_id: str,
-    namespace: str,
-    recurse: bool = Query(False, description="Recursively include nested subgraphs."),
-    service: AssistantService = Depends(get_assistant_service),
-) -> dict[str, Any]:
-    """Namespace-scoped subgraph lookup — the path form the LangGraph SDK calls."""
     return await service.get_assistant_subgraphs(assistant_id, namespace, recurse)

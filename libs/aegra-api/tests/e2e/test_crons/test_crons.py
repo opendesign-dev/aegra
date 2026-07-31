@@ -80,23 +80,6 @@ def _tick_count(state: dict[str, Any]) -> int:
     return count
 
 
-async def _wait_for_thread_status(
-    *,
-    client: Any,
-    thread_id: str,
-    status: str,
-    attempts: int = 20,
-) -> dict[str, Any]:
-    """Poll the thread until it reaches *status*."""
-    latest: dict[str, Any] = {}
-    for _ in range(attempts):
-        latest = await client.threads.get(thread_id)
-        if latest.get("status") == status:
-            return latest
-        await asyncio.sleep(1)
-    pytest.fail(f"Thread {thread_id} never reached status {status!r}, last was {latest.get('status')!r}")
-
-
 async def _wait_for_tick_count(
     *,
     client: Any,
@@ -121,16 +104,15 @@ async def test_cron_accepts_graph_id_as_assistant_id() -> None:
     client = get_e2e_client()
     marker = f"cron-via-graph-id-{uuid4()}"
 
-    cron = await client.crons.create(
+    cron_run = await client.crons.create(
         "agent",
         schedule="0 2 * * *",
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    elog("Cron.create (graph id)", cron)
+    elog("Cron.create (graph id)", cron_run)
 
-    assert "cron_id" in cron
-    assert "run_id" not in cron
-    assert cron["assistant_id"] != "agent"
+    assert "run_id" in cron_run
+    assert cron_run["assistant_id"] != "agent"
 
     crons = await client.crons.search(assistant_id="agent")
     matching = [
@@ -148,10 +130,7 @@ async def test_cron_accepts_graph_id_as_assistant_id() -> None:
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_cron_stateless_create_and_delete() -> None:
-    """Create a stateless cron, verify the persisted Cron is returned, then delete it.
-
-    Creation never fires: the scheduler owns every firing, including the first.
-    """
+    """Create a stateless cron, verify the first Run is returned, then delete it."""
     client = get_e2e_client()
     marker = f"cron-stateless-{uuid4()}"
 
@@ -163,15 +142,14 @@ async def test_cron_stateless_create_and_delete() -> None:
     assistant_id = assistant["assistant_id"]
     elog("Assistant", assistant)
 
-    cron = await client.crons.create(
+    cron_run = await client.crons.create(
         assistant_id,
         schedule="0 3 * * *",  # 03:00 UTC every day — won't fire during test
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    elog("Cron.create (stateless)", cron)
+    elog("Cron.create (stateless)", cron_run)
 
-    assert "cron_id" in cron
-    assert "run_id" not in cron
+    assert "run_id" in cron_run
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
 
     await client.crons.delete(cron_id)
@@ -180,8 +158,8 @@ async def test_cron_stateless_create_and_delete() -> None:
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_cron_disabled_create_is_persisted_paused() -> None:
-    """enabled=False persists a cron the scheduler will skip until it is re-enabled."""
+async def test_cron_disabled_create_returns_cron_without_first_run() -> None:
+    """Creating with enabled=False persists the cron and suppresses the initial Run."""
     client = get_e2e_client()
     marker = f"cron-disabled-{uuid4()}"
 
@@ -214,7 +192,7 @@ async def test_cron_disabled_create_is_persisted_paused() -> None:
 @pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_cron_for_thread_create_and_delete() -> None:
-    """Create a thread-bound cron, verify the persisted Cron is returned, then delete."""
+    """Create a thread-bound cron, verify the Run is returned, then delete."""
     client = get_e2e_client()
     marker = f"cron-thread-{uuid4()}"
 
@@ -229,16 +207,15 @@ async def test_cron_for_thread_create_and_delete() -> None:
     thread_id = thread["thread_id"]
     elog("Thread", thread)
 
-    cron = await client.crons.create_for_thread(
+    cron_run = await client.crons.create_for_thread(
         thread_id,
         assistant_id,
         schedule="0 4 * * *",  # 04:00 UTC every day
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    elog("Cron.create_for_thread", cron)
+    elog("Cron.create_for_thread", cron_run)
 
-    assert "cron_id" in cron
-    assert "run_id" not in cron
+    assert "run_id" in cron_run
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
 
     await client.crons.delete(cron_id)
@@ -297,20 +274,18 @@ async def test_cron_search_and_count() -> None:
     )
     assistant_id = assistant["assistant_id"]
 
-    cron_a = await client.crons.create(
+    run_a = await client.crons.create(
         assistant_id,
         schedule="0 5 * * *",
         input={"messages": [{"role": "user", "content": marker_a}]},
     )
-    cron_b = await client.crons.create(
+    run_b = await client.crons.create(
         assistant_id,
         schedule="0 6 * * *",
         input={"messages": [{"role": "user", "content": marker_b}]},
     )
-    assert "cron_id" in cron_a
-    assert "cron_id" in cron_b
-    assert "run_id" not in cron_a
-    assert "run_id" not in cron_b
+    assert "run_id" in run_a
+    assert "run_id" in run_b
     cron_id_a = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker_a)
     cron_id_b = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker_b)
     elog("Created crons", {"a": cron_id_a, "b": cron_id_b})
@@ -346,13 +321,12 @@ async def test_cron_update() -> None:
     )
     assistant_id = assistant["assistant_id"]
 
-    cron = await client.crons.create(
+    cron_run = await client.crons.create(
         assistant_id,
         schedule="0 7 * * *",
         input={"messages": [{"role": "user", "content": marker}]},
     )
-    assert "cron_id" in cron
-    assert "run_id" not in cron
+    assert "run_id" in cron_run
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
     elog("Created cron", {"cron_id": cron_id})
 
@@ -381,8 +355,8 @@ async def test_cron_update() -> None:
         {"assistant_id": "missing", "schedule": "0 1 * * *", "end_time": "2000-01-01T00:00:00Z"},
     ],
 )
-async def test_cron_create_rejects_invalid_requests(payload: dict[str, Any]) -> None:
-    """Schedule gate, webhook scheme, and end_time are validated before persistence."""
+async def test_cron_review_guards_reject_bad_http_requests(payload: dict[str, Any]) -> None:
+    """New validation/feature gates reject bad requests before persistence."""
     if payload["schedule"].count(" ") == 5 and settings.cron.CRON_ALLOW_SECONDS_SCHEDULE:
         pytest.skip("seconds schedules are enabled in this environment")
 
@@ -405,7 +379,7 @@ async def test_cron_with_timezone() -> None:
     )
     assistant_id = assistant["assistant_id"]
 
-    cron = await _create_cron_via_http(
+    cron_run = await _create_cron_via_http(
         {
             "assistant_id": assistant_id,
             "schedule": "0 9 * * *",
@@ -413,8 +387,7 @@ async def test_cron_with_timezone() -> None:
             "input": {"messages": [{"role": "user", "content": marker}]},
         }
     )
-    assert "cron_id" in cron
-    assert "run_id" not in cron
+    assert "run_id" in cron_run
     cron_id = await _find_cron_id_by_message(client=client, assistant_id=assistant_id, message=marker)
     elog("Created cron with timezone", {"cron_id": cron_id})
 
@@ -450,80 +423,24 @@ async def test_cron_example_seconds_schedule_fires_on_live_scheduler() -> None:
     thread_id = thread["thread_id"]
     cron_id: str | None = None
 
-    marker = f"cron-fired-{uuid4()}"
     try:
-        cron = await _create_thread_cron_via_http(
+        cron_run = await _create_thread_cron_via_http(
             thread_id,
             {
                 "assistant_id": assistant_id,
                 "schedule": "*/5 * * * * *",
                 "input": {"messages": []},
-                "metadata": {"job": marker},
             },
         )
         cron_id = (await _search_crons_via_http({"assistant_id": assistant_id, "thread_id": thread_id}))[0]["cron_id"]
-        elog("cron_example scheduled cron", {"cron_id": cron_id, "run": cron})
+        elog("cron_example scheduled cron", {"cron_id": cron_id, "run": cron_run})
 
+        await client.runs.join(thread_id, cron_run["run_id"])
         await _wait_for_tick_count(client=client, thread_id=thread_id, minimum=1, attempts=10)
 
         state = await _wait_for_tick_count(client=client, thread_id=thread_id, minimum=2, attempts=30)
         elog("cron_example state after scheduler fire", state)
         assert _tick_count(state) >= 2
-
-        # The cron's metadata rides onto every firing, so the runs are reachable by it —
-        # the only provenance a scheduled run has.
-        fired = await client.runs.search(metadata={"job": marker})
-        elog("Runs found by inherited cron metadata", {"count": len(fired)})
-        assert fired, "cron-fired runs did not inherit the cron metadata"
-        assert all(run["metadata"]["job"] == marker for run in fired)
-    finally:
-        if cron_id is not None:
-            await client.crons.delete(cron_id)
-        await client.threads.delete(thread_id)
-
-
-@pytest.mark.e2e
-@pytest.mark.asyncio
-async def test_pending_approval_holds_the_next_occurrence() -> None:
-    """A cron whose run is waiting on a human must not fire again while it waits.
-
-    Firing would append input and advance the checkpoint, discarding the very context the
-    approver is looking at. ``subgraph_hitl_agent`` pauses on a plain ``interrupt()``, so
-    it also covers the pause the timeout must never auto-answer.
-    """
-    if not settings.cron.CRON_ALLOW_SECONDS_SCHEDULE:
-        pytest.skip("requires CRON_ALLOW_SECONDS_SCHEDULE=true")
-    if settings.cron.CRON_POLL_INTERVAL_SECONDS > 2:
-        pytest.skip("requires CRON_POLL_INTERVAL_SECONDS<=2 for a fast smoke test")
-
-    client = get_e2e_client()
-    assistant = await client.assistants.create(
-        graph_id="subgraph_hitl_agent",
-        config={"tags": ["e2e-cron-approval-hold"]},
-        if_exists="do_nothing",
-    )
-    thread = await client.threads.create()
-    thread_id = thread["thread_id"]
-    cron_id: str | None = None
-
-    try:
-        await _create_thread_cron_via_http(
-            thread_id,
-            {"assistant_id": assistant["assistant_id"], "schedule": "*/5 * * * * *", "input": {"foo": ""}},
-        )
-        cron_id = (await _search_crons_via_http({"thread_id": thread_id}))[0]["cron_id"]
-
-        paused = await _wait_for_thread_status(client=client, thread_id=thread_id, status="interrupted")
-        runs_at_pause = len(await client.runs.list(thread_id=thread_id))
-        elog("Cron run paused for approval", {"cron_id": cron_id, "runs": runs_at_pause, "thread": paused["status"]})
-
-        # Long enough for several occurrences to come due and be held.
-        await asyncio.sleep(15)
-        runs_after_wait = await client.runs.list(thread_id=thread_id)
-        elog("Runs after the hold window", {"count": len(runs_after_wait)})
-
-        assert len(runs_after_wait) == runs_at_pause
-        assert (await client.threads.get(thread_id))["status"] == "interrupted"
     finally:
         if cron_id is not None:
             await client.crons.delete(cron_id)

@@ -12,10 +12,4 @@ def test_info_reports_cron_flag_from_runtime_settings(monkeypatch) -> None:
     response = client.get("/info")
 
     assert response.status_code == 200
-    flags = response.json()["flags"]
-    # Assert the runtime-driven flag exactly; the always-on capability flags are
-    # checked as a set so adding a capability doesn't break this test.
-    assert flags["crons"] is False
-    assert flags["webhooks"] == settings.webhook.WEBHOOK_ENABLED
-    assert {"assistants", "multitask", "batch", "store", "checkpointer"} <= flags.keys()
-    assert all(flags[name] is True for name in ("assistants", "multitask", "batch", "store", "checkpointer"))
+    assert response.json()["flags"] == {"assistants": True, "crons": False}
