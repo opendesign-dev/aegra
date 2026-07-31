@@ -11,13 +11,12 @@ import contextlib
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
 
 from aegra_api.services.cron_scheduler import (
-    APPROVAL_REJECT_COMMAND,
     CronScheduler,
     _build_run_request,
     _resolve_approval,
@@ -36,6 +35,7 @@ def _make_cron_orm(
     user_id: str = "test-user",
     schedule: str = "*/5 * * * *",
     payload: dict[str, Any] | None = None,
+    metadata: Any = None,
     enabled: bool = True,
     on_run_completed: str | None = None,
     end_time: datetime | None = None,
@@ -50,6 +50,7 @@ def _make_cron_orm(
     cron.user_id = user_id
     cron.schedule = schedule
     cron.payload = payload if payload is not None else {"input": {"msg": "tick"}}
+    cron.metadata_dict = {} if metadata is None else metadata
     cron.enabled = enabled
     cron.on_run_completed = on_run_completed
     cron.end_time = end_time
@@ -156,7 +157,9 @@ class TestSchedulerTick:
             service.claim_due_crons.return_value = [cron]
             await scheduler._tick()
 
-        mock_fire.assert_awaited_once_with(session, cron)
+        assert mock_fire.await_args.args[:2] == (session, cron)
+        # The claim instant travels with the firing: the advance anchors to it.
+        assert isinstance(mock_fire.await_args.args[2], datetime)
 
     @pytest.mark.asyncio
     async def test_tick_continues_on_fire_error(self) -> None:
@@ -164,7 +167,7 @@ class TestSchedulerTick:
         scheduler = CronScheduler()
         fired: list[str] = []
 
-        async def _side_effect(_session: Any, cron: Any) -> None:
+        async def _side_effect(_session: Any, cron: Any, _claimed_at: Any) -> None:
             fired.append(cron.cron_id)
             if cron.cron_id == "fail":
                 raise RuntimeError("boom")
@@ -188,7 +191,7 @@ class TestSchedulerTick:
         inflight = 0
         peak = 0
 
-        async def _slow_fire(_session: Any, _cron: Any) -> None:
+        async def _slow_fire(_session: Any, _cron: Any, _claimed_at: Any) -> None:
             nonlocal inflight, peak
             inflight += 1
             peak = max(peak, inflight)
@@ -224,7 +227,7 @@ class TestFireCron:
             await CronScheduler._fire_cron(AsyncMock(), cron)
 
         mock_prepare.assert_awaited_once()
-        service.advance_next_run.assert_awaited_once_with(cron.cron_id)
+        service.advance_next_run.assert_awaited_once_with(cron.cron_id, base=ANY)
         service.release_claim.assert_not_awaited()
         service.disable_cron.assert_not_awaited()
 
@@ -327,7 +330,7 @@ class TestFireCron:
         ):
             await CronScheduler._fire_cron(AsyncMock(), cron)
 
-        service.advance_next_run.assert_awaited_once_with(cron.cron_id, failed=False)
+        service.advance_next_run.assert_awaited_once_with(cron.cron_id, failed=False, base=ANY)
         service.release_claim.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -342,7 +345,7 @@ class TestFireCron:
         ):
             await CronScheduler._fire_cron(AsyncMock(), cron)
 
-        service.advance_next_run.assert_awaited_once_with(cron.cron_id, failed=True)
+        service.advance_next_run.assert_awaited_once_with(cron.cron_id, failed=True, base=ANY)
 
     @pytest.mark.asyncio
     async def test_unexpected_error_keeps_the_occurrence_and_counts_it(self) -> None:
@@ -386,7 +389,7 @@ class TestFireCron:
             await CronScheduler._fire_cron(AsyncMock(), cron)
 
         mock_prepare.assert_not_awaited()
-        service.advance_next_run.assert_awaited_once_with(cron.cron_id)
+        service.advance_next_run.assert_awaited_once_with(cron.cron_id, base=ANY)
 
     @pytest.mark.asyncio
     async def test_occurrence_inside_the_grace_window_still_fires(self) -> None:
@@ -433,6 +436,25 @@ class TestBuildRunRequest:
         "after_seconds": 30,
     }
 
+    def test_run_inherits_the_cron_metadata(self) -> None:
+        """The SDK documents cron metadata as "metadata to assign to the cron job runs",
+        and it is the only channel a firing has: no request context, and a stateless
+        cron's thread is deleted once the run finishes."""
+        cron = _make_cron_orm(metadata={"tenant_id": "t1", "task_id": "job-7"})
+
+        assert _build_run_request(cron).metadata == {"tenant_id": "t1", "task_id": "job-7"}
+
+    def test_rejection_run_inherits_it_too(self) -> None:
+        """A timed-out rejection is still a run of this cron; dropping provenance there
+        would make it invisible to any metadata-filtered view."""
+        request = _build_run_request(_make_cron_orm(metadata={"tenant_id": "t1"}), command={"resume": []})
+
+        assert request.metadata == {"tenant_id": "t1"}
+
+    def test_unusable_metadata_does_not_block_the_firing(self) -> None:
+        """A non-dict in the column is corruption, not a reason to stop the schedule."""
+        assert _build_run_request(_make_cron_orm(metadata="not-a-dict")).metadata == {}
+
     def test_scheduled_request_carries_the_stored_payload(self) -> None:
         request = _build_run_request(_make_cron_orm(payload=self.PAYLOAD))
 
@@ -446,9 +468,10 @@ class TestBuildRunRequest:
     def test_rejection_answers_the_interrupt_without_starting_a_turn(self) -> None:
         """The rejection resumes into the same graph under the same config — only the
         scheduled input and its delay drop out, because this run is not that turn."""
-        request = _build_run_request(_make_cron_orm(payload=self.PAYLOAD), command=APPROVAL_REJECT_COMMAND)
+        reject = {"resume": {"decisions": [{"type": "reject"}]}}
+        request = _build_run_request(_make_cron_orm(payload=self.PAYLOAD), command=reject)
 
-        assert request.command == APPROVAL_REJECT_COMMAND
+        assert request.command == reject
         assert request.input is None
         assert request.after_seconds is None
         assert request.config == {"k": "v"}
@@ -603,18 +626,33 @@ class TestResolveApproval:
     }
     # A pause with no such declaration — resuming it is not a rejection.
     OPAQUE = {"task-1": [{"id": "i1", "value": {"action_requests": [{"name": "execute"}]}}]}
+    # LangChain HumanInTheLoopMiddleware convention, two actions awaiting one answer each.
+    MIDDLEWARE = {
+        "task-1": [
+            {
+                "id": "i1",
+                "value": {
+                    "action_requests": [{"name": "refund"}, {"name": "send_email"}],
+                    "review_configs": [
+                        {"action_name": "refund", "allowed_decisions": ["approve", "reject"]},
+                        {"action_name": "send_email", "allowed_decisions": ["approve", "reject"]},
+                    ],
+                },
+            }
+        ]
+    }
 
     @pytest.mark.asyncio
     async def test_stateless_cron_fires(self) -> None:
         """No bound thread means no approval to wait on."""
         cron = _make_cron_orm(thread_id=None)
-        assert await _resolve_approval(self._session(None), cron) == "fire"
+        assert (await _resolve_approval(self._session(None), cron))[0] == "fire"
 
     @pytest.mark.asyncio
     async def test_idle_thread_fires(self) -> None:
         """A cancel leaves the thread idle; only a HITL pause marks it interrupted."""
         cron = _make_cron_orm(thread_id="t1")
-        assert await _resolve_approval(self._session("idle"), cron) == "fire"
+        assert (await _resolve_approval(self._session("idle"), cron))[0] == "fire"
 
     @pytest.mark.asyncio
     async def test_interrupted_thread_holds_the_firing(self) -> None:
@@ -622,7 +660,7 @@ class TestResolveApproval:
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 60)
         with self._settings(86_400):
-            assert await _resolve_approval(session, cron) == "hold"
+            assert (await _resolve_approval(session, cron))[0] == "hold"
         session.commit.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -646,9 +684,23 @@ class TestResolveApproval:
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 100_000, self.REJECTABLE)
         with self._settings(86_400):
-            assert await _resolve_approval(session, cron) == "reject"
+            assert (await _resolve_approval(session, cron))[0] == "reject"
         # The rejection goes out as a run, not as a status rewrite behind the graph's back.
         session.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_timeout_rejects_a_middleware_pause_once_per_action(self) -> None:
+        """``HumanInTheLoopMiddleware`` validates the decision count against the number of
+        action requests and raises on a mismatch, so one rejection per action is required."""
+        cron = _make_cron_orm(thread_id="t1")
+        session = self._session("interrupted", 100_000, self.MIDDLEWARE)
+        with self._settings(86_400):
+            decision, command = await _resolve_approval(session, cron)
+        assert decision == "reject"
+        assert command is not None
+        decisions = command["resume"]["decisions"]
+        assert [d["type"] for d in decisions] == ["reject", "reject"]
+        assert all(d["message"] for d in decisions)
 
     @pytest.mark.asyncio
     async def test_pause_that_declares_no_rejection_is_only_released(self) -> None:
@@ -658,7 +710,7 @@ class TestResolveApproval:
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 100_000, self.OPAQUE)
         with self._settings(86_400):
-            assert await _resolve_approval(session, cron) == "fire"
+            assert (await _resolve_approval(session, cron))[0] == "fire"
         # Only the thread is released; the paused runs keep the status they actually have,
         # because a terminal run rewritten outside finalize_run gets no webhook either.
         session.execute.assert_awaited_once()
@@ -674,7 +726,7 @@ class TestResolveApproval:
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 100_000, {"task-1": [{"id": "i1", "value": "Provide value:"}]})
         with self._settings(86_400):
-            assert await _resolve_approval(session, cron) == "fire"
+            assert (await _resolve_approval(session, cron))[0] == "fire"
 
     @pytest.mark.asyncio
     async def test_static_breakpoint_is_never_auto_resumed(self) -> None:
@@ -683,7 +735,7 @@ class TestResolveApproval:
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 100_000, interrupts=None)
         with self._settings(86_400):
-            assert await _resolve_approval(session, cron) == "fire"
+            assert (await _resolve_approval(session, cron))[0] == "fire"
 
     @pytest.mark.asyncio
     async def test_empty_interrupt_map_counts_as_nothing_to_reject(self) -> None:
@@ -691,13 +743,13 @@ class TestResolveApproval:
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 100_000, {"task-1": []})
         with self._settings(86_400):
-            assert await _resolve_approval(session, cron) == "fire"
+            assert (await _resolve_approval(session, cron))[0] == "fire"
 
     @pytest.mark.asyncio
     async def test_no_paused_run_fires(self) -> None:
         """Thread says interrupted but no run is: a race, not something to wait on."""
         cron = _make_cron_orm(thread_id="t1")
-        assert await _resolve_approval(self._session("interrupted", None), cron) == "fire"
+        assert (await _resolve_approval(self._session("interrupted", None), cron))[0] == "fire"
 
     @pytest.mark.asyncio
     async def test_zero_timeout_waits_forever(self) -> None:
@@ -705,7 +757,7 @@ class TestResolveApproval:
         cron = _make_cron_orm(thread_id="t1")
         session = self._session("interrupted", 10_000_000, self.REJECTABLE)
         with self._settings(0):
-            assert await _resolve_approval(session, cron) == "hold"
+            assert (await _resolve_approval(session, cron))[0] == "hold"
 
     @pytest.mark.asyncio
     async def test_ongoing_hold_stops_logging_at_info(self) -> None:

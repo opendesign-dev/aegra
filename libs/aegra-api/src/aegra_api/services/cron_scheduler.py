@@ -14,6 +14,7 @@ Follows the same ``start()/stop()`` lifecycle pattern used by
 
 import asyncio
 import contextlib
+import random
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -37,6 +38,15 @@ from aegra_api.settings import settings
 logger = structlog.getLogger(__name__)
 
 
+def _inherited_metadata(cron: CronORM) -> dict[str, Any]:
+    """Metadata a fired run inherits from its cron — its only provenance channel.
+
+    A firing has no request context, and a stateless cron's thread is deleted afterwards.
+    """
+    inherited = cron.metadata_dict
+    return dict(inherited) if isinstance(inherited, dict) else {}
+
+
 def _build_run_request(cron: CronORM, *, command: dict[str, Any] | None = None) -> RunCreate:
     """Build the ``RunCreate`` for one firing of *cron*.
 
@@ -58,21 +68,15 @@ def _build_run_request(cron: CronORM, *, command: dict[str, Any] | None = None) 
         stream_mode=payload.get("stream_mode"),
         multitask_strategy=payload.get("multitask_strategy"),
         webhook=payload.get("webhook"),
-        command=command or payload.get("command"),
+        command=command if answering else payload.get("command"),
         durability=payload.get("durability"),
         after_seconds=None if answering else payload.get("after_seconds"),
         if_not_exists="create",
-        # Cron metadata_dict is stored on the cron record for search/filter, not
-        # forwarded onto fired runs. Re-wire here if run-level tagging is needed.
-        metadata=None,
+        metadata=_inherited_metadata(cron),
     )
 
 
-# The rejection answer, in the HumanInterrupt convention — only sent to a pause whose
-# payload declares it accepts one (``config.allow_ignore``). A graph that merely called
-# ``interrupt("...")`` gets its resume value back raw, where a response list is a crash
-# at best and reads as approval to anything that only checks truthiness.
-APPROVAL_REJECT_COMMAND: dict[str, Any] = {"resume": [{"type": "ignore", "args": None}]}
+APPROVAL_REJECT_MESSAGE = "Approval timed out; rejected on the reviewer's behalf."
 
 # What the approval gate decided for this firing:
 #   fire   — nothing is pending (or the stale pause was written off); run the payload
@@ -81,19 +85,39 @@ APPROVAL_REJECT_COMMAND: dict[str, Any] = {"resume": [{"type": "ignore", "args":
 ApprovalDecision = Literal["fire", "hold", "reject"]
 
 
-def _allows_ignore(interrupt: Any) -> bool:
-    """Whether one materialized interrupt declares ``ignore`` a valid response.
+def _rejection_for(payload: Any) -> dict[str, Any] | None:
+    """The rejection answer one pause understands, or ``None`` if it accepts none.
 
-    Rows look like ``{"value": <payload>, "id": ...}``; the payload is a HumanInterrupt
-    only when it carries ``config.allow_ignore``.
+    Recognises ``HumanInTheLoopMiddleware`` (``action_requests`` + ``review_configs``,
+    resumed with one decision per request) and HumanInterrupt (``config.allow_ignore``).
+    Anything else gets its resume value back raw, where a decision list is a crash at
+    best and reads as approval to whatever only checks truthiness.
     """
-    value = interrupt.get("value") if isinstance(interrupt, dict) else None
-    config = value.get("config") if isinstance(value, dict) else None
-    return bool(config.get("allow_ignore")) if isinstance(config, dict) else False
+    if not isinstance(payload, dict):
+        return None
+
+    requests = payload.get("action_requests")
+    if isinstance(requests, list) and requests:
+        configs = payload.get("review_configs")
+        allowed = {
+            decision
+            for config in (configs if isinstance(configs, list) else [])
+            if isinstance(config, dict)
+            for decision in (config.get("allowed_decisions") or [])
+        }
+        if "reject" not in allowed:
+            return None
+        decisions = [{"type": "reject", "message": APPROVAL_REJECT_MESSAGE} for _ in requests]
+        return {"resume": {"decisions": decisions}}
+
+    config = payload.get("config")
+    if isinstance(config, dict) and config.get("allow_ignore"):
+        return {"resume": [{"type": "ignore", "args": None}]}
+    return None
 
 
-async def _has_rejectable_interrupt(session: AsyncSession, thread_id: str) -> bool:
-    """Whether the pause can be answered with a rejection the graph understands.
+async def _rejection_command(session: AsyncSession, thread_id: str) -> dict[str, Any] | None:
+    """The rejection answer for the pending pause, or ``None`` if it accepts none.
 
     Read from the materialized ``thread_state``: with ``THREAD_STATE_MATERIALIZE`` off
     nothing looks rejectable, which errs toward never resuming work nobody approved.
@@ -102,11 +126,16 @@ async def _has_rejectable_interrupt(session: AsyncSession, thread_id: str) -> bo
     """
     raw = await session.scalar(select(ThreadStateORM.interrupts).where(ThreadStateORM.thread_id == thread_id))
     if not isinstance(raw, dict):
-        return False
-    return any(_allows_ignore(item) for items in raw.values() for item in items or [])
+        return None
+    for items in raw.values():
+        for item in items or []:
+            value = item.get("value") if isinstance(item, dict) else None
+            if (command := _rejection_for(value)) is not None:
+                return command
+    return None
 
 
-async def _resolve_approval(session: AsyncSession, cron: CronORM) -> ApprovalDecision:
+async def _resolve_approval(session: AsyncSession, cron: CronORM) -> tuple[ApprovalDecision, dict[str, Any] | None]:
     """Decide what a thread awaiting a human decision means for this firing.
 
     A HITL pause sets ``thread.status = 'interrupted'`` (a cancel leaves it ``idle``), so
@@ -114,23 +143,19 @@ async def _resolve_approval(session: AsyncSession, cron: CronORM) -> ApprovalDec
     checkpoint, discarding the very context the approver is looking at — so the
     occurrence is skipped while the decision is outstanding.
 
-    Past ``CRON_APPROVAL_TIMEOUT_SECONDS`` an unattended approval must not hold the
-    schedule forever: it is rejected where the pause accepts a rejection, and written off
-    otherwise — the thread is released so the next occurrence can run. Either way the
-    paused runs keep their ``interrupted`` status; that is what happened to them, and
-    terminal runs are not rewritten behind the graph's back.
+    Past ``CRON_APPROVAL_TIMEOUT_SECONDS`` it is rejected where the pause accepts one,
+    and otherwise written off by releasing the thread. Either way the paused runs keep
+    their ``interrupted`` status: terminal runs are not rewritten behind the graph's back.
     """
     if cron.thread_id is None:
-        return "fire"
+        return "fire", None
     owned = (ThreadORM.thread_id == cron.thread_id, ThreadORM.user_id == cron.user_id)
     if await session.scalar(select(ThreadORM.status).where(*owned)) != "interrupted":
-        return "fire"
+        return "fire", None
 
-    # ``run.status = 'interrupted'`` is also how a *cancel* settles (see
-    # api.runs.update_run_status / run_executor's cancel path), so cancel_requested is
-    # what separates "paused for a human" from "someone stopped it". Without that filter
-    # one old cancelled run makes the wait look days long, and the approval that just
-    # paused is timed out on the very first tick.
+    # A cancel also settles as ``interrupted``, so cancel_requested is what separates
+    # "paused for a human" from "someone stopped it" — without it one old cancelled run
+    # makes the wait look days long and times out the approval that just paused.
     paused = (
         RunORM.thread_id == cron.thread_id,
         RunORM.user_id == cron.user_id,
@@ -138,13 +163,11 @@ async def _resolve_approval(session: AsyncSession, cron: CronORM) -> ApprovalDec
         RunORM.cancel_requested.is_(False),
     )
     # Clock from the newest pause, not thread.updated_at: any later touch of the thread
-    # (a metadata patch, a state refresh) would reset that and push the timeout out
-    # indefinitely. Newest rather than oldest because the thread is interrupted *now*, so
-    # it is the latest pause the approver is looking at; earlier rows are prior cycles
-    # already abandoned by a re-fire.
+    # would push the timeout out indefinitely. Newest, because earlier rows are prior
+    # cycles already abandoned by a re-fire.
     paused_at = await session.scalar(select(func.max(RunORM.updated_at)).where(*paused))
     if paused_at is None:
-        return "fire"
+        return "fire", None
 
     now = datetime.now(UTC)
     timeout = settings.cron.CRON_APPROVAL_TIMEOUT_SECONDS
@@ -159,16 +182,16 @@ async def _resolve_approval(session: AsyncSession, cron: CronORM) -> ApprovalDec
             thread_id=cron.thread_id,
             waited_seconds=int(waited),
         )
-        return "hold"
+        return "hold", None
 
-    if await _has_rejectable_interrupt(session, cron.thread_id):
+    if (rejection := await _rejection_command(session, cron.thread_id)) is not None:
         logger.warning(
             "Approval timed out; rejecting on the reviewer's behalf",
             cron_id=cron.cron_id,
             thread_id=cron.thread_id,
             waited_seconds=int(waited),
         )
-        return "reject"
+        return "reject", rejection
 
     await session.execute(update(ThreadORM).where(*owned).values(status="idle", updated_at=now))
     await session.commit()
@@ -178,27 +201,26 @@ async def _resolve_approval(session: AsyncSession, cron: CronORM) -> ApprovalDec
         thread_id=cron.thread_id,
         waited_seconds=int(waited),
     )
-    return "fire"
+    return "fire", None
 
 
-def _is_misfired(cron: CronORM) -> bool:
+def _is_misfired(cron: CronORM, now: datetime) -> bool:
     """Whether this occurrence is too late to be worth firing.
 
-    Guards the restart case: a daily digest whose server was down for a week should not
-    fire at 03:00 on the way back up. A grace of 0 keeps catching up regardless of age.
+    A daily digest whose server was down for a week must not fire at 03:00 on the way
+    back up. A grace of 0 keeps catching up regardless of age.
     """
     grace = settings.cron.CRON_MISFIRE_GRACE_SECONDS
     if grace <= 0 or cron.next_run_date is None:
         return False
-    return (datetime.now(UTC) - cron.next_run_date).total_seconds() > grace
+    return (now - cron.next_run_date).total_seconds() > grace
 
 
 async def validate_cron_user(user_id: str) -> bool:
     """Liveness check run before forging a ``User`` for a firing.
 
-    Accepts any non-empty id by default. Operators wiring a real identity store can
-    replace this module attribute to revoke firing for identities that no longer exist;
-    returning False logs a warning, disables the cron, and skips the firing.
+    Accepts any non-empty id. Replace this module attribute to check a real identity
+    store; returning False disables the cron instead of firing it.
     """
     return bool(user_id)
 
@@ -239,6 +261,9 @@ class CronScheduler:
         (default 60s) for any cron that was due during downtime. The sleep sits in its own
         try so a persistent _tick failure (DB down, session factory not initialised)
         cannot spin the loop at CPU speed.
+
+        The sleep carries up to a second of jitter: instances started together would
+        otherwise poll in lockstep forever, piling every claim query onto the same instant.
         """
         interval = settings.cron.CRON_POLL_INTERVAL_SECONDS
         while self._running:
@@ -249,7 +274,7 @@ class CronScheduler:
             except Exception:
                 logger.exception("Error in cron scheduler tick")
             try:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(interval + random.random())  # noqa: S311 — spread pollers, not security
             except asyncio.CancelledError:
                 break
 
@@ -262,8 +287,9 @@ class CronScheduler:
         tail of a batch past its claim, where another poller would re-claim and re-fire it.
         """
         maker = get_session_maker()
+        claimed_at = datetime.now(UTC)
         async with maker() as claim_session:
-            due_crons = await CronService(claim_session).claim_due_crons(datetime.now(UTC))
+            due_crons = await CronService(claim_session).claim_due_crons(claimed_at)
 
         if not due_crons:
             logger.debug("Cron tick: no jobs due")
@@ -275,7 +301,7 @@ class CronScheduler:
         async def fire(cron: CronORM) -> None:
             async with slots, maker() as session:
                 try:
-                    await self._fire_cron(session, cron)
+                    await self._fire_cron(session, cron, claimed_at)
                 except Exception:
                     logger.exception("Failed to fire cron job", cron_id=cron.cron_id)
                     with contextlib.suppress(Exception):
@@ -284,25 +310,27 @@ class CronScheduler:
         await asyncio.gather(*(fire(cron) for cron in due_crons))
 
     @staticmethod
-    async def _fire_cron(session: AsyncSession, cron: CronORM) -> None:
+    async def _fire_cron(session: AsyncSession, cron: CronORM, claimed_at: datetime | None = None) -> None:
         """Fire one occurrence, then settle the cron: advance, retry, or disable.
 
-        Every exit path settles exactly once, through ``CronService`` — the difference
-        between them is only whether the occurrence is spent and whether it counted as a
-        failure.
+        Every exit path settles exactly once through ``CronService``; they differ only in
+        whether the occurrence is spent and whether it counted as a failure. Both the
+        misfire window and the next occurrence anchor to *claimed_at*, so firing latency
+        cannot walk the schedule forward and skip slots on a sub-minute schedule.
         """
         service = CronService(session)
+        claimed_at = claimed_at or datetime.now(UTC)
 
-        if _is_misfired(cron):
+        if _is_misfired(cron, claimed_at):
             logger.warning(
                 "Skipping cron occurrence past the misfire grace window",
                 cron_id=cron.cron_id,
                 due_at=cron.next_run_date.isoformat() if cron.next_run_date else None,
             )
-            await service.advance_next_run(cron.cron_id)
+            await service.advance_next_run(cron.cron_id, base=claimed_at)
             return
 
-        approval = await _resolve_approval(session, cron)
+        approval, rejection = await _resolve_approval(session, cron)
         if approval == "hold":
             # Keep next_run_date: the next tick re-checks, so the cron resumes on its own
             # once the decision lands.
@@ -318,8 +346,7 @@ class CronScheduler:
             await service.disable_cron(cron.cron_id)
             return
 
-        rejecting = approval == "reject"
-        request = _build_run_request(cron, command=APPROVAL_REJECT_COMMAND if rejecting else None)
+        request = _build_run_request(cron, command=rejection)
         thread_id = cron.thread_id or str(uuid4())
         user = User(identity=cron.user_id, display_name="cron-scheduler", is_authenticated=True)
         drop_thread = should_delete_stateless_thread(cron)
@@ -345,7 +372,7 @@ class CronScheduler:
             if retryable:
                 await service.release_claim(cron.cron_id, failed=True)
             else:
-                await service.advance_next_run(cron.cron_id, failed=exc.status_code != 409)
+                await service.advance_next_run(cron.cron_id, failed=exc.status_code != 409, base=claimed_at)
             return
         except Exception:
             logger.exception("Cron run creation failed unexpectedly", cron_id=cron.cron_id)
@@ -357,14 +384,14 @@ class CronScheduler:
             return
 
         logger.info(
-            "Cron rejected a timed-out approval" if rejecting else "Cron fired run",
+            "Cron rejected a timed-out approval" if rejection else "Cron fired run",
             cron_id=cron.cron_id,
             run_id=run_id,
             thread_id=thread_id,
         )
         if drop_thread:
             schedule_background_cleanup(run_id, thread_id, cron.user_id)
-        await service.advance_next_run(cron.cron_id)
+        await service.advance_next_run(cron.cron_id, base=claimed_at)
 
     @staticmethod
     async def _delete_stateless_thread(thread_id: str, cron: CronORM) -> None:

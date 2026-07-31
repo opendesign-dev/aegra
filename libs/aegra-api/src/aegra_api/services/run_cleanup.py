@@ -22,7 +22,6 @@ logger = structlog.getLogger(__name__)
 # Strong refs so fire-and-forget cleanup tasks survive GC until done.
 background_cleanup_tasks: set[asyncio.Task[None]] = set()
 
-# Alias kept for the name callers read at their catch sites; one definition.
 CLEANUP_ERRORS = TRANSPORT_ERRORS
 
 

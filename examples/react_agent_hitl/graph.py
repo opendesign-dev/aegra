@@ -113,43 +113,49 @@ async def human_approval(state: State) -> Command:
 
     human_response = interrupt(
         {
-            "action_request": {
-                "action": "tool_execution",
-                "args": {tc["name"]: tc.get("args", {}) for tc in tool_message.tool_calls},
-            },
-            "config": {
-                "allow_respond": True,
-                "allow_accept": True,
-                "allow_edit": True,
-                "allow_ignore": True,
-            },
+            "action_requests": [
+                {
+                    "name": tc["name"],
+                    "args": tc.get("args", {}),
+                    "description": f"Approve `{tc['name']}` before it runs.",
+                }
+                for tc in tool_message.tool_calls
+            ],
+            "review_configs": [
+                {
+                    "action_name": tc["name"],
+                    "allowed_decisions": ["approve", "edit", "reject", "respond"],
+                }
+                for tc in tool_message.tool_calls
+            ],
         }
     )
 
-    if not human_response or not isinstance(human_response, list):
+    decisions = human_response.get("decisions") if isinstance(human_response, dict) else None
+    if not decisions or not isinstance(decisions, list):
         return Command(goto=END)
 
-    response = human_response[0]
-    response_type = response.get("type", "")
-    response_args = response.get("args")
+    decision = decisions[0]
+    decision_type = decision.get("type", "")
+    message = decision.get("message")
 
-    if response_type == "accept":
+    if decision_type == "approve":
         return Command(goto="tools")
 
-    elif response_type == "response":
+    if decision_type == "respond":
         tool_responses = _create_tool_cancellations(tool_message.tool_calls, "was interrupted for human input")
-        human_message = HumanMessage(content=str(response_args))
+        human_message = HumanMessage(content=str(message))
         return Command(goto="call_model", update={"messages": tool_responses + [human_message]})
 
-    elif response_type == "edit" and isinstance(response_args, dict) and "args" in response_args:
-        updated_calls = _update_tool_calls(tool_message.tool_calls, response_args)
+    edited = decision.get("edited_action")
+    if decision_type == "edit" and isinstance(edited, dict) and "args" in edited:
+        updated_calls = _update_tool_calls(tool_message.tool_calls, edited)
         updated_message = AIMessage(content=tool_message.content, tool_calls=updated_calls, id=tool_message.id)
         return Command(goto="tools", update={"messages": [updated_message]})
 
-    else:  # ignore or invalid
-        reason = "cancelled by human operator" if response_type == "ignore" else "invalid format"
-        tool_responses = _create_tool_cancellations(tool_message.tool_calls, reason)
-        return Command(goto=END, update={"messages": tool_responses})
+    reason = str(message or "cancelled by human operator") if decision_type == "reject" else "invalid format"
+    tool_responses = _create_tool_cancellations(tool_message.tool_calls, reason)
+    return Command(goto=END, update={"messages": tool_responses})
 
 
 # Define a new graph

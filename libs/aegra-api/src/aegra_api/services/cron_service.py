@@ -41,9 +41,8 @@ logger = structlog.getLogger(__name__)
 def _build_payload(request: CronCreate | CronUpdate) -> dict[str, Any]:
     """Extract run-related fields into the payload JSONB blob.
 
-    Keep this list in sync with the fields _build_run_create maps onto
-    RunCreate — accepting a field here without forwarding it there means
-    every scheduled run silently drops the user's value.
+    Keep in sync with ``cron_scheduler._build_run_request``: accepting a field here
+    without forwarding it there silently drops the user's value on every firing.
     """
     payload: dict[str, Any] = {}
     for field in (
@@ -497,12 +496,13 @@ class CronService:
         await self.session.commit()
         return list(result.scalars().all())
 
-    async def advance_next_run(self, cron_id: str, *, failed: bool = False) -> None:
+    async def advance_next_run(self, cron_id: str, *, failed: bool = False, base: datetime | None = None) -> None:
         """Move a fired cron to its next occurrence, or disable it once spent.
 
-        Re-reads the row ``FOR UPDATE`` instead of trusting the claimed snapshot: an
-        API patch may have changed the schedule or timezone since the claim, and
-        advancing from the stale copy would silently undo it.
+        Re-reads the row ``FOR UPDATE`` rather than trusting the claimed snapshot: an API
+        patch may have changed schedule or timezone since the claim, and advancing from the
+        stale copy would undo it. *base* is the claim instant, so firing latency cannot
+        walk the schedule forward.
         """
         cron = await self.session.scalar(select(CronORM).where(CronORM.cron_id == cron_id).with_for_update())
         if cron is None:
@@ -516,7 +516,7 @@ class CronService:
 
         values = self._settle_values(failed=failed, now=now)
         values["next_run_date"] = _compute_next_run(
-            cron.schedule, now=now, timezone=(cron.payload or {}).get("timezone")
+            cron.schedule, now=base or now, timezone=(cron.payload or {}).get("timezone")
         )
         await self._settle(cron_id, values, failed=failed)
 
@@ -538,8 +538,8 @@ class CronService:
         """Claim release plus failure accounting, shared by every settle path.
 
         The counter moves in SQL so concurrent settles cannot lose an increment, and
-        ``enabled`` is ANDed rather than assigned so hitting the cap can only ever
-        turn a cron off — never resurrect one an API call just paused.
+        ``enabled`` is ANDed rather than assigned: hitting the cap can only turn a cron
+        off, never resurrect one an API call just paused.
         """
         if not failed:
             return {"claimed_until": None, "failure_count": 0, "updated_at": now}

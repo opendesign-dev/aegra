@@ -1118,6 +1118,27 @@ class TestAdvanceNextRun:
         assert "FOR UPDATE" in str(mock_session.scalar.await_args.args[0])
 
     @pytest.mark.asyncio
+    async def test_advances_from_the_claim_instant_not_settle_time(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        """Anchoring to the claim keeps firing latency from walking the schedule forward —
+        on a sub-minute schedule, advancing from settle time skips slots."""
+        cron = _make_cron_orm(schedule="*/5 * * * * *", end_time=None)
+        mock_session.scalar.return_value = cron
+        mock_session.execute.return_value = _settle_result()
+        claimed_at = datetime(2026, 7, 30, 12, 0, 0, tzinfo=UTC)
+
+        with patch(
+            "aegra_api.services.cron_service._compute_next_run",
+            return_value=claimed_at + timedelta(seconds=5),
+        ) as mock_compute:
+            await cron_service.advance_next_run(cron.cron_id, base=claimed_at)
+
+        assert mock_compute.call_args.kwargs.get("now") == claimed_at
+
+    @pytest.mark.asyncio
     async def test_deleted_cron_is_a_no_op(
         self,
         cron_service: CronService,

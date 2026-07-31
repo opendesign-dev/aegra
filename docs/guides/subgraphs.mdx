@@ -61,7 +61,7 @@ from langgraph.types import interrupt
 # Subgraph with an interrupt
 def approval_node(state):
     response = interrupt({"action": "approve_purchase", "amount": state["amount"]})
-    return {"approved": response[0]["type"] == "accept"}
+    return {"approved": response["decisions"][0]["type"] == "approve"}
 ```
 
 The client-side flow is identical to interrupts in a top-level graph. See the [human-in-the-loop guide](/guides/human-in-the-loop).

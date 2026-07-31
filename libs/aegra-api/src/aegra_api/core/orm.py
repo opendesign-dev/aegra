@@ -184,8 +184,6 @@ class Run(Base):
     assistant_id: Mapped[str | None] = mapped_column(Text, ForeignKey("assistant.assistant_id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(Text, server_default=text("'pending'"))
     input: Mapped[dict | None] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
-    # Some environments may not yet have a 'config' column; make it nullable without default to match existing DB.
-    # If migrations add this column later, it's already represented here.
     config: Mapped[dict | None] = mapped_column(JsonbSafe, nullable=True)
     context: Mapped[dict | None] = mapped_column(JsonbSafe, nullable=True)
     output: Mapped[dict | None] = mapped_column(JsonbSafe)

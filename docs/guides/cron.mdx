@@ -220,22 +220,43 @@ Deletion is permanent. When a cron is bound to a thread and that thread is delet
 - **Scheduled runs skip per-request auth handlers.** Creating a cron runs the full auth chain (`crons.create` → `assistants.read` → `threads.read`/`search`), but each *scheduled firing* executes as a background daemon under the cron owner's identity and does not re-dispatch `@auth.on(...)` handlers. Put per-run authorization logic in the graph itself if it must apply to scheduled runs.
 
   Before forging that identity the scheduler calls `aegra_api.services.cron_scheduler.validate_cron_user(user_id)`, which accepts any non-empty id. Replace that module attribute at startup to check your own identity store — returning `False` disables the cron instead of firing it, so a revoked account stops running scheduled work.
-- **Cron metadata is not copied onto fired runs.** `metadata` set on a cron is stored on the cron record for search and filtering, but is not propagated to the runs the cron creates.
 - **Delivery is at-least-once.** Under a crash between firing and advancing the schedule, a run can fire more than once for a single occurrence. Make scheduled work idempotent.
+
+## Run metadata
+
+A cron's `metadata` is assigned to **every run it fires**, matching the SDK's own description of the field ("metadata to assign to the cron job runs"). This is the only channel scheduled work has for provenance: a firing has no request context, and a stateless cron's thread is deleted once the run finishes.
+
+```python
+await client.crons.create(
+    assistant_id="agent",
+    schedule="0 9 * * *",
+    metadata={"tenant_id": "acme", "job": "daily-digest"},
+    input={"messages": [{"role": "user", "content": "Daily digest"}]},
+)
+
+# Every firing is then reachable by the same filter:
+runs = await client.runs.search(metadata={"job": "daily-digest"})
+```
+
+The copy is taken at firing time, so editing a cron's `metadata` later does not rewrite runs that already fired — each run records what was true when it ran. A `metadata` value that is not a JSON object is ignored with a warning rather than blocking the schedule.
+
+<Note>
+Aegra does **not** stamp a `cron_id` onto fired runs, matching LangGraph Platform. If you need to answer "which runs came from this cron", put your own identifier in the cron's `metadata` — the SDK's `Run` type has no cron field, so metadata is the only place it can live.
+</Note>
 
 ## Pending approvals
 
-When a thread-bound cron's run pauses on `interrupt()` (or a static breakpoint), the thread goes `interrupted` and the following occurrences are **skipped rather than queued**: firing anyway would append input and advance the checkpoint, discarding the context the approver is looking at. Resume with `command={"resume": [{"type": "accept" | "edit" | "response" | "ignore", "args": ...}]}` — see [Human-in-the-loop](/guides/human-in-the-loop).
+When a thread-bound cron's run pauses on `interrupt()` (or a static breakpoint), the thread goes `interrupted` and the following occurrences are **skipped rather than queued**: firing anyway would append input and advance the checkpoint, discarding the context the approver is looking at. Resume with `command={"resume": {"decisions": [{"type": "approve" | "edit" | "reject" | "respond", ...}]}}` — see [Human-in-the-loop](/guides/human-in-the-loop).
 
 A cancelled run also settles as `interrupted`, but cancels carry `cancel_requested` and are excluded from the wait, so stopping a run never trips another run's approval timeout.
 
 After `CRON_APPROVAL_TIMEOUT_SECONDS` (default 24h, `0` waits forever) the scheduler stops waiting, so one unattended approval cannot pause a schedule permanently. What it does then depends on what the pause offers:
 
-- **The interrupt declares `config.allow_ignore`** (the [HumanInterrupt](/guides/human-in-the-loop) convention, as in `examples/react_agent_hitl`): the scheduler answers it with `{"resume": [{"type": "ignore", "args": null}]}` — a rejection, delivered through your graph's own rejection path. That occurrence is spent answering the approval rather than starting a new turn, and the resume carries the cron's stored `config`, `context`, breakpoints, and `webhook`.
-- **Anything else** — a plain `interrupt("...")`, a payload without `allow_ignore`, or a static breakpoint: the scheduler will not guess. It releases the thread to `idle` and lets the next occurrence run. The paused runs keep their `interrupted` status, and the checkpoint still holds the pending interrupt, so the next firing re-runs the paused node and asks again.
+- **The interrupt declares a rejection is allowed** — either `review_configs[].allowed_decisions` contains `reject` (the LangChain `HumanInTheLoopMiddleware` convention, as in `examples/react_agent_hitl`), or the older payload carries `config.allow_ignore`: the scheduler answers it with one rejection per pending action, delivered through your graph's own rejection path. That occurrence is spent answering the approval rather than starting a new turn, and the resume carries the cron's stored `config`, `context`, breakpoints, and `webhook`.
+- **Anything else** — a plain `interrupt("...")`, a payload that declares no rejection, or a static breakpoint: the scheduler will not guess. It releases the thread to `idle` and lets the next occurrence run. The paused runs keep their `interrupted` status, and the checkpoint still holds the pending interrupt, so the next firing re-runs the paused node and asks again.
 
 <Warning>
-Auto-rejection is deliberately narrow. A graph that does `value = interrupt("Provide value:")` receives the resume value raw, where an ignore-response list is a crash at best — and reads as approval to any graph that only checks truthiness. Declare `config.allow_ignore` only if your graph handles that response as a rejection.
+Auto-rejection is deliberately narrow. A graph that does `value = interrupt("Provide value:")` receives the resume value raw, where an ignore-response list is a crash at best — and reads as approval to any graph that only checks truthiness. Declare a rejection as allowed only if your graph handles that decision as one.
 </Warning>
 
 <Note>

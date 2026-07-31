@@ -450,6 +450,7 @@ async def test_cron_example_seconds_schedule_fires_on_live_scheduler() -> None:
     thread_id = thread["thread_id"]
     cron_id: str | None = None
 
+    marker = f"cron-fired-{uuid4()}"
     try:
         cron = await _create_thread_cron_via_http(
             thread_id,
@@ -457,6 +458,7 @@ async def test_cron_example_seconds_schedule_fires_on_live_scheduler() -> None:
                 "assistant_id": assistant_id,
                 "schedule": "*/5 * * * * *",
                 "input": {"messages": []},
+                "metadata": {"job": marker},
             },
         )
         cron_id = (await _search_crons_via_http({"assistant_id": assistant_id, "thread_id": thread_id}))[0]["cron_id"]
@@ -467,6 +469,13 @@ async def test_cron_example_seconds_schedule_fires_on_live_scheduler() -> None:
         state = await _wait_for_tick_count(client=client, thread_id=thread_id, minimum=2, attempts=30)
         elog("cron_example state after scheduler fire", state)
         assert _tick_count(state) >= 2
+
+        # The cron's metadata rides onto every firing, so the runs are reachable by it —
+        # the only provenance a scheduled run has.
+        fired = await client.runs.search(metadata={"job": marker})
+        elog("Runs found by inherited cron metadata", {"count": len(fired)})
+        assert fired, "cron-fired runs did not inherit the cron metadata"
+        assert all(run["metadata"]["job"] == marker for run in fired)
     finally:
         if cron_id is not None:
             await client.crons.delete(cron_id)
