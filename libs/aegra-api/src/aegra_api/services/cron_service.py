@@ -20,6 +20,8 @@ from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Cron as CronORM
 from aegra_api.core.orm import get_session
 from aegra_api.core.query import build_order_by, paginate
+from aegra_api.core.scoping import read_scope
+from aegra_api.models.auth import User
 from aegra_api.models.crons import (
     CronCountRequest,
     CronCreate,
@@ -394,10 +396,10 @@ class CronService:
     async def search_crons(
         self,
         request: CronSearchRequest,
-        user_identity: str,
+        user: User,
     ) -> list[CronResponse]:
         """Search cron jobs with filters, pagination, and sorting."""
-        stmt = select(CronORM).where(CronORM.user_id == user_identity)
+        stmt = select(CronORM).where(read_scope(CronORM.user_id, user, resource="crons"))
 
         if request.assistant_id is not None:
             resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)
@@ -425,10 +427,10 @@ class CronService:
     async def count_crons(
         self,
         request: CronCountRequest,
-        user_identity: str,
+        user: User,
     ) -> int:
         """Count cron jobs matching filters."""
-        stmt = select(func.count()).select_from(CronORM).where(CronORM.user_id == user_identity)
+        stmt = select(func.count()).select_from(CronORM).where(read_scope(CronORM.user_id, user, resource="crons"))
 
         if request.assistant_id is not None:
             resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)

@@ -52,6 +52,8 @@ AssistantSortBy = Literal["assistant_id", "graph_id", "name", "created_at", "upd
 
 ThreadSortBy = Literal["thread_id", "status", "created_at", "updated_at", "state_updated_at"]
 
+RunSortBy = Literal["run_id", "thread_id", "assistant_id", "status", "created_at", "updated_at"]
+
 CronSortBy = Literal[
     "cron_id",
     "assistant_id",

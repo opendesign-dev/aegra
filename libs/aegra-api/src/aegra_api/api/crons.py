@@ -204,7 +204,7 @@ async def search_crons(
     value = request.model_dump(exclude_none=True)
     await handle_event(ctx, value)
 
-    return page(response, await service.search_crons(request, user.identity), request)
+    return page(response, await service.search_crons(request, user), request)
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ async def count_crons(
     value = request.model_dump(exclude_none=True)
     await handle_event(ctx, value)
 
-    return await service.count_crons(request, user.identity)
+    return await service.count_crons(request, user)
 
 
 # ---------------------------------------------------------------------------

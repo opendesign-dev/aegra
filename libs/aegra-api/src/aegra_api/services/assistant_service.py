@@ -32,6 +32,7 @@ from aegra_api.core.orm import AssistantVersion as AssistantVersionORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session
 from aegra_api.core.query import build_order_by, paginate
+from aegra_api.core.scoping import owned_or_system, read_scope
 from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
 from aegra_api.models.assistants import AssistantSearchRequest, AssistantVersionsRequest
 from aegra_api.models.auth import User
@@ -264,7 +265,7 @@ class AssistantService(Authenticated):
         filters = await self._dispatch("search", value)
 
         stmt = select(AssistantORM).where(
-            or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system")
+            read_scope(AssistantORM.user_id, self.user, resource="assistants", include_system=True)
         )
         auth_filter = build_metadata_filter(AssistantORM.metadata_dict, filters)
         if auth_filter is not None:
@@ -278,7 +279,7 @@ class AssistantService(Authenticated):
         filters = await self._dispatch("search", value)
 
         stmt = select(AssistantORM).where(
-            or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system")
+            read_scope(AssistantORM.user_id, self.user, resource="assistants", include_system=True)
         )
 
         if request.name:
@@ -314,9 +315,8 @@ class AssistantService(Authenticated):
         value = request.model_dump()
         filters = await self._dispatch("search", value)
 
-        # Include both user's assistants and system assistants (like search_assistants does)
         stmt = select(func.count()).where(
-            or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system")
+            read_scope(AssistantORM.user_id, self.user, resource="assistants", include_system=True)
         )
 
         if request.name:
@@ -349,7 +349,7 @@ class AssistantService(Authenticated):
 
         stmt = select(AssistantORM).where(
             AssistantORM.assistant_id == assistant_id,
-            or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system"),
+            owned_or_system(AssistantORM.user_id, self.user),
         )
         auth_filter = build_metadata_filter(AssistantORM.metadata_dict, filters)
         if auth_filter is not None:
@@ -530,7 +530,7 @@ class AssistantService(Authenticated):
 
         stmt = select(AssistantORM).where(
             AssistantORM.assistant_id == assistant_id,
-            or_(AssistantORM.user_id == self.user.identity, AssistantORM.user_id == "system"),
+            owned_or_system(AssistantORM.user_id, self.user),
         )
         auth_filter = build_metadata_filter(AssistantORM.metadata_dict, filters)
         if auth_filter is not None:

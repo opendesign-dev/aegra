@@ -345,3 +345,46 @@ async def test_runs_client_supplied_id_and_metadata_filter_e2e():
         assert missed.json() == []
 
     await client.threads.delete(thread_id)
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_runs_search_and_count_across_threads_e2e():
+    """POST /runs/search reaches runs the thread-scoped list endpoint cannot."""
+    client = get_e2e_client()
+
+    assistant = await client.assistants.create(graph_id="agent", if_exists="do_nothing")
+    marker = f"e2e-search-{uuid4()}"
+    threads = [await client.threads.create() for _ in range(2)]
+
+    async with httpx.AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http:
+        expected: list[str] = []
+        for thread in threads:
+            created = await http.post(
+                f"/threads/{thread['thread_id']}/runs",
+                json={
+                    "assistant_id": assistant["assistant_id"],
+                    "input": {"messages": [{"role": "user", "content": "hi"}]},
+                    "metadata": {"marker": marker},
+                },
+            )
+            assert created.status_code == 200, created.text
+            expected.append(created.json()["run_id"])
+
+        found = await http.post("/runs/search", json={"metadata": {"marker": marker}, "limit": 100})
+        assert found.status_code == 200, found.text
+        assert sorted(row["run_id"] for row in found.json()) == sorted(expected)
+        elog("Run search across threads", found.json())
+
+        total = await http.post("/runs/count", json={"metadata": {"marker": marker}})
+        assert total.status_code == 200, total.text
+        assert total.json() == len(expected)
+
+        narrowed = await http.post(
+            "/runs/search",
+            json={"metadata": {"marker": marker}, "thread_id": threads[0]["thread_id"]},
+        )
+        assert [row["run_id"] for row in narrowed.json()] == [expected[0]]
+
+    for thread in threads:
+        await client.threads.delete(thread["thread_id"])

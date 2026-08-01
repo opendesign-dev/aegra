@@ -10,8 +10,9 @@ import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from redis import RedisError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 from sse_starlette import EventSourceResponse
 
 from aegra_api.core.active_runs import active_runs
@@ -21,6 +22,7 @@ from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import _get_session_maker, get_session
 from aegra_api.core.query import build_order_by, page, paginate
+from aegra_api.core.scoping import read_scope
 from aegra_api.core.sse import (
     create_end_event,
     filter_stream_modes,
@@ -31,7 +33,7 @@ from aegra_api.core.sse import (
 from aegra_api.models import Run, RunCreate, RunStatus, User
 from aegra_api.models.enums import StreamMode
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
-from aegra_api.models.runs import RunListRequest
+from aegra_api.models.runs import RunCountRequest, RunListRequest, RunSearchRequest
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.run_preparation import _prepare_run
 from aegra_api.services.run_waiters import TERMINAL_STATES, encode_output, heartbeat_wait_body
@@ -212,7 +214,7 @@ async def list_runs(
     """
     stmt = select(RunORM).where(
         RunORM.thread_id == thread_id,
-        RunORM.user_id == user.identity,
+        read_scope(RunORM.user_id, user, resource="runs"),
         *([RunORM.status == query.status] if query.status else []),
     )
     if query.metadata:
@@ -222,6 +224,61 @@ async def list_runs(
     result = await session.scalars(paginate(stmt, limit=query.limit, offset=query.offset))
     runs = [Run.model_validate(row) for row in result.all()]
     return page(response, runs, query)
+
+
+def _run_filters(request: RunCountRequest, user: User) -> list[ColumnElement[bool]]:
+    """Predicates shared by search and count, so a filter cannot apply to only one."""
+    filters: list[ColumnElement[bool]] = [read_scope(RunORM.user_id, user, resource="runs")]
+    if request.thread_id:
+        filters.append(RunORM.thread_id == request.thread_id)
+    if request.assistant_id:
+        filters.append(RunORM.assistant_id == request.assistant_id)
+    if request.status:
+        filters.append(RunORM.status == request.status)
+    if request.metadata:
+        filters.append(RunORM.metadata_dict.op("@>")(request.metadata))
+    return filters
+
+
+@router.post("/runs/search", response_model=None, tags=["Runs"])
+async def search_runs(
+    request: RunSearchRequest,
+    response: Response,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Search runs across threads.
+
+    Answers what the thread-scoped `GET /threads/{thread_id}/runs` cannot, such
+    as every run a cron produced (`metadata={"cron_id": ...}`). A full page sets
+    the `X-Pagination-Next` cursor header. No response model is declared because
+    `select` makes the row shape dynamic.
+    """
+    await handle_event(build_auth_context(user, "runs", "search"), request.model_dump(exclude_none=True))
+
+    stmt = select(RunORM).where(*_run_filters(request, user))
+    stmt = stmt.order_by(
+        *build_order_by(
+            getattr(RunORM, request.sort_by or "created_at"),
+            sort_order=request.sort_order,
+            tiebreak=RunORM.run_id,
+        )
+    )
+    result = await session.scalars(paginate(stmt, limit=request.limit, offset=request.offset))
+    return page(response, [Run.model_validate(row) for row in result.all()], request)
+
+
+@router.post("/runs/count", tags=["Runs"])
+async def count_runs(
+    request: RunCountRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> int:
+    """Count runs matching the same filters `POST /runs/search` accepts."""
+    await handle_event(build_auth_context(user, "runs", "search"), request.model_dump(exclude_none=True))
+
+    total = await session.scalar(select(func.count()).select_from(RunORM).where(*_run_filters(request, user)))
+    return total or 0
 
 
 @router.patch("/threads/{thread_id}/runs/{run_id}", response_model=Run, responses={**NOT_FOUND})

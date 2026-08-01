@@ -100,6 +100,10 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官
 | `join()` | `GET /threads/{id}/runs/{run_id}/join` | ✅ | |
 | `join_stream()` | `GET /threads/{id}/runs/{run_id}/stream` | ✅ | `stream_mode` 真正过滤事件，`cancel_on_disconnect` 生效 |
 | `delete()` | `DELETE /threads/{id}/runs/{run_id}` | ✅ | 额外支持 `force` |
+| —（SDK 无） | `POST /runs/search` | ➕ | Aegra 扩展：跨 thread 搜索，支持 `thread_id`、`assistant_id`、`status`、`metadata`、排序、`select` |
+| —（SDK 无） | `POST /runs/count` | ➕ | 同一组过滤条件 |
+
+SDK 的 `RunsClient` 只有 `list(thread_id, ...)`，没有 `search()`，`list()` 连 `metadata` 参数都没有 —— Platform 侧同样无法跨 thread 查 run。这两个端点是 Aegra 超出 SDK 的部分，动机是 stateless cron：每次触发一个新 thread，不跨 thread 就问不出「这条 schedule 产出的全部 run」。SDK 客户端可经 `client.http.post("/runs/search", ...)` 使用；`list()` 的 `params` 是透传的，所以 `GET` 那条也能用。
 
 ### 3.4 Crons
 
@@ -249,6 +253,18 @@ minor 而非 patch，因为带 schema 迁移，且有两处请求契约收紧：
 | cron `metadata` 下传到触发的 run | 触发的 run 的 `metadata` 从 `{}` 变为 cron metadata + `cron_id` | 无；按 schedule 过滤 run 现在可用 |
 | `assistant_id`/`run_id`/`cron_id` 创建时可选 | 追加字段，省略即由服务端生成；显式传值时重复返回 409 | 无 |
 | `config.configurable.assistant_id` 由服务端写入 | 与 `thread_id`/`run_id` 同为服务端权威值，请求体里的同名键被覆盖 | 依赖该键传自定义值的图改用其他键名 |
+
+## 六之三、升级注意（0.18.0 → 0.18.1）
+
+patch：只有追加，无 schema 迁移，默认行为一字未变。
+
+| 变更 | 影响 | 迁移动作 |
+|:--|:--|:--|
+| 新增 `POST /runs/search`、`POST /runs/count` | 新端点 | 无 |
+| 新增 `<resource>:read_all` 权限 | 未授予时行为与此前完全一致；授予后该资源的 search/count/list 跨 identity 可见 | 无；需要跨用户读时在 `authenticate` 里发这个权限 |
+| `CronService.search_crons` / `count_crons` 第二参数由 `user_identity: str` 改为 `user: User` | 仅影响直接 import 该 service 的代码，HTTP 契约不变 | 传 `User` 而非 `user.identity` |
+
+跨用户读**只覆盖集合查询**（search / count / list）。按 id 取单条、以及所有写操作，无论持有什么权限都仍然只能作用于自己的行 —— 边界是 SQL 列谓词，`@auth.on` handler 返回的 filter 只能在其上 AND 收窄，不能放宽。
 
 ## 七、错误响应契约
 

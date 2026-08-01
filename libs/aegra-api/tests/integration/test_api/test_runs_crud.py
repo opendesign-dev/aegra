@@ -1,7 +1,12 @@
 """Integration tests for runs CRUD operations"""
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from fastapi import FastAPI
+
+from aegra_api.core.auth_deps import get_current_user
+from aegra_api.models.auth import User
 from tests.fixtures.clients import create_test_app, make_client
 from tests.fixtures.database import DummySessionBase
 from tests.fixtures.session_fixtures import BasicSession, override_session_dependency
@@ -966,3 +971,108 @@ class TestRunMetadataWireName:
 
         assert rows[0]["metadata"] == {"tenant": "acme"}
         assert "metadata_dict" not in rows[0]
+
+
+_COUNT_ROWS = 7
+
+
+def _runs_app(*permissions: str) -> FastAPI:
+    """Runs-only app whose caller carries *permissions*, so read scoping is exercised."""
+    app = create_test_app(include_runs=True, include_threads=False)
+    app.dependency_overrides[get_current_user] = lambda: User(identity="test-user", permissions=list(permissions))
+    return app
+
+
+def _capture_stmt(app: FastAPI) -> list[Any]:
+    """Bind a session that records every statement it is handed."""
+    captured: list[Any] = []
+
+    class Session(DummySessionBase):
+        async def scalars(self, stmt: Any) -> Any:
+            captured.append(stmt)
+
+            class Result:
+                def all(self) -> list[Any]:
+                    return []
+
+            return Result()
+
+        async def scalar(self, stmt: Any) -> int:
+            captured.append(stmt)
+            return _COUNT_ROWS
+
+    override_session_dependency(app, Session)
+    return captured
+
+
+def _compiled(path: str, body: dict[str, Any], *permissions: str) -> tuple[int, str, dict[str, Any]]:
+    """POST *body* and return the status plus the SQL and bind params it produced."""
+    app = _runs_app(*permissions)
+    captured = _capture_stmt(app)
+    status = make_client(app).post(path, json=body).status_code
+    compiled = captured[0].compile()
+    return status, str(compiled), dict(compiled.params)
+
+
+class TestSearchRuns:
+    """POST /runs/search reaches across threads."""
+
+    def _sql(self, body: dict[str, Any], *permissions: str) -> tuple[int, str, dict[str, Any]]:
+        return _compiled("/runs/search", body, *permissions)
+
+    def _post_status(self, body: dict[str, Any]) -> int:
+        app = _runs_app()
+        override_session_dependency(app, BasicSession)
+        return make_client(app).post("/runs/search", json=body).status_code
+
+    def test_empty_body_is_allowed(self) -> None:
+        status, sql, _ = self._sql({})
+        assert status == 200
+        assert "user_id" in sql
+
+    def test_metadata_containment_applied(self) -> None:
+        status, sql, params = self._sql({"metadata": {"cron_id": "nightly"}})
+        assert status == 200
+        assert "@>" in sql
+        assert {"cron_id": "nightly"} in params.values()
+
+    def test_thread_and_assistant_filters_applied(self) -> None:
+        _status, sql, params = self._sql({"thread_id": "t-1", "assistant_id": "a-1"})
+        assert "thread_id" in sql and "assistant_id" in sql
+        assert "t-1" in params.values()
+        assert "a-1" in params.values()
+
+    def test_owner_predicate_present_without_permission(self) -> None:
+        _status, _sql, params = self._sql({})
+        assert "test-user" in params.values()
+
+    def test_read_all_permission_drops_the_owner_predicate(self) -> None:
+        _status, _sql, params = self._sql({}, "runs:read_all")
+        assert "test-user" not in params.values()
+
+    def test_other_resource_permission_does_not_widen(self) -> None:
+        _status, _sql, params = self._sql({}, "threads:read_all")
+        assert "test-user" in params.values()
+
+    def test_invalid_status_is_rejected(self) -> None:
+        assert self._post_status({"status": "banana"}) == 422
+
+    def test_sort_by_is_restricted_to_known_columns(self) -> None:
+        assert self._post_status({"sort_by": "user_id"}) == 422
+
+
+class TestCountRuns:
+    """POST /runs/count shares the search filters."""
+
+    def test_returns_scalar_count(self) -> None:
+        app = _runs_app()
+        _capture_stmt(app)
+        resp = make_client(app).post("/runs/count", json={})
+        assert resp.status_code == 200
+        assert resp.json() == _COUNT_ROWS
+
+    def test_applies_the_same_filters_as_search(self) -> None:
+        _status, sql, _params = _compiled("/runs/count", {"metadata": {"k": "v"}, "status": "success"})
+        assert "count" in sql.lower()
+        assert "@>" in sql
+        assert "status" in sql

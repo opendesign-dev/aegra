@@ -20,6 +20,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Assistants CRUD | Supported | Create, read, update, delete, and search assistants. |
 | Client-supplied IDs | Supported | `assistant_id`, `thread_id`, `run_id`, and `cron_id` are all optional on create; the server generates one when omitted. |
 | Metadata filtering | Supported | JSONB containment filters on assistants, threads, runs, and crons. |
+| Cross-user reads | Supported | A caller holding `<resource>:read_all` sees every identity's rows in that resource's search, count, and list. Off by default. |
 | Assistant identity in graphs | Supported | The executing `assistant_id` is pinned onto `config.configurable`. |
 | Assistant versioning | Supported | Each update creates a new version. Pin or roll back. |
 | Graph schemas | Supported | Input, output, state, and config schemas exposed via API. |
@@ -44,6 +45,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Sync wait | Supported | Block until run completes and return final output. |
 | Subgraph streaming | Supported | Stream events from nested subgraphs. |
 | Stateless runs | Supported | Execute without persisting thread state. |
+| Run search across threads | Supported | `POST /runs/search` and `/runs/count` filter by thread, assistant, status, and metadata. Aegra extension — the SDK's `runs.list()` is thread-scoped. |
 | Cron / scheduled jobs | Supported | Trigger runs on a schedule. Standard and seconds-level cron expressions. IANA timezone support. |
 | Cron metadata inheritance | Supported | Fired runs carry the schedule's metadata plus its `cron_id`, so they are filterable per schedule. |
 | Completion webhooks | Supported | Runs and crons accept a `webhook` URL; delivery is an outbox drained with exponential backoff. |

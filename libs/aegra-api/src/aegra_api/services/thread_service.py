@@ -23,6 +23,7 @@ from fastapi import Depends, HTTPException
 from langchain_core.runnables import RunnableConfig
 from sqlalchemy import Select, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from aegra_api.core.auth_deps import get_current_user
 from aegra_api.core.database import db_manager
@@ -30,6 +31,7 @@ from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import ThreadStateCache as ThreadStateCacheORM
 from aegra_api.core.orm import get_session
 from aegra_api.core.query import build_order_by, paginate
+from aegra_api.core.scoping import read_scope
 from aegra_api.models.auth import User
 from aegra_api.models.threads import (
     Superstep,
@@ -66,7 +68,12 @@ class ThreadService(Authenticated):
         return thread
 
     def _scoped(self) -> Select[tuple[ThreadORM]]:
+        """Rows the caller owns — the gate for fetching or mutating one thread."""
         return select(ThreadORM).where(ThreadORM.user_id == self.user.identity)
+
+    def _readable(self) -> ColumnElement[bool]:
+        """Rows the caller may list; reaches past ownership only with ``threads:read_all``."""
+        return read_scope(ThreadORM.user_id, self.user, resource="threads")
 
     def _merge_handler_metadata(self, request: ThreadCreate | ThreadUpdate, value: dict[str, Any]) -> None:
         """Fold metadata an ``@auth.on`` handler injected back into the request."""
@@ -128,9 +135,9 @@ class ThreadService(Authenticated):
         return thread
 
     async def list_all(self) -> list[ThreadORM]:
-        """Every thread the caller owns, unpaginated — matches assistants.list."""
+        """Every thread the caller may read, unpaginated — matches assistants.list."""
         await self._dispatch("search", {})
-        return list((await self.session.scalars(self._scoped())).all())
+        return list((await self.session.scalars(select(ThreadORM).where(self._readable()))).all())
 
     # --- search ---
 
@@ -168,7 +175,8 @@ class ThreadService(Authenticated):
         value = request.model_dump()
         filters = await self._dispatch("search", value)
 
-        stmt = self._filtered(self._scoped(), request, filters).order_by(*self._order_by(request))
+        base = select(ThreadORM).where(self._readable())
+        stmt = self._filtered(base, request, filters).order_by(*self._order_by(request))
         stmt = paginate(stmt, limit=request.limit, offset=request.offset)
         return list((await self.session.scalars(stmt)).all())
 
@@ -177,7 +185,7 @@ class ThreadService(Authenticated):
         value = request.model_dump()
         filters = await self._dispatch("search", value)
 
-        base = select(func.count(ThreadORM.thread_id)).where(ThreadORM.user_id == self.user.identity)
+        base = select(func.count(ThreadORM.thread_id)).where(self._readable())
         return await self.session.scalar(self._filtered(base, request, filters)) or 0
 
     # --- latest state ---

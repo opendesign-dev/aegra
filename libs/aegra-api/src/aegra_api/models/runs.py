@@ -22,6 +22,8 @@ from aegra_api.models.enums import (
     MultitaskStrategy,
     OnCompletionBehavior,
     RunSelectField,
+    RunSortBy,
+    SortOrder,
     StreamMode,
 )
 from aegra_api.utils.metadata import KEY_PATTERN, MAX_KEYS, MAX_VALUE_LEN, validate_metadata
@@ -270,6 +272,33 @@ class RunListRequest(BaseModel):
     metadata: Json[dict[str, Any]] | None = Field(
         None, description="Metadata containment match, given as a JSON object."
     )
+    select: list[RunSelectField] | None = Field(
+        None, description="Return only the listed fields; omit for the full entity."
+    )
+
+
+class RunCountRequest(BaseModel):
+    """Filters shared by run search and count, so the two cannot drift."""
+
+    thread_id: str | None = Field(None, description="Restrict to one thread.")
+    assistant_id: str | None = Field(None, description="Restrict to one assistant.")
+    status: str | None = Field(None, description="Filter by run status.")
+    metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")
+
+    @field_validator("status")
+    @classmethod
+    def check_status(cls, status: str | None) -> str | None:
+        """Reject an unknown status here rather than returning a silently empty page."""
+        return validate_run_status(status) if status is not None else None
+
+
+class RunSearchRequest(RunCountRequest):
+    """Request body for searching runs across threads."""
+
+    limit: int = Field(10, ge=1, le=1000, description="Maximum rows per page.")
+    offset: int = Field(0, ge=0, description="Rows to skip.")
+    sort_by: RunSortBy | None = Field(None, description="Sort field; defaults to created_at.")
+    sort_order: SortOrder | None = Field(None, description="Sort direction; defaults to desc.")
     select: list[RunSelectField] | None = Field(
         None, description="Return only the listed fields; omit for the full entity."
     )

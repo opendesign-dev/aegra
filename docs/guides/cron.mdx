@@ -176,16 +176,14 @@ run = await client.crons.create(
 # every fired run has metadata {"team": "ops", "cron_id": "<cron_id>"}
 ```
 
-That makes "every run this schedule produced" a single query:
+That makes "every run this schedule produced" a single query, across every thread the schedule touched:
 
 ```python
-import json
-
-runs = await client.http.get(
-    f"/threads/{thread_id}/runs",
-    params={"metadata": json.dumps({"cron_id": "<cron_id>"})},
-)
+runs = await client.http.post("/runs/search", json={"metadata": {"cron_id": "<cron_id>"}})
+total = await client.http.post("/runs/count", json={"metadata": {"cron_id": "<cron_id>"}})
 ```
+
+This matters for stateless crons in particular: each firing gets its own thread, so the thread-scoped `GET /threads/{id}/runs` cannot answer the question on its own.
 
 Because the values end up on runs and in OTEL trace attributes, cron metadata obeys the same shape rules as run metadata: keys match `[A-Za-z0-9_-]{1,64}`, values are `str`/`int`/`float`/`bool`, string values cap at 512 characters, and at most 31 keys (the 32nd slot is reserved for `cron_id`, which you cannot set yourself). Violations are rejected at create time rather than at the first firing.
 

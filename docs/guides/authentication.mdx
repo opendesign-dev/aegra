@@ -158,6 +158,47 @@ The `ctx` parameter provides:
 | `dict` | Allow with filters (e.g., `{"metadata": {"team_id": "123"}}`) |
 | Modified `value` | Allow with modified request data |
 
+<Note>
+Handler filters can only **narrow** a query. Every read is already bounded by a
+`user_id` predicate in SQL, and the handler's filter is ANDed on top. Returning
+`None` from a handler does not widen anything — see the section below.
+</Note>
+
+## Cross-user reads
+
+Tenancy in Aegra is enforced in SQL, not by the authorization handler. Handlers are
+default-allow when none is registered (advisory GHSA-m98r-6667-4wq7),
+so "forgot to write a handler" must not mean "no isolation". That column predicate
+is why a handler cannot grant an admin access to other users' data.
+
+To let an operator or admin dashboard read across identities, grant the caller an
+explicit permission from `authenticate`:
+
+| Permission | Widens |
+|------------|--------|
+| `assistants:read_all` | `POST /assistants/search`, `POST /assistants/count`, `GET /assistants` |
+| `threads:read_all` | `POST /threads/search`, `POST /threads/count`, `GET /threads` |
+| `runs:read_all` | `POST /runs/search`, `POST /runs/count`, `GET /threads/{id}/runs` |
+| `crons:read_all` | `POST /runs/crons/search`, `POST /runs/crons/count` |
+
+```python
+@auth.authenticate
+async def authenticate(authorization: str | None) -> dict:
+    user = await verify_token(authorization)
+    permissions = ["threads:read_all", "runs:read_all"] if user["is_admin"] else []
+    return {"identity": user["id"], "permissions": permissions}
+```
+
+Scope and limits:
+
+- **Collection queries only.** These permissions widen search, count, and list. Fetching,
+  updating, or deleting another identity's individual thread, run, assistant, or cron
+  stays impossible no matter which permissions are held.
+- **Per resource.** `runs:read_all` does not imply `threads:read_all`; grant each one
+  you need.
+- **Off by default.** With no permission granted, behavior is exactly as before —
+  callers see only their own rows.
+
 ## Accessing user data in your graph
 
 When auth is enabled, Aegra automatically injects the authenticated user's data into

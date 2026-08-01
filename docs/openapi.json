@@ -3,7 +3,7 @@
   "info": {
     "title": "Aegra",
     "description": "Production-ready Agent Protocol server",
-    "version": "0.18.0"
+    "version": "0.18.1"
   },
   "paths": {
     "/info": {
@@ -2393,6 +2393,91 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/search": {
+      "post": {
+        "tags": [
+          "Thread Runs",
+          "Runs"
+        ],
+        "summary": "Search Runs",
+        "description": "Search runs across threads.\n\nAnswers what the thread-scoped `GET /threads/{thread_id}/runs` cannot, such\nas every run a cron produced (`metadata={\"cron_id\": ...}`). A full page sets\nthe `X-Pagination-Next` cursor header. No response model is declared because\n`select` makes the row shape dynamic.",
+        "operationId": "search_runs_runs_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runs/count": {
+      "post": {
+        "tags": [
+          "Thread Runs",
+          "Runs"
+        ],
+        "summary": "Count Runs",
+        "description": "Count runs matching the same filters `POST /runs/search` accepts.",
+        "operationId": "count_runs_runs_count_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunCountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "integer",
+                  "title": "Response Count Runs Runs Count Post"
                 }
               }
             }
@@ -5629,6 +5714,62 @@
         "title": "RunCommand",
         "description": "Mirrors the SDK's ``Command``: navigate, update state, or resume.\n\nDeclared instead of a bare dict so a misspelled key is a 422 rather than a\nvalue ``map_command_to_langgraph`` silently drops \u2014 a resume that never\nresumes is indistinguishable from one that did nothing."
       },
+      "RunCountRequest": {
+        "properties": {
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id",
+            "description": "Restrict to one thread."
+          },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Id",
+            "description": "Restrict to one assistant."
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Filter by run status."
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Metadata containment match."
+          }
+        },
+        "type": "object",
+        "title": "RunCountRequest",
+        "description": "Filters shared by run search and count, so the two cannot drift."
+      },
       "RunCreate": {
         "properties": {
           "assistant_id": {
@@ -6002,6 +6143,139 @@
         ],
         "title": "RunCreate",
         "description": "Request model for creating runs"
+      },
+      "RunSearchRequest": {
+        "properties": {
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id",
+            "description": "Restrict to one thread."
+          },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Id",
+            "description": "Restrict to one assistant."
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Filter by run status."
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Metadata containment match."
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "description": "Maximum rows per page.",
+            "default": 10
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "description": "Rows to skip.",
+            "default": 0
+          },
+          "sort_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "run_id",
+                  "thread_id",
+                  "assistant_id",
+                  "status",
+                  "created_at",
+                  "updated_at"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort By",
+            "description": "Sort field; defaults to created_at."
+          },
+          "sort_order": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "asc",
+                  "desc"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort Order",
+            "description": "Sort direction; defaults to desc."
+          },
+          "select": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "run_id",
+                    "thread_id",
+                    "assistant_id",
+                    "created_at",
+                    "updated_at",
+                    "status",
+                    "metadata",
+                    "kwargs",
+                    "multitask_strategy"
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Select",
+            "description": "Return only the listed fields; omit for the full entity."
+          }
+        },
+        "type": "object",
+        "title": "RunSearchRequest",
+        "description": "Request body for searching runs across threads."
       },
       "RunStatus": {
         "properties": {
