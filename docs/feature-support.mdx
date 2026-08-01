@@ -99,6 +99,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Feature | Status | Notes |
 |:--|:--|:--|
 | OpenTelemetry tracing | Supported | OTLP fan-out to multiple backends simultaneously. |
+| Per-assistant trace dimension | Supported | Traces carry `assistant_id` alongside `run_id`, `thread_id`, and `graph_id`, so assistants sharing a graph can be compared separately. |
 | Langfuse integration | Supported | First-class support with environment variable config. |
 | Arize Phoenix integration | Supported | Local debugging and evaluation. |
 | Generic OTLP | Supported | Jaeger, Honeycomb, Datadog, or any OTLP backend. |

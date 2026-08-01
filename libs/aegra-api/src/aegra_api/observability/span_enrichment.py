@@ -124,16 +124,42 @@ def set_trace_context(
     _trace_attrs.set(attrs or None)
 
 
+def run_system_metadata(
+    run_id: str,
+    thread_id: str,
+    graph_id: str,
+    *,
+    assistant_id: str | None = None,
+    original_request_id: str | None = None,
+) -> dict[str, str | int | float | bool]:
+    """Runtime keys the server owns on every run trace.
+
+    Shared by the local and worker paths so both emit the same dimensions.
+    Optional keys are omitted rather than emitted empty — a blank
+    ``langfuse.trace.metadata.assistant_id`` on every stateless run would be
+    noise, not signal.
+    """
+    system: dict[str, str | int | float | bool] = {
+        "run_id": run_id,
+        "thread_id": thread_id,
+        "graph_id": graph_id,
+    }
+    if assistant_id:
+        system["assistant_id"] = assistant_id
+    if original_request_id:
+        system["original_request_id"] = original_request_id
+    return system
+
+
 def merge_run_metadata(
     extra_metadata: dict[str, Any] | None,
     system_metadata: dict[str, str | int | float | bool],
 ) -> dict[str, str | int | float | bool]:
     """Merge user-supplied metadata with system-injected runtime keys.
 
-    Any key already present in ``system_metadata`` (currently
-    ``run_id``, ``thread_id``, ``graph_id``, and ``original_request_id``
-    on the worker path) wins on collision: the system value is kept and
-    a warning is logged so the override is visible during debugging
+    Any key already present in ``system_metadata`` (see
+    :func:`run_system_metadata`) wins on collision: the system value is kept
+    and a warning is logged so the override is visible during debugging
     without breaking the request. ``system_metadata`` is the single
     source of truth for "what the runtime owns" — there is no separate
     reserved-key registry to drift out of sync with caller behavior.
@@ -173,6 +199,7 @@ def make_run_trace_context(
     graph_id: str,
     user_identity: str | None,
     *,
+    assistant_id: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
 ) -> contextvars.Context:
     """Return an isolated context copy with trace context pre-set for a run.
@@ -186,14 +213,10 @@ def make_run_trace_context(
     worker path's ``_restore_trace_context``.
 
     User-supplied ``extra_metadata`` is merged with the system runtime keys
-    (``run_id``, ``thread_id``, ``graph_id``) for the OTEL attributes.
-    System keys win on collision — see :func:`merge_run_metadata`.
+    from :func:`run_system_metadata` for the OTEL attributes. System keys win
+    on collision — see :func:`merge_run_metadata`.
     """
-    system_metadata: dict[str, str | int | float | bool] = {
-        "run_id": run_id,
-        "thread_id": thread_id,
-        "graph_id": graph_id,
-    }
+    system_metadata = run_system_metadata(run_id, thread_id, graph_id, assistant_id=assistant_id)
     metadata = merge_run_metadata(extra_metadata, system_metadata)
     ctx = contextvars.copy_context()
     ctx.run(

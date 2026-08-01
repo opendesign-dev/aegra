@@ -17,8 +17,32 @@ from aegra_api.observability.span_enrichment import (
     _trace_attrs,
     make_run_trace_context,
     merge_run_metadata,
+    run_system_metadata,
     set_trace_context,
 )
+
+
+class TestRunSystemMetadata:
+    """Tests for the runtime keys both execution paths share."""
+
+    def test_always_carries_the_run_identifiers(self) -> None:
+        assert run_system_metadata("run-1", "thread-1", "my_graph") == {
+            "run_id": "run-1",
+            "thread_id": "thread-1",
+            "graph_id": "my_graph",
+        }
+
+    def test_assistant_id_included_when_given(self) -> None:
+        system = run_system_metadata("run-1", "thread-1", "my_graph", assistant_id="asst-1")
+
+        assert system["assistant_id"] == "asst-1"
+
+    def test_assistant_id_omitted_when_absent(self) -> None:
+        """Stateless runs have no assistant; an empty attribute would be noise."""
+        assert "assistant_id" not in run_system_metadata("run-1", "thread-1", "my_graph", assistant_id=None)
+
+    def test_empty_original_request_id_omitted(self) -> None:
+        assert "original_request_id" not in run_system_metadata("run-1", "thread-1", "my_graph", original_request_id="")
 
 
 class TestSetTraceContext:
@@ -227,6 +251,33 @@ class TestMakeRunTraceContext:
         assert attrs["langfuse.trace.metadata.run_id"] == "run-1"
         assert attrs["langfuse.trace.metadata.thread_id"] == "thread-1"
         assert attrs["langfuse.trace.metadata.graph_id"] == "my_graph"
+
+    def test_assistant_id_reaches_trace_metadata(self) -> None:
+        """Langfuse can group and filter by assistant, not just by graph."""
+        ctx = make_run_trace_context("run-1", "thread-1", "my_graph", "user-1", assistant_id="asst-1")
+
+        attrs = ctx.run(_trace_attrs.get)
+        assert attrs["langfuse.trace.metadata.assistant_id"] == "asst-1"
+
+    def test_assistant_id_omitted_when_absent(self) -> None:
+        ctx = make_run_trace_context("run-1", "thread-1", "my_graph", "user-1")
+
+        attrs = ctx.run(_trace_attrs.get)
+        assert "langfuse.trace.metadata.assistant_id" not in attrs
+
+    def test_extra_metadata_cannot_override_assistant_id(self) -> None:
+        """assistant_id is server-authoritative, like the other identity keys."""
+        ctx = make_run_trace_context(
+            "run-1",
+            "thread-1",
+            "my_graph",
+            "user-1",
+            assistant_id="asst-actual",
+            extra_metadata={"assistant_id": "asst-spoofed"},
+        )
+
+        attrs = ctx.run(_trace_attrs.get)
+        assert attrs["langfuse.trace.metadata.assistant_id"] == "asst-actual"
 
     def test_does_not_pollute_caller_context(self) -> None:
         """Calling make_run_trace_context() does not mutate the caller's context."""
@@ -474,6 +525,26 @@ class TestSpanEnrichmentEndToEnd:
         assert attrs["langfuse.trace.metadata.retries"] == 3
         assert attrs["langfuse.trace.metadata.ratio"] == 0.5
         assert attrs["langfuse.trace.metadata.flag"] is True
+
+    def test_assistant_id_reaches_root_span_attributes(self) -> None:
+        """The assistant dimension survives the whole pipeline, not just the context var.
+
+        Added alongside ``graph_id`` rather than replacing it: several assistants
+        can share one graph, so both are needed to tell them apart in Langfuse.
+        """
+        ctx = make_run_trace_context(
+            run_id="run-1",
+            thread_id="thread-1",
+            graph_id="my_graph",
+            user_identity="user-1",
+            assistant_id="asst-1",
+        )
+
+        self._emit_root_span(ctx)
+
+        attrs = dict(self.exporter.get_finished_spans()[0].attributes or {})
+        assert attrs["langfuse.trace.metadata.assistant_id"] == "asst-1"
+        assert attrs["langfuse.trace.metadata.graph_id"] == "my_graph"
 
     def test_reserved_collision_system_value_wins_on_root_span(self) -> None:
         """User attempt to overwrite a reserved key is dropped; non-collision

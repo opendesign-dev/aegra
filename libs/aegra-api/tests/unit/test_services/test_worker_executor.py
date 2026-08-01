@@ -38,10 +38,11 @@ def _make_run_job(
     run_id: str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
     thread_id: str = "11111111-2222-3333-4444-555555555555",
     graph_id: str = "test-graph",
+    assistant_id: str | None = None,
 ) -> RunJob:
     """Create a minimal RunJob for testing."""
     return RunJob(
-        identity=RunIdentity(run_id=run_id, thread_id=thread_id, graph_id=graph_id),
+        identity=RunIdentity(run_id=run_id, thread_id=thread_id, graph_id=graph_id, assistant_id=assistant_id),
         user=User(identity="test-user"),
         execution=RunExecution(),
         behavior=RunBehavior(),
@@ -429,6 +430,16 @@ class TestRestoreTraceContext:
 
         metadata = mock_set_trace.call_args.kwargs["metadata"]
         assert set(metadata.keys()) == {"run_id", "thread_id", "graph_id", "original_request_id"}
+
+    def test_assistant_id_reaches_trace_metadata(self) -> None:
+        """The worker path carries the same assistant dimension as the local one."""
+        job = _make_run_job(assistant_id="asst-1")
+        trace = {"correlation_id": "req-abc"}
+
+        with patch(f"{MODULE}.set_trace_context") as mock_set_trace:
+            _restore_trace_context("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", job, trace)
+
+        assert mock_set_trace.call_args.kwargs["metadata"]["assistant_id"] == "asst-1"
 
     def test_missing_correlation_id_omits_original_request_id(self) -> None:
         """Requests without an upstream correlation-id header should not produce

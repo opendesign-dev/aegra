@@ -15,9 +15,9 @@ async def _empty_async_gen():
     yield  # noqa: RET504 — makes this an async generator
 
 
-def _make_job(run_id: str = "run-1") -> RunJob:
+def _make_job(run_id: str = "run-1", *, assistant_id: str | None = None) -> RunJob:
     return RunJob(
-        identity=RunIdentity(run_id=run_id, thread_id="thread-1", graph_id="graph-1"),
+        identity=RunIdentity(run_id=run_id, thread_id="thread-1", graph_id="graph-1", assistant_id=assistant_id),
         user=User(identity="user-1"),
         execution=RunExecution(input_data={"msg": "hello"}),
     )
@@ -42,6 +42,23 @@ class TestLocalExecutor:
             assert "run-1" in active_runs
             task = active_runs.pop("run-1")
             task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_submit_passes_assistant_id_to_trace_context(self) -> None:
+        """The executing assistant becomes a trace dimension, not just the graph."""
+        executor = LocalExecutor()
+
+        with (
+            patch("aegra_api.services.run_executor.execute_run", AsyncMock()),
+            patch("aegra_api.services.local_executor.make_run_trace_context", return_value=None) as mock_trace,
+        ):
+            await executor.submit(_make_job(assistant_id="asst-1"))
+
+            from aegra_api.core.active_runs import active_runs
+
+            active_runs.pop("run-1").cancel()
+
+        assert mock_trace.call_args.kwargs["assistant_id"] == "asst-1"
 
     @pytest.mark.asyncio
     async def test_wait_for_completion_returns_on_done(self) -> None:

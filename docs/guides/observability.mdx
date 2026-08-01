@@ -135,6 +135,7 @@ The dot exclusion is deliberate: keys are stored under the `langfuse.trace.metad
 Aegra injects a small number of runtime keys into the same metadata stream so they're filterable alongside user-supplied attributes:
 
 - `run_id`, `thread_id`, `graph_id` — always present
+- `assistant_id` — present when the run executes an assistant; omitted for stateless runs that bind no assistant. Filter on it to separate assistants that share one graph but differ in config (cost, latency, and quality per assistant rather than per graph)
 - `original_request_id` — present on the worker path when an HTTP correlation-id was supplied
 
 If the request `metadata` contains a key already populated by the runtime, the system value wins, the user value is dropped, and a warning is logged from `aegra_api.observability.span_enrichment`. This makes the OTEL view a reliable join key with logs and the runs table; user audit fidelity is preserved by keeping the original payload in `execution_params.run_metadata`.
