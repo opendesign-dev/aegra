@@ -56,6 +56,22 @@ Aegra accepts the graph ID directly in `assistant_id` for cron creation and reso
 
 By default, each stateless cron run deletes its ephemeral thread after the run completes, including the immediate first run that is triggered when the cron is created.
 
+### Choosing your own cron ID
+
+`cron_id` is optional. Omit it and the server generates a UUID; pass one and the cron is addressable under a name you already know, so a redeploy can create-or-detect instead of accumulating duplicates. A taken ID returns `409`.
+
+```python
+await client.http.post(
+    "/runs/crons",
+    json={
+        "assistant_id": "agent",
+        "cron_id": "nightly-report",
+        "schedule": "0 9 * * *",
+        "input": {"messages": [{"role": "user", "content": "Good morning report"}]},
+    },
+)
+```
+
 <Note>
   The snippets below assume you are inside an `async def` function with an initialized `client`.
 </Note>
@@ -146,6 +162,33 @@ The server stores the timezone alongside the cron record and converts to UTC int
   When updating a cron's schedule without changing its timezone, the existing timezone is preserved automatically.
 </Note>
 
+## Metadata and fired runs
+
+`metadata` set on a cron is inherited by every run the schedule fires, with the schedule's own `cron_id` stamped on top:
+
+```python
+run = await client.crons.create(
+    assistant_id="agent",
+    schedule="0 9 * * *",
+    metadata={"team": "ops"},
+    input={"messages": [{"role": "user", "content": "Good morning report"}]},
+)
+# every fired run has metadata {"team": "ops", "cron_id": "<cron_id>"}
+```
+
+That makes "every run this schedule produced" a single query:
+
+```python
+import json
+
+runs = await client.http.get(
+    f"/threads/{thread_id}/runs",
+    params={"metadata": json.dumps({"cron_id": "<cron_id>"})},
+)
+```
+
+Because the values end up on runs and in OTEL trace attributes, cron metadata obeys the same shape rules as run metadata: keys match `[A-Za-z0-9_-]{1,64}`, values are `str`/`int`/`float`/`bool`, string values cap at 512 characters, and at most 31 keys (the 32nd slot is reserved for `cron_id`, which you cannot set yourself). Violations are rejected at create time rather than at the first firing.
+
 ## Listing and searching
 
 ```python
@@ -154,6 +197,9 @@ crons = await client.crons.search(assistant_id="agent")
 
 # Search by thread
 crons = await client.crons.search(thread_id="<thread_id>")
+
+# Search by metadata (JSONB containment)
+crons = await client.crons.search(metadata={"team": "ops"})
 
 # Count matching crons
 total = await client.crons.count(assistant_id="agent")
@@ -196,5 +242,4 @@ Deletion is permanent. When a cron is bound to a thread and that thread is delet
 ## Limitations
 
 - **Scheduled runs skip per-request auth handlers.** Creating a cron runs the full auth chain (`crons.create` → `assistants.read` → `threads.read`/`search`), but each *scheduled firing* executes as a background daemon under the cron owner's identity and does not re-dispatch `@auth.on(...)` handlers. Put per-run authorization logic in the graph itself if it must apply to scheduled runs.
-- **Cron metadata is not copied onto fired runs.** `metadata` set on a cron is stored on the cron record for search and filtering, but is not propagated to the runs the cron creates.
 - **Delivery is at-least-once.** Under a crash between firing and advancing the schedule, a run can fire more than once for a single occurrence. Make scheduled work idempotent.

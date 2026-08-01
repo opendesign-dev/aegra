@@ -46,15 +46,28 @@ asyncio.run(main())
 
 ### Idempotent creation
 
-Use `if_exists` to avoid errors when the assistant already exists:
+`assistant_id` is optional — omit it and the server generates one. Pass your own together with `if_exists` to make creation repeatable across deploys:
 
 ```python
 assistant = await client.assistants.create(
     graph_id="agent",
+    assistant_id="support-agent",  # optional; generated when omitted
     name="My Agent",
     if_exists="do_nothing",  # Returns existing if already created
 )
 ```
+
+### Reading the assistant from inside a graph
+
+The executing assistant is pinned onto the run config, so a node can tell which assistant it is running as:
+
+```python
+def my_node(state: State, config: RunnableConfig) -> dict:
+    assistant_id = config["configurable"]["assistant_id"]
+    ...
+```
+
+`thread_id`, `run_id`, and `assistant_id` are server-authoritative: a value supplied in the request body's `config.configurable` is overwritten, never honored.
 
 <Note>
   The snippets below assume you are inside an `async def` function with an initialized `client` — see the example above.

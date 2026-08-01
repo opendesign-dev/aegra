@@ -17,12 +17,14 @@ def _make_cron(
     thread_id: str | None = None,
     on_run_completed: str | None = None,
     payload: dict | None = None,
+    metadata: dict | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         cron_id="cron-001",
         assistant_id=assistant_id,
         thread_id=thread_id,
         on_run_completed=on_run_completed,
+        metadata_dict=metadata or {},
         payload=payload
         if payload is not None
         else {"input": {"messages": [{"role": "user", "content": "hi"}]}, "config": {"k": "v"}},

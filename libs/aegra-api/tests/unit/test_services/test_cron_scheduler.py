@@ -26,6 +26,7 @@ def _make_cron_orm(
     user_id: str = "test-user",
     schedule: str = "*/5 * * * *",
     payload: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
     enabled: bool = True,
     on_run_completed: str | None = None,
     end_time: datetime | None = None,
@@ -40,6 +41,7 @@ def _make_cron_orm(
     cron.user_id = user_id
     cron.schedule = schedule
     cron.payload = payload if payload is not None else {"input": {"msg": "tick"}}
+    cron.metadata_dict = metadata or {}
     cron.enabled = enabled
     cron.on_run_completed = on_run_completed
     cron.end_time = end_time
@@ -491,6 +493,36 @@ class TestFireCron:
             assert run_request.interrupt_before == ["step1"]
             assert run_request.stream_mode == "values"
             assert run_request.checkpoint == {"checkpoint_id": "abc", "checkpoint_ns": ""}
+
+    @pytest.mark.asyncio
+    async def test_fired_run_inherits_cron_metadata(self) -> None:
+        """Runs carry the schedule's metadata plus its id, so a metadata filter
+        can select every run one cron produced."""
+        cron = _make_cron_orm(cron_id="nightly", metadata={"tenant": "acme"}, end_time=None)
+        cron.end_time = None
+
+        with patch(
+            "aegra_api.services.cron_scheduler._prepare_run",
+            new_callable=AsyncMock,
+        ) as mock_prepare:
+            mock_prepare.return_value = ("run-1", Mock(), None)
+            await CronScheduler()._fire_cron(AsyncMock(), cron)
+
+        assert mock_prepare.call_args[0][2].metadata == {"tenant": "acme", "cron_id": "nightly"}
+
+    @pytest.mark.asyncio
+    async def test_fired_run_metadata_is_only_the_cron_id_when_cron_has_none(self) -> None:
+        cron = _make_cron_orm(cron_id="nightly", end_time=None)
+        cron.end_time = None
+
+        with patch(
+            "aegra_api.services.cron_scheduler._prepare_run",
+            new_callable=AsyncMock,
+        ) as mock_prepare:
+            mock_prepare.return_value = ("run-1", Mock(), None)
+            await CronScheduler()._fire_cron(AsyncMock(), cron)
+
+        assert mock_prepare.call_args[0][2].metadata == {"cron_id": "nightly"}
 
 
 # ---------------------------------------------------------------------------

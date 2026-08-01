@@ -5,8 +5,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from aegra_api.models.enums import CronSelectField, CronSortBy, Durability, SortOrder
+from aegra_api.models.enums import All, CronSelectField, CronSortBy, Durability, SortOrder
 from aegra_api.settings import settings
+from aegra_api.utils.metadata import CRON_ID_KEY, MAX_KEYS, validate_metadata
 from aegra_api.utils.webhooks import WEBHOOK_MAX_LEN, validate_webhook_url
 
 # Field length caps. Keep these conservative; cron metadata is small by nature.
@@ -26,17 +27,32 @@ def _validate_payload_size(model: BaseModel) -> None:
         raise ValueError(f"cron payload exceeds {cap} bytes")
 
 
+def _validate_cron_metadata(metadata: dict[str, Any] | None) -> None:
+    """Hold cron metadata to the rule its fired runs are validated against.
+
+    One slot short of the run cap, because firing stamps ``cron_id`` on top.
+    """
+    if metadata and CRON_ID_KEY in metadata:
+        raise ValueError(f"metadata key {CRON_ID_KEY!r} is reserved")
+    validate_metadata(metadata, max_keys=MAX_KEYS - 1)
+
+
 class CronCreate(BaseModel):
     """Request body for creating a cron job (stateless or thread-bound)."""
 
     assistant_id: str = Field(..., max_length=_STR_FIELD_MAX_LEN)
+    cron_id: str | None = Field(
+        None,
+        max_length=_STR_FIELD_MAX_LEN,
+        description="Client-provided id for idempotent creation; server-generated when omitted.",
+    )
     schedule: str = Field(..., max_length=_SCHEDULE_MAX_LEN)
     input: dict[str, Any] | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = Field(None, description="Inherited by every run this schedule fires.")
     config: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
-    interrupt_before: Literal["*"] | list[str] | None = None
-    interrupt_after: Literal["*"] | list[str] | None = None
+    interrupt_before: All | list[str] | None = None
+    interrupt_after: All | list[str] | None = None
     webhook: str | None = Field(None, max_length=WEBHOOK_MAX_LEN)
     on_run_completed: OnRunCompleted | None = None
     multitask_strategy: str | None = Field(None, max_length=_STR_FIELD_MAX_LEN)
@@ -52,6 +68,7 @@ class CronCreate(BaseModel):
     @model_validator(mode="after")
     def _check(self) -> "CronCreate":
         self.webhook = validate_webhook_url(self.webhook)
+        _validate_cron_metadata(self.metadata)
         if isinstance(self.stream_mode, str) and len(self.stream_mode) > _STREAM_MODE_MAX_LEN:
             raise ValueError("stream_mode is too long")
         if self.end_time is not None:
@@ -90,12 +107,12 @@ class CronUpdate(BaseModel):
     schedule: str | None = Field(None, max_length=_SCHEDULE_MAX_LEN)
     end_time: datetime | None = None
     input: dict[str, Any] | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = Field(None, description="Inherited by every run this schedule fires.")
     config: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
     webhook: str | None = Field(None, max_length=WEBHOOK_MAX_LEN)
-    interrupt_before: Literal["*"] | list[str] | None = None
-    interrupt_after: Literal["*"] | list[str] | None = None
+    interrupt_before: All | list[str] | None = None
+    interrupt_after: All | list[str] | None = None
     on_run_completed: OnRunCompleted | None = None
     multitask_strategy: str | None = Field(None, max_length=_STR_FIELD_MAX_LEN)
     enabled: bool | None = None
@@ -109,6 +126,7 @@ class CronUpdate(BaseModel):
     @model_validator(mode="after")
     def _check(self) -> "CronUpdate":
         self.webhook = validate_webhook_url(self.webhook)
+        _validate_cron_metadata(self.metadata)
         if isinstance(self.stream_mode, str) and len(self.stream_mode) > _STREAM_MODE_MAX_LEN:
             raise ValueError("stream_mode is too long")
         if self.end_time is not None:

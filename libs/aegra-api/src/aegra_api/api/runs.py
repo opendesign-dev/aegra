@@ -205,7 +205,7 @@ async def list_runs(
     Returns runs ordered by creation time (newest first). Use `status` to
     filter and `limit`/`offset` to paginate; a full page sets the
     `X-Pagination-Next` cursor header. Pass `select` to return only the listed
-    fields.
+    fields, or `metadata` (a JSON object) to match on the run's metadata.
 
     Declared without a response model because `select` makes the row shape
     dynamic — full entities when omitted, projected dicts when given.
@@ -215,6 +215,9 @@ async def list_runs(
         RunORM.user_id == user.identity,
         *([RunORM.status == query.status] if query.status else []),
     )
+    if query.metadata:
+        # JSONB containment, served by idx_runs_metadata_gin.
+        stmt = stmt.where(RunORM.metadata_dict.op("@>")(query.metadata))
     stmt = stmt.order_by(*build_order_by(RunORM.created_at, sort_order="desc", tiebreak=RunORM.run_id))
     result = await session.scalars(paginate(stmt, limit=query.limit, offset=query.offset))
     runs = [Run.model_validate(row) for row in result.all()]

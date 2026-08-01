@@ -224,10 +224,16 @@ async def _prepare_run(
     ``multitask_strategy="enqueue"`` persists the run undispatched; the run that
     currently owns the thread hands it over when it finalizes.
     """
-    await _validate_resume_command(session, thread_id, request.command)
+    # ``exclude_unset`` keeps "did the client send resume?" answerable downstream:
+    # a resume of ``None`` is legitimate, so presence of the key is the signal.
+    command = request.command.model_dump(exclude_unset=True) if request.command else None
+
+    await _validate_resume_command(session, thread_id, command)
     dispatch = await multitask.resolve(session, thread_id, request.multitask_strategy)
 
-    run_id = str(uuid4())
+    run_id = request.run_id or str(uuid4())
+    if request.run_id and await session.scalar(select(RunORM).where(RunORM.run_id == run_id)):
+        raise HTTPException(409, f"Run '{run_id}' already exists")
     langgraph_service = get_langgraph_service()
     logger.info(
         "Scheduling run",
@@ -282,7 +288,12 @@ async def _prepare_run(
 
     # Build the RunJob before persisting so we can store execution_params
     job = RunJob(
-        identity=RunIdentity(run_id=run_id, thread_id=thread_id, graph_id=assistant.graph_id),
+        identity=RunIdentity(
+            run_id=run_id,
+            thread_id=thread_id,
+            graph_id=assistant.graph_id,
+            assistant_id=resolved_assistant_id,
+        ),
         user=user,
         execution=RunExecution(
             input_data=request.input,  # preserve None so LangGraph resumes from checkpoint
@@ -290,7 +301,7 @@ async def _prepare_run(
             context=context,
             stream_mode=request.stream_mode,
             checkpoint=request.checkpoint,
-            command=request.command,
+            command=command,
             event_streaming_v2=event_streaming_v2,
             durability=request.durability,
         ),

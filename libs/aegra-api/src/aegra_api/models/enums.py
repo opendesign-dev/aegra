@@ -31,6 +31,10 @@ OnCompletionBehavior = Literal["delete", "keep"]
 
 IfNotExists = Literal["create", "reject"]
 
+# Wildcard selector for interrupt_before / interrupt_after.
+All = Literal["*"]
+ALL_NODES: str = get_args(All)[0]
+
 # When checkpoints are flushed relative to the step that produced them.
 Durability = Literal["sync", "async", "exit"]
 

@@ -18,6 +18,9 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Feature | Status | Notes |
 |:--|:--|:--|
 | Assistants CRUD | Supported | Create, read, update, delete, and search assistants. |
+| Client-supplied IDs | Supported | `assistant_id`, `thread_id`, `run_id`, and `cron_id` are all optional on create; the server generates one when omitted. |
+| Metadata filtering | Supported | JSONB containment filters on assistants, threads, runs, and crons. |
+| Assistant identity in graphs | Supported | The executing `assistant_id` is pinned onto `config.configurable`. |
 | Assistant versioning | Supported | Each update creates a new version. Pin or roll back. |
 | Graph schemas | Supported | Input, output, state, and config schemas exposed via API. |
 | Graph visualization | Supported | Mermaid graph structure returned by the API. |
@@ -42,6 +45,8 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Subgraph streaming | Supported | Stream events from nested subgraphs. |
 | Stateless runs | Supported | Execute without persisting thread state. |
 | Cron / scheduled jobs | Supported | Trigger runs on a schedule. Standard and seconds-level cron expressions. IANA timezone support. |
+| Cron metadata inheritance | Supported | Fired runs carry the schedule's metadata plus its `cron_id`, so they are filterable per schedule. |
+| Completion webhooks | Supported | Runs and crons accept a `webhook` URL; delivery is an outbox drained with exponential backoff. |
 
 ### Scaling and reliability
 

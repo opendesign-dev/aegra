@@ -659,3 +659,37 @@ class TestTimezoneField:
         call_args = mock_cron_service.create_cron.call_args
         request_obj = call_args.args[0]
         assert request_obj.timezone is None
+
+
+class TestCreateCronClientId:
+    """POST /runs/crons honours a client-supplied cron_id."""
+
+    def test_forwards_client_id_to_the_service(self, client, mock_cron_service: AsyncMock) -> None:
+        mock_cron_service.create_cron.return_value = AsyncMock()
+
+        resp = client.post(
+            "/runs/crons",
+            json={"assistant_id": "asst-001", "schedule": "*/5 * * * *", "cron_id": "nightly"},
+        )
+
+        assert resp.status_code == 200
+        assert mock_cron_service.create_cron.call_args.args[0].cron_id == "nightly"
+
+    def test_duplicate_id_conflicts(self, client, mock_cron_service: AsyncMock) -> None:
+        mock_cron_service.create_cron.side_effect = HTTPException(409, "Cron 'nightly' already exists")
+
+        resp = client.post(
+            "/runs/crons",
+            json={"assistant_id": "asst-001", "schedule": "*/5 * * * *", "cron_id": "nightly"},
+        )
+
+        assert resp.status_code == 409
+
+    def test_reserved_metadata_key_is_rejected(self, client) -> None:
+        """cron_id is stamped on fired runs, so it cannot be set by hand."""
+        resp = client.post(
+            "/runs/crons",
+            json={"assistant_id": "asst-001", "schedule": "*/5 * * * *", "metadata": {"cron_id": "spoofed"}},
+        )
+
+        assert resp.status_code == 422

@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aegra_api.models.auth import User
-from aegra_api.models.run_job import RunExecution, RunIdentity, RunJob
+from aegra_api.models.run_job import RunBehavior, RunExecution, RunIdentity, RunJob
+from aegra_api.services.run_executor import _build_run_config
 
 
 async def _empty_async_gen():  # type: ignore[no-untyped-def]
@@ -14,11 +15,12 @@ async def _empty_async_gen():  # type: ignore[no-untyped-def]
     yield  # noqa: RET504 — makes this an async generator
 
 
-def _make_job(run_id: str = "run-1") -> RunJob:
+def _make_job(run_id: str = "run-1", *, behavior: RunBehavior | None = None) -> RunJob:
     return RunJob(
-        identity=RunIdentity(run_id=run_id, thread_id="thread-1", graph_id="graph-1"),
+        identity=RunIdentity(run_id=run_id, thread_id="thread-1", graph_id="graph-1", assistant_id="asst-1"),
         user=User(identity="user-1"),
         execution=RunExecution(input_data={"msg": "hello"}),
+        behavior=behavior or RunBehavior(),
     )
 
 
@@ -351,3 +353,37 @@ class TestLeaseLossCancellation:
         # Done-key and cleanup MUST happen on normal cancel
         mock_signal_done.assert_awaited_once_with("run-1")
         mock_streaming.cleanup_run.assert_awaited_once_with("run-1")
+
+
+def _passthrough_config(_run_id: str, _thread_id: str, _user: object, **kwargs: object) -> dict:
+    """Stand-in for create_run_config that records only what _build_run_config pins."""
+    return {"configurable": {"assistant_id": kwargs.get("assistant_id")}}
+
+
+class TestBuildRunConfig:
+    """Config assembly: identity pinning and interrupt-node normalization."""
+
+    def _config(self, **behavior: object) -> dict:
+        with patch("aegra_api.services.run_executor.create_run_config", side_effect=_passthrough_config):
+            return _build_run_config(_make_job(behavior=RunBehavior(**behavior)))  # type: ignore[arg-type]
+
+    def test_assistant_id_reaches_configurable(self) -> None:
+        assert self._config()["configurable"]["assistant_id"] == "asst-1"
+
+    def test_wildcard_stays_a_bare_string(self) -> None:
+        """LangGraph reads ["*"] as a node literally named '*', so the wildcard must not be wrapped."""
+        config = self._config(interrupt_before="*", interrupt_after="*")
+        assert config["interrupt_before"] == "*"
+        assert config["interrupt_after"] == "*"
+
+    def test_node_list_passes_through(self) -> None:
+        assert self._config(interrupt_before=["review"])["interrupt_before"] == ["review"]
+
+    def test_legacy_scalar_node_is_wrapped(self) -> None:
+        """Rows persisted before the field was typed can hold a bare node name."""
+        assert self._config(interrupt_after="review")["interrupt_after"] == ["review"]
+
+    def test_absent_interrupts_leave_keys_unset(self) -> None:
+        config = self._config()
+        assert "interrupt_before" not in config
+        assert "interrupt_after" not in config

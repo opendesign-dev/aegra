@@ -66,14 +66,14 @@ class TestRunStart:
                     "assistant_id": "agent",
                     "input": {"x": 1},
                     "interrupt_before": ["node_a"],
-                    "interrupt_after": "node_b",
+                    "interrupt_after": "*",
                 },
             },
             user,
         )
         request = prepared_run.call_args.args[2]
         assert request.interrupt_before == ["node_a"]
-        assert request.interrupt_after == "node_b"
+        assert request.interrupt_after == "*"
 
     async def test_run_start_missing_assistant_id_is_invalid(self, prepared_run: AsyncMock, user: User) -> None:
         resp, run_id = await _dispatch({"id": 1, "method": "run.start", "params": {"input": {}}}, user)
@@ -118,7 +118,7 @@ class TestRunStart:
             session=session,
         )
         request = prepared_run.call_args.args[2]
-        assert request.command == {"resume": {"answer": 42}}
+        assert request.command.resume == {"answer": 42}
         assert request.input is None
 
 
@@ -130,7 +130,7 @@ class TestInputRespond:
         )
         assert resp["type"] == "success"
         request = prepared_run.call_args.args[2]
-        assert request.command == {"resume": "yes"}
+        assert request.command.resume == "yes"
 
     async def test_input_respond_missing_response_is_invalid(self, prepared_run: AsyncMock, user: User) -> None:
         resp, _ = await _dispatch({"id": 2, "method": "input.respond", "params": {"assistant_id": "agent"}}, user)
@@ -162,7 +162,7 @@ class TestInputRespond:
         request = prepared_run.call_args.args[2]
         assert request.assistant_id == "bound-agent"
         # Targeted resume: id-keyed map so multiple pending interrupts route correctly.
-        assert request.command == {"resume": {interrupt_id: "yes"}}
+        assert request.command.resume == {interrupt_id: "yes"}
 
     async def test_input_respond_no_run_to_resume_is_error(self, prepared_run: AsyncMock, user: User) -> None:
         """No assistant_id and no prior run on the thread → on-protocol error, no run started."""
@@ -184,7 +184,7 @@ class TestInputRespond:
             {"id": 2, "method": "input.respond", "params": {"assistant_id": "agent", "response": "yes"}}, user
         )
         assert resp["type"] == "success"
-        assert prepared_run.call_args.args[2].command == {"resume": "yes"}
+        assert prepared_run.call_args.args[2].command.resume == "yes"
 
     async def test_input_respond_malformed_interrupt_id_is_no_such_interrupt(
         self, prepared_run: AsyncMock, user: User
@@ -218,8 +218,9 @@ class TestInputRespond:
             user,
         )
         assert resp["type"] == "success"
-        assert prepared_run.call_args.args[2].command == {
-            "resume": {id_a: {"action": "approve"}, id_b: [{"type": "ignore"}]}
+        assert prepared_run.call_args.args[2].command.resume == {
+            id_a: {"action": "approve"},
+            id_b: [{"type": "ignore"}],
         }
 
     async def test_input_respond_empty_batch_is_invalid(self, prepared_run: AsyncMock, user: User) -> None:

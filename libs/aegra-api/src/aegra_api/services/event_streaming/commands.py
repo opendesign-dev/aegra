@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.models import User
-from aegra_api.models.runs import RunCreate
+from aegra_api.models.runs import RunCommand, RunCreate
 from aegra_api.services.event_streaming.protocol import ErrorCode, build_error, build_success
 from aegra_api.services.run_preparation import _prepare_run
 
@@ -107,9 +107,9 @@ async def _run_start(
     # interrupt" — resume with the input instead of starting a fresh turn that
     # would discard the pending tasks.
     input_data = params.get("input")
-    command: dict[str, Any] | None = None
+    command: RunCommand | None = None
     if input_data is not None and await _thread_is_interrupted(session, thread_id, user):
-        command = {"resume": input_data}
+        command = RunCommand(resume=input_data)
         input_data = None
 
     # No stream_mode: v2 runs stream via the native v3 path, which selects
@@ -174,7 +174,7 @@ async def _input_respond(
         assistant_id=assistant_id,
         config=params.get("config") or {},
         metadata=params.get("metadata"),
-        command={"resume": resume},
+        command=RunCommand(resume=resume),
     )
     run_id = await _start(session, thread_id, request, user)
     return build_success(command_id, {"run_id": run_id}, applied_through_seq=0), run_id

@@ -32,6 +32,7 @@ from aegra_api.services.cron_service import (
 from aegra_api.services.run_cleanup import delete_thread_by_id, schedule_background_cleanup
 from aegra_api.services.run_preparation import _prepare_run
 from aegra_api.settings import settings
+from aegra_api.utils.metadata import CRON_ID_KEY
 
 logger = structlog.getLogger(__name__)
 
@@ -66,9 +67,10 @@ def _build_run_create(cron: CronORM) -> RunCreate:
         webhook=payload.get("webhook"),
         durability=payload.get("durability"),
         checkpoint_during=payload.get("checkpoint_during"),
-        # Cron metadata_dict is stored on the cron record for search/filter, not
-        # forwarded onto fired runs. Re-wire here if run-level tagging is needed.
-        metadata=None,
+        # The SDK documents cron metadata as "metadata to assign to the cron job
+        # runs", so every firing inherits it; CRON_ID_KEY is stamped on top so a
+        # run can be filtered back to the schedule that produced it.
+        metadata={**(cron.metadata_dict or {}), CRON_ID_KEY: cron.cron_id},
     )
 
 

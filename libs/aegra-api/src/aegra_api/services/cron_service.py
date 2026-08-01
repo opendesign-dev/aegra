@@ -280,8 +280,12 @@ class CronService:
             else first_occ
         )
 
+        cron_id = request.cron_id or str(uuid4())
+        if request.cron_id and await self.session.scalar(select(CronORM).where(CronORM.cron_id == cron_id)):
+            raise HTTPException(409, f"Cron '{cron_id}' already exists")
+
         cron_orm = CronORM(
-            cron_id=str(uuid4()),
+            cron_id=cron_id,
             assistant_id=resolved_assistant_id,
             thread_id=thread_id,
             user_id=user_identity,

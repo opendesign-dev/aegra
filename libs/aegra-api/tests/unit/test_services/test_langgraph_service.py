@@ -685,6 +685,52 @@ class TestLangGraphServiceConfigs:
         assert result["configurable"]["thread_id"] == "thread-456"
         assert result["configurable"]["run_id"] == "run-789"
 
+    def test_create_run_config_exposes_assistant_id(self):
+        """Graphs read the executing assistant off configurable."""
+        mock_user = Mock()
+        mock_user.identity = "user-123"
+        mock_user.display_name = "Test User"
+
+        with patch(
+            "aegra_api.services.langgraph_service.get_tracing_callbacks",
+            return_value=[],
+        ):
+            result = create_run_config("run-1", "thread-1", mock_user, assistant_id="asst-1")
+
+        assert result["configurable"]["assistant_id"] == "asst-1"
+
+    def test_create_run_config_ignores_client_assistant_id_override(self):
+        """A spoofed configurable.assistant_id would misattribute the run."""
+        mock_user = Mock()
+        mock_user.identity = "user-123"
+        mock_user.display_name = "Test User"
+
+        attacker_override = {"configurable": {"assistant_id": "other-assistant"}}
+
+        with patch(
+            "aegra_api.services.langgraph_service.get_tracing_callbacks",
+            return_value=[],
+        ):
+            result = create_run_config(
+                "run-1", "thread-1", mock_user, assistant_id="asst-1", additional_config=attacker_override
+            )
+
+        assert result["configurable"]["assistant_id"] == "asst-1"
+
+    def test_create_run_config_omits_assistant_id_when_unknown(self):
+        """Legacy rows carry no assistant_id; the key stays absent rather than null."""
+        mock_user = Mock()
+        mock_user.identity = "user-123"
+        mock_user.display_name = "Test User"
+
+        with patch(
+            "aegra_api.services.langgraph_service.get_tracing_callbacks",
+            return_value=[],
+        ):
+            result = create_run_config("run-1", "thread-1", mock_user)
+
+        assert "assistant_id" not in result["configurable"]
+
     def test_create_run_config_checkpoint_cannot_override_thread_id(self):
         """The checkpoint param is merged last; it must not redefine thread_id.
 

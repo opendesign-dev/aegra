@@ -844,3 +844,125 @@ class TestWaitForRunTimeouts:
             assert resp.status_code == 200
             # StreamingResponse: body is heartbeat newlines + final JSON
             assert resp.json() == {"partial": "data"}
+
+
+class TestCreateRunClientId:
+    """POST /threads/{id}/runs honours a client-supplied run_id."""
+
+    def test_duplicate_run_id_conflicts(self):
+        """A taken id must 409 rather than blow up on the primary-key insert."""
+        app = create_test_app(include_runs=True, include_threads=False)
+
+        class Session(DummySessionBase):
+            async def scalar(self, _stmt):
+                # Thread ownership check, then the run_id clash check.
+                return _run_row()
+
+        override_session_dependency(app, Session)
+        client = make_client(app)
+
+        resp = client.post(
+            "/threads/test-thread-123/runs",
+            json={"assistant_id": "asst-123", "input": {"message": "hi"}, "run_id": "test-run-123"},
+        )
+
+        assert resp.status_code == 409
+        assert "already exists" in resp.json()["detail"]
+
+    def test_omitted_run_id_skips_the_clash_check(self):
+        """Without a client id there is nothing to collide with, so the request
+        proceeds to the assistant lookup (404 here)."""
+        app = create_test_app(include_runs=True, include_threads=False)
+
+        class Session(DummySessionBase):
+            async def scalar(self, _stmt):
+                return None
+
+        override_session_dependency(app, Session)
+        client = make_client(app)
+
+        resp = client.post(
+            "/threads/test-thread-123/runs",
+            json={"assistant_id": "asst-123", "input": {"message": "hi"}},
+        )
+
+        assert resp.status_code == 404
+
+
+class TestListRunsMetadataFilter:
+    """GET /threads/{id}/runs?metadata= narrows by JSONB containment."""
+
+    def _compiled(self, query: str) -> tuple[int, str, dict]:
+        """Return (status, SQL, bound params) for the list query the handler built."""
+        app = create_test_app(include_runs=True, include_threads=False)
+        captured = []
+
+        class Session(DummySessionBase):
+            async def scalars(self, stmt):
+                captured.append(stmt.compile())
+
+                class Result:
+                    def all(self):
+                        return []
+
+                return Result()
+
+        override_session_dependency(app, Session)
+        resp = make_client(app).get(f"/threads/test-thread-123/runs{query}")
+        compiled = captured[0] if captured else None
+        return resp.status_code, str(compiled) if compiled else "", dict(compiled.params) if compiled else {}
+
+    def test_containment_predicate_is_applied(self):
+        status, sql, params = self._compiled('?metadata={"cron_id": "nightly"}')
+        assert status == 200
+        assert "@>" in sql
+        assert {"cron_id": "nightly"} in params.values()
+
+    def test_absent_filter_adds_no_predicate(self):
+        status, sql, _params = self._compiled("")
+        assert status == 200
+        assert "@>" not in sql
+
+    def test_malformed_json_is_rejected(self):
+        app = create_test_app(include_runs=True, include_threads=False)
+        override_session_dependency(app, BasicSession)
+
+        resp = make_client(app).get("/threads/test-thread-123/runs?metadata=not-json")
+
+        assert resp.status_code == 422
+
+
+class TestRunMetadataWireName:
+    """The SDK reads ``run["metadata"]``; the ORM attribute name must not leak."""
+
+    def test_create_response_uses_metadata(self):
+        app = create_test_app(include_runs=True, include_threads=False)
+        run = _run_row(metadata={"tenant": "acme"})
+
+        class Session(DummySessionBase):
+            async def scalar(self, _stmt):
+                return run
+
+        override_session_dependency(app, Session)
+        body = make_client(app).get("/threads/test-thread-123/runs/test-run-123").json()
+
+        assert body["metadata"] == {"tenant": "acme"}
+        assert "metadata_dict" not in body
+
+    def test_list_response_uses_metadata(self):
+        app = create_test_app(include_runs=True, include_threads=False)
+        runs = [_run_row(metadata={"tenant": "acme"})]
+
+        class Session(DummySessionBase):
+            async def scalars(self, _stmt):
+                class Result:
+                    def all(self):
+                        return runs
+
+                return Result()
+
+        override_session_dependency(app, Session)
+        rows = make_client(app).get("/threads/test-thread-123/runs").json()
+
+        assert rows[0]["metadata"] == {"tenant": "acme"}
+        assert "metadata_dict" not in rows[0]

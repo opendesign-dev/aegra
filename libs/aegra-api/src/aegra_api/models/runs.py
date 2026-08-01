@@ -1,6 +1,5 @@
 """Run-related Pydantic models for Agent Protocol"""
 
-import re
 from datetime import datetime
 from typing import Any, Self
 
@@ -8,11 +7,13 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    Json,
     field_validator,
     model_validator,
 )
 
 from aegra_api.models.enums import (
+    All,
     BulkCancelRunsStatus,
     CancelAction,
     DisconnectMode,
@@ -23,26 +24,45 @@ from aegra_api.models.enums import (
     RunSelectField,
     StreamMode,
 )
+from aegra_api.utils.metadata import KEY_PATTERN, MAX_KEYS, MAX_VALUE_LEN, validate_metadata
 from aegra_api.utils.status_compat import validate_run_status
 from aegra_api.utils.webhooks import WEBHOOK_MAX_LEN, validate_webhook_url
 
-# Constraints for ``RunCreate.metadata`` keys/values, enforced at request
-# time so the OpenAPI schema is honest about what reaches OTEL.  Without
-# these limits a tenant could submit thousands of keys, megabyte-scale
-# values, or nested structures — all of which would either be silently
-# dropped by ``merge_run_metadata`` or balloon span size past the OTEL
-# collector limits.  Bounds chosen to be generous for legitimate use
-# (tenant id, feature flag, environment, sub-agent type, ...) while
-# closing the DoS surface.
-_METADATA_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_METADATA_MAX_KEYS = 32
-_METADATA_MAX_VALUE_LEN = 512
+
+class RunCommand(BaseModel):
+    """Mirrors the SDK's ``Command``: navigate, update state, or resume.
+
+    Declared instead of a bare dict so a misspelled key is a 422 rather than a
+    value ``map_command_to_langgraph`` silently drops — a resume that never
+    resumes is indistinguishable from one that did nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    goto: str | list[str] | list[dict[str, Any]] | dict[str, Any] | None = Field(
+        None, description="Node name(s) to continue at, or Send objects with per-node input."
+    )
+    update: dict[str, Any] | list[tuple[str, Any]] | None = Field(
+        None, description="State updates to merge, or ordered (key, value) pairs."
+    )
+    resume: Any = Field(None, description="Value handed back to the `interrupt()` that paused the graph.")
+
+    @model_validator(mode="after")
+    def require_one(self) -> Self:
+        """An empty command would start a run that does nothing."""
+        if self.goto is None and self.update is None and "resume" not in self.model_fields_set:
+            raise ValueError("command requires at least one of 'goto', 'update', or 'resume'")
+        return self
 
 
 class RunCreate(BaseModel):
     """Request model for creating runs"""
 
     assistant_id: str = Field(..., description="Assistant to execute")
+    run_id: str | None = Field(
+        None,
+        description="Client-provided id for idempotent creation; server-generated when omitted.",
+    )
     input: dict[str, Any] | None = Field(
         None,
         description="Input data for the run. Optional when resuming from a checkpoint.",
@@ -111,15 +131,15 @@ class RunCreate(BaseModel):
     )
 
     # Human-in-the-loop fields (core HITL functionality)
-    command: dict[str, Any] | None = Field(
+    command: RunCommand | None = Field(
         None,
         description="Command for resuming interrupted runs with state updates or navigation",
     )
-    interrupt_before: str | list[str] | None = Field(
+    interrupt_before: All | list[str] | None = Field(
         None,
         description="Nodes to interrupt immediately before they get executed. Use '*' for all nodes.",
     )
-    interrupt_after: str | list[str] | None = Field(
+    interrupt_after: All | list[str] | None = Field(
         None,
         description="Nodes to interrupt immediately after they get executed. Use '*' for all nodes.",
     )
@@ -130,53 +150,23 @@ class RunCreate(BaseModel):
         description="Whether to include subgraph events in streaming. When True, includes events from all subgraphs. When False (default when None), excludes subgraph events. Defaults to False for backwards compatibility.",
     )
 
-    # Request metadata (top-level in payload).  Reaches OTEL trace
-    # attributes as ``langfuse.trace.metadata.<key>`` (and the
-    # OpenInference ``metadata.<key>`` alias on Phoenix targets).  The
-    # field is annotated ``dict[str, Any]`` rather than a primitive
-    # union so a malformed payload produces one actionable 422 message
-    # from ``validate_metadata_shape`` instead of N parallel union-arm
-    # errors (one per primitive type Pydantic tries) per offending key.
+    # Annotated ``dict[str, Any]`` rather than a primitive union so one bad key
+    # yields one actionable message instead of N parallel union-arm errors.
     metadata: dict[str, Any] | None = Field(
         None,
         description=(
-            "Request metadata propagated to OTEL trace attributes "
-            "(``langfuse.trace.metadata.<key>``).  Keys must match "
-            "``[A-Za-z0-9_-]{1,64}``.  Values must be primitive "
-            "(``str``, ``int``, ``float``, ``bool``); string values are "
-            "capped at 512 characters.  Maximum 32 keys.  Use this for "
-            "filterable attributes (tenant, feature flag, environment, "
-            "sub-agent type) rather than payload data."
+            "Metadata propagated to OTEL trace attributes "
+            f"(``langfuse.trace.metadata.<key>``). Keys match ``{KEY_PATTERN.pattern}``, "
+            f"values are primitive, strings cap at {MAX_VALUE_LEN} characters, "
+            f"maximum {MAX_KEYS} keys. For filterable attributes, not payload data."
         ),
     )
 
     @field_validator("metadata", mode="after")
     @classmethod
-    def validate_metadata_shape(
-        cls,
-        metadata: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        """Enforce key shape, key count, value type, and string-value length.
-
-        Validation runs entirely here (rather than relying on a primitive
-        union on the field type) so each violation produces one clear
-        error message instead of N parallel union-arm errors per offending
-        key — easier for clients to surface to humans.
-        """
-        if metadata is None:
-            return None
-        if len(metadata) > _METADATA_MAX_KEYS:
-            raise ValueError(f"metadata exceeds {_METADATA_MAX_KEYS} keys (got {len(metadata)})")
-        for key, value in metadata.items():
-            if not _METADATA_KEY_RE.match(key):
-                raise ValueError(f"metadata key {key!r} must match {_METADATA_KEY_RE.pattern}")
-            if not isinstance(value, (str, int, float, bool)):
-                raise ValueError(
-                    f"metadata value for key {key!r} must be str/int/float/bool, got {type(value).__name__}"
-                )
-            if isinstance(value, str) and len(value) > _METADATA_MAX_VALUE_LEN:
-                raise ValueError(f"metadata value for key {key!r} exceeds {_METADATA_MAX_VALUE_LEN} characters")
-        return metadata
+    def check_metadata(cls, metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Same rule crons validate against, so a forwarded value cannot fail here."""
+        return validate_metadata(metadata)
 
     @model_validator(mode="after")
     def normalize(self) -> Self:
@@ -235,8 +225,13 @@ class Run(BaseModel):
     created_at: datetime = Field(..., description="Timestamp when the run was created.")
     updated_at: datetime = Field(..., description="Timestamp when the run was last updated.")
     # First-class in the SDK's Run; reading run["metadata"] must not KeyError.
+    # ``validation_alias`` rather than ``alias`` so the ORM attribute name is an
+    # input spelling only — an ``alias`` also renames the field on the wire,
+    # which FastAPI serializes by default and the SDK does not recognize.
     metadata: dict[str, Any] = Field(
-        default_factory=dict, alias="metadata_dict", description="Metadata supplied when the run was created."
+        default_factory=dict,
+        validation_alias="metadata_dict",
+        description="Metadata supplied when the run was created.",
     )
     multitask_strategy: str | None = Field(None, description="Strategy applied for concurrent runs on the same thread.")
 
@@ -270,6 +265,11 @@ class RunListRequest(BaseModel):
     limit: int = Field(10, ge=1, le=1000, description="Maximum rows per page.")
     offset: int = Field(0, ge=0, description="Rows to skip.")
     status: str | None = Field(None, description="Filter by run status.")
+    # ``Json`` parses the URL-encoded object for us, so a malformed filter is a
+    # 422 at the boundary rather than a json.loads deeper in the handler.
+    metadata: Json[dict[str, Any]] | None = Field(
+        None, description="Metadata containment match, given as a JSON object."
+    )
     select: list[RunSelectField] | None = Field(
         None, description="Return only the listed fields; omit for the full entity."
     )

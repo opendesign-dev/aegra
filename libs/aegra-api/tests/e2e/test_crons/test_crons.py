@@ -10,6 +10,7 @@ real scheduler when fast cron settings are enabled.
 """
 
 import asyncio
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -445,3 +446,62 @@ async def test_cron_example_seconds_schedule_fires_on_live_scheduler() -> None:
         if cron_id is not None:
             await client.crons.delete(cron_id)
         await client.threads.delete(thread_id)
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_cron_honours_client_supplied_id() -> None:
+    """A client id makes creation addressable; re-using it is a 409, not a 500."""
+    client = get_e2e_client()
+    cron_id = f"e2e-cron-{uuid4()}"
+    payload = {
+        "assistant_id": "agent",
+        "cron_id": cron_id,
+        "schedule": "0 4 * * *",
+        "enabled": False,
+        "input": {"messages": [{"role": "user", "content": cron_id}]},
+    }
+
+    created = await _create_cron_via_http(payload)
+    elog("Cron.create (client id)", created)
+    assert created["cron_id"] == cron_id
+
+    status, body = await _post_json("/runs/crons", payload)
+    assert status == 409, body
+
+    await client.crons.delete(cron_id)
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_fired_run_inherits_cron_metadata() -> None:
+    """The first run carries the schedule's metadata plus its cron_id, and the
+    run list filters on it."""
+    client = get_e2e_client()
+    marker = f"e2e-cron-meta-{uuid4()}"
+
+    created = await _create_cron_via_http(
+        {
+            "assistant_id": "agent",
+            "schedule": "0 5 * * *",
+            "on_run_completed": "keep",
+            "metadata": {"marker": marker},
+            "input": {"messages": [{"role": "user", "content": marker}]},
+        }
+    )
+    elog("Cron.create (metadata)", created)
+
+    thread_id, run_id = created["thread_id"], created["run_id"]
+    cron_id = await _find_cron_id_by_message(client=client, assistant_id="agent", message=marker)
+
+    run = await client.runs.get(thread_id, run_id)
+    assert run["metadata"]["marker"] == marker
+    assert run["metadata"]["cron_id"] == cron_id
+
+    async with httpx.AsyncClient(base_url=settings.app.SERVER_URL, timeout=10.0) as http:
+        response = await http.get(f"/threads/{thread_id}/runs", params={"metadata": json.dumps({"cron_id": cron_id})})
+    assert response.status_code == 200, response.text
+    assert [row["run_id"] for row in response.json()] == [run_id]
+
+    await client.crons.delete(cron_id)
+    await client.threads.delete(thread_id)

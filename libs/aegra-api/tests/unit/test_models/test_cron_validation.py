@@ -102,3 +102,44 @@ class TestMaxLengthGuards:
                 schedule="* * * * *",
                 webhook="https://example.com/" + ("x" * 4096),
             )
+
+
+class TestCronId:
+    def test_defaults_to_none(self) -> None:
+        assert CronCreate(assistant_id="a", schedule="* * * * *").cron_id is None
+
+    def test_accepts_client_value(self) -> None:
+        assert CronCreate(assistant_id="a", schedule="* * * * *", cron_id="nightly").cron_id == "nightly"
+
+
+class TestCronMetadata:
+    """Cron metadata is inherited by every fired run, so it obeys the run's rule
+    at create time rather than failing hours later at the first firing."""
+
+    def _create(self, metadata: dict) -> CronCreate:
+        return CronCreate(assistant_id="a", schedule="* * * * *", metadata=metadata)
+
+    def test_primitive_values_accepted(self) -> None:
+        assert self._create({"tenant": "acme", "retries": 3}).metadata == {"tenant": "acme", "retries": 3}
+
+    def test_nested_value_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must be str/int/float/bool"):
+            self._create({"nested": {"a": 1}})
+
+    def test_malformed_key_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must match"):
+            self._create({"bad key": "v"})
+
+    def test_cron_id_key_is_reserved(self) -> None:
+        with pytest.raises(ValidationError, match="reserved"):
+            self._create({"cron_id": "spoofed"})
+
+    def test_one_slot_reserved_for_the_injected_cron_id(self) -> None:
+        """31 keys fit; 32 would leave no room for the cron_id stamped at firing."""
+        assert len(self._create({f"k{i}": i for i in range(31)}).metadata) == 31
+        with pytest.raises(ValidationError, match="exceeds 31 keys"):
+            self._create({f"k{i}": i for i in range(32)})
+
+    def test_update_applies_the_same_rule(self) -> None:
+        with pytest.raises(ValidationError, match="must be str/int/float/bool"):
+            CronUpdate(metadata={"nested": {"a": 1}})

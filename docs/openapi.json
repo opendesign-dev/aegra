@@ -3,7 +3,7 @@
   "info": {
     "title": "Aegra",
     "description": "Production-ready Agent Protocol server",
-    "version": "0.17.0"
+    "version": "0.18.0"
   },
   "paths": {
     "/info": {
@@ -1990,7 +1990,7 @@
           "Thread Runs"
         ],
         "summary": "List Runs",
-        "description": "List runs for a thread.\n\nReturns runs ordered by creation time (newest first). Use `status` to\nfilter and `limit`/`offset` to paginate; a full page sets the\n`X-Pagination-Next` cursor header. Pass `select` to return only the listed\nfields.\n\nDeclared without a response model because `select` makes the row shape\ndynamic \u2014 full entities when omitted, projected dicts when given.",
+        "description": "List runs for a thread.\n\nReturns runs ordered by creation time (newest first). Use `status` to\nfilter and `limit`/`offset` to paginate; a full page sets the\n`X-Pagination-Next` cursor header. Pass `select` to return only the listed\nfields, or `metadata` (a JSON object) to match on the run's metadata.\n\nDeclared without a response model because `select` makes the row shape\ndynamic \u2014 full entities when omitted, projected dicts when given.",
         "operationId": "list_runs_threads__thread_id__runs_get",
         "parameters": [
           {
@@ -2046,6 +2046,29 @@
               "title": "Status"
             },
             "description": "Filter by run status."
+          },
+          {
+            "name": "metadata",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "contentMediaType": "application/json",
+                  "contentSchema": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Metadata containment match, given as a JSON object.",
+              "title": "Metadata"
+            },
+            "description": "Metadata containment match, given as a JSON object."
           },
           {
             "name": "select",
@@ -4497,6 +4520,19 @@
             "maxLength": 256,
             "title": "Assistant Id"
           },
+          "cron_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cron Id",
+            "description": "Client-provided id for idempotent creation; server-generated when omitted."
+          },
           "schedule": {
             "type": "string",
             "maxLength": 256,
@@ -4524,7 +4560,8 @@
                 "type": "null"
               }
             ],
-            "title": "Metadata"
+            "title": "Metadata",
+            "description": "Inherited by every run this schedule fires."
           },
           "config": {
             "anyOf": [
@@ -5043,7 +5080,8 @@
                 "type": "null"
               }
             ],
-            "title": "Metadata"
+            "title": "Metadata",
+            "description": "Inherited by every run this schedule fires."
           },
           "config": {
             "anyOf": [
@@ -5492,10 +5530,10 @@
             "title": "Updated At",
             "description": "Timestamp when the run was last updated."
           },
-          "metadata_dict": {
+          "metadata": {
             "additionalProperties": true,
             "type": "object",
-            "title": "Metadata Dict",
+            "title": "Metadata",
             "description": "Metadata supplied when the run was created."
           },
           "multitask_strategy": {
@@ -5523,12 +5561,92 @@
         "title": "Run",
         "description": "Run entity model\n\nStatus values: pending, running, error, success, timeout, interrupted"
       },
+      "RunCommand": {
+        "properties": {
+          "goto": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goto",
+            "description": "Node name(s) to continue at, or Send objects with per-node input."
+          },
+          "update": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {
+                  "prefixItems": [
+                    {
+                      "type": "string"
+                    },
+                    {}
+                  ],
+                  "type": "array",
+                  "maxItems": 2,
+                  "minItems": 2
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update",
+            "description": "State updates to merge, or ordered (key, value) pairs."
+          },
+          "resume": {
+            "title": "Resume",
+            "description": "Value handed back to the `interrupt()` that paused the graph."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RunCommand",
+        "description": "Mirrors the SDK's ``Command``: navigate, update state, or resume.\n\nDeclared instead of a bare dict so a misspelled key is a 422 rather than a\nvalue ``map_command_to_langgraph`` silently drops \u2014 a resume that never\nresumes is indistinguishable from one that did nothing."
+      },
       "RunCreate": {
         "properties": {
           "assistant_id": {
             "type": "string",
             "title": "Assistant Id",
             "description": "Assistant to execute"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id",
+            "description": "Client-provided id for idempotent creation; server-generated when omitted."
           },
           "input": {
             "anyOf": [
@@ -5805,20 +5923,19 @@
           "command": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/RunCommand"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Command",
             "description": "Command for resuming interrupted runs with state updates or navigation"
           },
           "interrupt_before": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "const": "*"
               },
               {
                 "items": {
@@ -5836,7 +5953,8 @@
           "interrupt_after": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "const": "*"
               },
               {
                 "items": {
@@ -5875,7 +5993,7 @@
               }
             ],
             "title": "Metadata",
-            "description": "Request metadata propagated to OTEL trace attributes (``langfuse.trace.metadata.<key>``).  Keys must match ``[A-Za-z0-9_-]{1,64}``.  Values must be primitive (``str``, ``int``, ``float``, ``bool``); string values are capped at 512 characters.  Maximum 32 keys.  Use this for filterable attributes (tenant, feature flag, environment, sub-agent type) rather than payload data."
+            "description": "Metadata propagated to OTEL trace attributes (``langfuse.trace.metadata.<key>``). Keys match ``^[A-Za-z0-9_-]{1,64}$``, values are primitive, strings cap at 512 characters, maximum 32 keys. For filterable attributes, not payload data."
           }
         },
         "type": "object",

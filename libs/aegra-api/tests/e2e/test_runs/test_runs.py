@@ -1,3 +1,7 @@
+import json
+from uuid import uuid4
+
+import httpx
 import pytest
 
 from aegra_api.settings import settings
@@ -303,3 +307,41 @@ async def test_runs_wait_with_interrupts_e2e():
         assert last_run["status"] in ("interrupted", "success"), (
             f"Expected interrupted or success status, got {last_run['status']}"
         )
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
+async def test_runs_client_supplied_id_and_metadata_filter_e2e():
+    """A client-supplied run_id is honoured (409 on re-use) and run metadata is
+    filterable through the list endpoint."""
+    client = get_e2e_client()
+
+    assistant = await client.assistants.create(graph_id="agent", if_exists="do_nothing")
+    thread = await client.threads.create()
+    thread_id = thread["thread_id"]
+    run_id = f"e2e-run-{uuid4()}"
+    marker = f"e2e-marker-{uuid4()}"
+
+    async with httpx.AsyncClient(base_url=settings.app.SERVER_URL, timeout=30.0) as http:
+        body = {
+            "assistant_id": assistant["assistant_id"],
+            "run_id": run_id,
+            "input": {"messages": [{"role": "user", "content": "hi"}]},
+            "metadata": {"marker": marker},
+        }
+        created = await http.post(f"/threads/{thread_id}/runs", json=body)
+        assert created.status_code == 200, created.text
+        assert created.json()["run_id"] == run_id
+        elog("Run created with client id", created.json())
+
+        clash = await http.post(f"/threads/{thread_id}/runs", json=body)
+        assert clash.status_code == 409, clash.text
+
+        listed = await http.get(f"/threads/{thread_id}/runs", params={"metadata": json.dumps({"marker": marker})})
+        assert listed.status_code == 200, listed.text
+        assert [row["run_id"] for row in listed.json()] == [run_id]
+
+        missed = await http.get(f"/threads/{thread_id}/runs", params={"metadata": json.dumps({"marker": "other"})})
+        assert missed.json() == []
+
+    await client.threads.delete(thread_id)

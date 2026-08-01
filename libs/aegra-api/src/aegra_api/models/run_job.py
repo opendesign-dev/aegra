@@ -29,6 +29,8 @@ class RunIdentity(BaseModel):
     run_id: str
     thread_id: str
     graph_id: str
+    # Which assistant is executing; reaches the graph via configurable.
+    assistant_id: str | None = None
 
 
 class RunExecution(BaseModel):
@@ -84,8 +86,8 @@ class RunJob(BaseModel):
         """Serialize for the ``execution_params`` JSONB column.
 
         Stores everything a worker needs to reconstruct the RunJob from
-        the database. Identity fields (run_id, thread_id) are already
-        columns on the runs table, but graph_id is not — so we include it.
+        the database. Identity fields (run_id, thread_id, assistant_id) are
+        already columns on the runs table, but graph_id is not — so we include it.
         """
         return {
             "graph_id": self.identity.graph_id,
@@ -106,6 +108,7 @@ class RunJob(BaseModel):
                 run_id=run_orm.run_id,
                 thread_id=run_orm.thread_id,
                 graph_id=params["graph_id"],
+                assistant_id=run_orm.assistant_id,
             ),
             user=User.model_validate(params["user"]),
             execution=RunExecution.model_validate(params["execution"]),

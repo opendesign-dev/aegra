@@ -1313,3 +1313,50 @@ class TestUpdateCronTimezone:
         await cron_service.update_cron("cron-001", CronUpdate(schedule="0 10 * * *"), "test-user")
         # verify execute was called (next_run_date was set)
         mock_session.execute.assert_awaited_once()
+
+
+class TestClientProvidedCronId:
+    """``cron_id`` is optional; supplying one makes creation idempotent-checkable."""
+
+    @pytest.mark.asyncio
+    async def test_generates_id_when_omitted(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+        sample_create: CronCreate,
+    ) -> None:
+        mock_session.scalar.return_value = _make_assistant_orm()
+
+        result = await cron_service.create_cron(sample_create, "test-user")
+
+        assert result.cron_id
+        assert result.cron_id != sample_create.assistant_id
+
+    @pytest.mark.asyncio
+    async def test_uses_client_id_when_free(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        # conftest disables the per-user cap, so scalar order is assistant, clash.
+        mock_session.scalar.side_effect = [_make_assistant_orm(), None]
+        req = CronCreate(assistant_id="asst-001", schedule="*/5 * * * *", cron_id="nightly")
+
+        result = await cron_service.create_cron(req, "test-user")
+
+        assert result.cron_id == "nightly"
+
+    @pytest.mark.asyncio
+    async def test_rejects_taken_client_id(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        mock_session.scalar.side_effect = [_make_assistant_orm(), Mock()]
+        req = CronCreate(assistant_id="asst-001", schedule="*/5 * * * *", cron_id="nightly")
+
+        with pytest.raises(HTTPException) as exc:
+            await cron_service.create_cron(req, "test-user")
+
+        assert exc.value.status_code == 409
+        mock_session.add.assert_not_called()

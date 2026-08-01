@@ -196,6 +196,20 @@ interrupt_before="*"  # Pause before every node
 interrupt_after="*"   # Pause after every node
 ```
 
+Both fields take a list of node names or the `"*"` wildcard. A single node still has to be a list — `interrupt_before="tools"` is rejected with a `422`, since a bare string would be ambiguous against the wildcard.
+
+## Command shape
+
+`command` is validated against three keys, and at least one must be present:
+
+| Key | Meaning |
+|-----|---------|
+| `resume` | Value handed back to the `interrupt()` that paused the graph. `None` is a valid payload — the key's presence is what marks the run as a resume. |
+| `update` | State updates to merge, either a dict or ordered `(key, value)` pairs. |
+| `goto` | Node name(s) to continue at, or `Send` objects carrying per-node input. |
+
+Anything else is a `422`. This matters most for typos: a misspelled `resumee` used to be dropped silently, producing a run that started and did nothing instead of resuming.
+
 ## Checking interrupt status
 
 ```python

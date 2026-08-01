@@ -14,7 +14,7 @@ import structlog
 from aegra_api.core.active_runs import active_runs
 from aegra_api.core.auth_ctx import with_auth_ctx
 from aegra_api.core.redis_manager import redis_manager
-from aegra_api.models.enums import StreamMode
+from aegra_api.models.enums import ALL_NODES, StreamMode
 from aegra_api.models.run_job import RunJob
 from aegra_api.services import multitask, thread_state_cache
 from aegra_api.services.broker import broker_manager
@@ -246,21 +246,31 @@ async def _stream_native_v2(
             result.data = data
 
 
+def _interrupt_nodes(value: str | list[str] | None) -> str | list[str] | None:
+    """Keep the ``*`` wildcard a bare string; LangGraph reads ``["*"]`` as a node named ``*``.
+
+    Anything else scalar is a single node name from a row persisted before the
+    field was typed, so it still gets wrapped.
+    """
+    if value is None or value == ALL_NODES or isinstance(value, list):
+        return value
+    return [value]
+
+
 def _build_run_config(job: RunJob) -> dict[str, Any]:
     """Assemble the LangGraph run config from a RunJob."""
     config = create_run_config(
         job.identity.run_id,
         job.identity.thread_id,
         job.user,
+        assistant_id=job.identity.assistant_id,
         additional_config=job.execution.config,
         checkpoint=job.execution.checkpoint,
     )
-    if job.behavior.interrupt_before is not None:
-        items = job.behavior.interrupt_before
-        config["interrupt_before"] = items if isinstance(items, list) else [items]
-    if job.behavior.interrupt_after is not None:
-        items = job.behavior.interrupt_after
-        config["interrupt_after"] = items if isinstance(items, list) else [items]
+    for field in ("interrupt_before", "interrupt_after"):
+        nodes = _interrupt_nodes(getattr(job.behavior, field))
+        if nodes is not None:
+            config[field] = nodes
     return config
 
 

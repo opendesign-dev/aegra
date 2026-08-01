@@ -93,7 +93,7 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官
 | `wait()` | `POST /threads/{id}/runs/wait` | ✅ | |
 | `wait()` | `POST /runs/wait` | ✅ | |
 | `create_batch()` | `POST /runs/batch` | ✅ | 顺序创建，响应顺序与请求一致 |
-| `list()` | `GET /threads/{id}/runs` | ✅ | 支持 `select`；`limit` 上限 1000；满页返回 `X-Pagination-Next` |
+| `list()` | `GET /threads/{id}/runs` | ✅ | 支持 `select`、`metadata`（JSON 对象，JSONB containment）；`limit` 上限 1000；满页返回 `X-Pagination-Next` |
 | `get()` | `GET /threads/{id}/runs/{run_id}` | ✅ | 响应含 `metadata`、`multitask_strategy` |
 | `cancel()` | `POST /threads/{id}/runs/{run_id}/cancel` | ✅ | 支持 `wait`、`action` |
 | `cancel_many()` | `POST /runs/cancel` | ⚠️ | `thread_id`+`run_ids` 或 `status`；`action=rollback` 依赖 checkpointer 能力（见 4.4） |
@@ -105,7 +105,7 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官
 
 | SDK 方法 | 端点 | 状态 | 备注 |
 |:--|:--|:-:|:--|
-| `create_for_thread()` | `POST /threads/{id}/runs/crons` | ✅ | 支持 `checkpoint_during`、`stream_resumable`、`durability` |
+| `create_for_thread()` | `POST /threads/{id}/runs/crons` | ✅ | 支持 `checkpoint_during`、`stream_resumable`、`durability`；`cron_id` 可选，重复返回 409 |
 | `create()` | `POST /runs/crons` | ✅ | 同上 |
 | `delete()` | `DELETE /runs/crons/{cron_id}` | ✅ | |
 | `update()` | `PATCH /runs/crons/{cron_id}` | ✅ | 同上 |
@@ -113,6 +113,8 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官
 | `count()` | `POST /runs/crons/count` | ✅ | 支持 `metadata` |
 
 `CronResponse` 补上 `timezone` 后与 SDK 的 `Cron` 14 字段一致。`_build_payload` 与 `_build_run_create` 的字段集保持同步 —— 只在前者接受而不在后者转发，等于每次定时触发都静默丢用户的值。
+
+cron 的 `metadata` 按 SDK 语义（"metadata to assign to the cron job runs"）由每次触发的 run 继承，并叠加服务端写入的 `cron_id`，因此「这条 schedule 产出的全部 run」就是 `GET /threads/{id}/runs?metadata={"cron_id":...}` 一次查询。由于值最终落在 run 上，cron metadata 在创建/更新时就按 run 的规则校验（键 31 个上限，第 32 个槽位留给 `cron_id`），而不是拖到几小时后首次触发才失败。
 
 ### 3.5 Store
 
@@ -216,6 +218,11 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官
 
 `d1f7b3a9c5e2` 建的 `runs.metadata`、`runs.multitask_strategy`、`runs.scheduled_at`、`thread.ttl`、`thread_state`、`webhook_deliveries` 都还在库里，本次只是在 ORM 上重新声明，没有新建。
 
+迁移 `b5e1c47a9d38`（revises `a3d6e0b95f17`）补两个索引，同样是纯追加：
+
+- `idx_runs_metadata_gin` —— `GET /threads/{id}/runs` 的 `metadata` containment 过滤的查询方；cron 触发的 run 带 `cron_id`，按 schedule 拉取历史全靠它。
+- `idx_webhook_deliveries_due` —— `f2c8a5e13d94` 随投递功能一起删掉，投递恢复后 sweeper 的 `(status, next_attempt_at)` 认领又需要它，ORM 也重新声明了。
+
 ## 六、升级注意（0.16.0 → 0.17.0）
 
 minor 而非 patch，因为带 schema 迁移，且有两处请求契约收紧：
@@ -229,6 +236,19 @@ minor 而非 patch，因为带 schema 迁移，且有两处请求契约收紧：
 | 五个端点改为 `response_model=None` | `select`/`include` 让行形状动态化，spec 上这些操作不再声明具体 schema：`POST /assistants/search`、`POST /threads/search`、`GET /threads/{id}`、`GET /threads/{id}/runs`、`POST /runs/crons/search` | 按 spec 生成客户端的工具需重新生成 |
 
 多实例部署照旧：`RUN_MIGRATIONS_ON_STARTUP=false` + 带外执行 `aegra db upgrade`。迁移里的并发索引构建都在 `autocommit_block` 内、且带 `IF [NOT] EXISTS` 守卫，可重入。
+
+## 六之二、升级注意（0.17.0 → 0.18.0）
+
+同样是 minor：带 schema 迁移 `b5e1c47a9d38`，且有三处请求契约收紧。
+
+| 变更 | 影响 | 迁移动作 |
+|:--|:--|:--|
+| `RunCreate.command` 由 `dict` 收为 `RunCommand`（`extra="forbid"`） | 只认 `goto`/`update`/`resume`，且三者至少有一个；拼错的键此前被静默丢弃、run 起来什么也不做，现在 422 | 改正键名 |
+| `interrupt_before`/`interrupt_after` 由 `str \| list[str]` 收为 `"*" \| list[str]` | 裸节点名（`interrupt_before="tools"`）现在 422 | 写成列表 `["tools"]`；`"*"` 通配符不变 |
+| cron `metadata` 按 run 的规则校验 | 嵌套值、非法键、超过 31 个键的 cron 现在创建时 422（此前能建、首次触发才炸）；`cron_id` 为保留键 | 拍平为 `str`/`int`/`float`/`bool` |
+| cron `metadata` 下传到触发的 run | 触发的 run 的 `metadata` 从 `{}` 变为 cron metadata + `cron_id` | 无；按 schedule 过滤 run 现在可用 |
+| `assistant_id`/`run_id`/`cron_id` 创建时可选 | 追加字段，省略即由服务端生成；显式传值时重复返回 409 | 无 |
+| `config.configurable.assistant_id` 由服务端写入 | 与 `thread_id`/`run_id` 同为服务端权威值，请求体里的同名键被覆盖 | 依赖该键传自定义值的图改用其他键名 |
 
 ## 七、错误响应契约
 
