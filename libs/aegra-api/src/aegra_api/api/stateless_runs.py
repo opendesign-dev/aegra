@@ -8,11 +8,13 @@ explicitly sets ``on_completion="keep"``).
 
 import asyncio
 from collections.abc import AsyncIterator, Mapping
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse
 
@@ -22,17 +24,22 @@ from aegra_api.api.runs import (
     wait_for_run,
 )
 from aegra_api.core.auth_deps import auth_dependency, get_current_user
+from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import get_session
 from aegra_api.core.sse import make_sse_response
 from aegra_api.models import Run, RunCreate, User
+from aegra_api.models.enums import ACTIVE_RUN_STATUSES, CancelAction
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
+from aegra_api.models.runs import BulkCancelRequest, BulkCancelResponse
 from aegra_api.services.broker import broker_manager
+from aegra_api.services.multitask import discard_run_state, require_run_state_discard
 from aegra_api.services.run_cleanup import (
     _CLEANUP_ERRORS,
     _background_cleanup_tasks,
     delete_thread_by_id,
     schedule_background_cleanup,
 )
+from aegra_api.services.streaming_service import streaming_service
 
 router = APIRouter(tags=["Stateless Runs"], dependencies=auth_dependency)
 logger = structlog.getLogger(__name__)
@@ -306,3 +313,66 @@ async def stateless_create_run(
         schedule_background_cleanup(result.run_id, thread_id, user.identity)
 
     return result
+
+
+@router.post("/runs/batch", response_model=list[Run], responses={**NOT_FOUND, **CONFLICT})
+async def stateless_create_run_batch(
+    requests: list[RunCreate],
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[Run]:
+    """Create several stateless background runs in one call.
+
+    Each payload gets its own ephemeral thread and is created sequentially, so a
+    failure surfaces with the runs before it already accepted. Ordering of the
+    response matches the request.
+    """
+    if not requests:
+        raise HTTPException(422, "Batch must contain at least one run")
+
+    return [await stateless_create_run(request, user, session) for request in requests]
+
+
+@router.post("/runs/cancel", response_model=BulkCancelResponse)
+async def bulk_cancel_runs(
+    request: BulkCancelRequest,
+    action: CancelAction = Query("interrupt", description="How to stop each run."),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BulkCancelResponse:
+    """Cancel many runs at once.
+
+    Target either explicit runs on a thread (`thread_id` plus `run_ids`) or a
+    whole status bucket (`status`). `action="rollback"` additionally discards the
+    checkpoints those runs wrote, so the thread returns to its prior state; it
+    returns 501 when the checkpointer cannot delete per run.
+    """
+    # Checked up front: refusing after the interrupts would leave them applied
+    # with the state the caller asked to discard still in place.
+    if action == "rollback":
+        require_run_state_discard()
+
+    stmt = select(RunORM).where(RunORM.user_id == user.identity, RunORM.status.in_(ACTIVE_RUN_STATUSES))
+    if request.thread_id:
+        stmt = stmt.where(RunORM.thread_id == request.thread_id)
+    if request.run_ids:
+        stmt = stmt.where(RunORM.run_id.in_(request.run_ids))
+    if request.status and request.status != "all":
+        stmt = stmt.where(RunORM.status == request.status)
+
+    run_ids = [run.run_id for run in (await session.scalars(stmt)).all()]
+    if not run_ids:
+        return BulkCancelResponse(cancelled_count=0, run_ids=[], action=action)
+
+    for run_id in run_ids:
+        await streaming_service.interrupt_run(run_id)
+    await session.execute(
+        update(RunORM).where(RunORM.run_id.in_(run_ids)).values(status="interrupted", updated_at=datetime.now(UTC))
+    )
+    await session.commit()
+
+    if action == "rollback":
+        await discard_run_state(run_ids)
+
+    logger.info("Bulk cancelled runs", count=len(run_ids), action=action, user_id=user.identity)
+    return BulkCancelResponse(cancelled_count=len(run_ids), run_ids=run_ids, action=action)

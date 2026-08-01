@@ -10,6 +10,7 @@ Implements the six endpoints consumed by the LangGraph SDK ``CronsClient``:
 * ``POST  /runs/crons/count``             → count (returns int)
 """
 
+from typing import Any
 from uuid import uuid4
 
 import structlog
@@ -22,6 +23,7 @@ from aegra_api.core.auth_handlers import build_auth_context, handle_event
 from aegra_api.core.orm import Cron as CronORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session
+from aegra_api.core.query import page
 from aegra_api.models import Run, User
 from aegra_api.models.crons import (
     CronCountRequest,
@@ -183,18 +185,26 @@ async def delete_cron(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/runs/crons/search", response_model=list[CronResponse])
+@router.post("/runs/crons/search", response_model=None)
 async def search_crons(
     request: CronSearchRequest,
+    response: Response,
     user: User = Depends(get_current_user),
     service: CronService = Depends(get_cron_service),
-) -> list[CronResponse]:
-    """Search cron jobs with filters and pagination."""
+) -> list[dict[str, Any]]:
+    """Search cron jobs with filters and pagination.
+
+    A full page sets the `X-Pagination-Next` cursor header. Pass `select` to
+    return only the listed fields.
+
+    Declared without a response model because `select` makes the row shape
+    dynamic — full entities when omitted, projected dicts when given.
+    """
     ctx = build_auth_context(user, "crons", "search")
     value = request.model_dump(exclude_none=True)
     await handle_event(ctx, value)
 
-    return await service.search_crons(request, user.identity)
+    return page(response, await service.search_crons(request, user.identity), request)
 
 
 # ---------------------------------------------------------------------------

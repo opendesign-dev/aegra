@@ -61,7 +61,11 @@ def _build_run_create(cron: CronORM) -> RunCreate:
         interrupt_after=payload.get("interrupt_after"),
         stream_subgraphs=payload.get("stream_subgraphs"),
         stream_mode=payload.get("stream_mode"),
+        stream_resumable=payload.get("stream_resumable"),
         multitask_strategy=payload.get("multitask_strategy"),
+        webhook=payload.get("webhook"),
+        durability=payload.get("durability"),
+        checkpoint_during=payload.get("checkpoint_during"),
         # Cron metadata_dict is stored on the cron record for search/filter, not
         # forwarded onto fired runs. Re-wire here if run-level tagging is needed.
         metadata=None,

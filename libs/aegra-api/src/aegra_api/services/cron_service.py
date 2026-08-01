@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Cron as CronORM
 from aegra_api.core.orm import get_session
+from aegra_api.core.query import build_order_by, paginate
 from aegra_api.models.crons import (
     CronCountRequest,
     CronCreate,
@@ -52,6 +53,9 @@ def _build_payload(request: CronCreate | CronUpdate) -> dict[str, Any]:
         "multitask_strategy",
         "stream_mode",
         "stream_subgraphs",
+        "stream_resumable",
+        "durability",
+        "checkpoint_during",
         "timezone",
     ):
         value = getattr(request, field, None)
@@ -169,6 +173,7 @@ def _cron_to_response(row: CronORM) -> CronResponse:
         next_run_date=row.next_run_date,
         metadata=row.metadata_dict or {},
         enabled=row.enabled,
+        timezone=(row.payload or {}).get("timezone"),
     )
 
 
@@ -397,20 +402,18 @@ class CronService:
             stmt = stmt.where(CronORM.thread_id == request.thread_id)
         if request.enabled is not None:
             stmt = stmt.where(CronORM.enabled == request.enabled)
+        if request.metadata:
+            # JSONB containment, served by idx_cron_metadata_gin.
+            stmt = stmt.where(CronORM.metadata_dict.op("@>")(request.metadata))
 
-        # Sorting
-        sort_column = CronORM.created_at
-        if request.sort_by == "next_run_date":
-            sort_column = CronORM.next_run_date
-        elif request.sort_by == "updated_at":
-            sort_column = CronORM.updated_at
-
-        if request.sort_order == "desc":
-            stmt = stmt.order_by(sort_column.desc())
-        else:
-            stmt = stmt.order_by(sort_column.asc())
-
-        stmt = stmt.offset(request.offset).limit(request.limit)
+        stmt = stmt.order_by(
+            *build_order_by(
+                getattr(CronORM, request.sort_by or "created_at"),
+                sort_order=request.sort_order,
+                tiebreak=CronORM.cron_id,
+            )
+        )
+        stmt = paginate(stmt, limit=request.limit, offset=request.offset)
 
         result = await self.session.scalars(stmt)
         return [_cron_to_response(row) for row in result.all()]
@@ -428,6 +431,8 @@ class CronService:
             stmt = stmt.where(CronORM.assistant_id == resolved_assistant_id)
         if request.thread_id is not None:
             stmt = stmt.where(CronORM.thread_id == request.thread_id)
+        if request.metadata:
+            stmt = stmt.where(CronORM.metadata_dict.op("@>")(request.metadata))
 
         total = await self.session.scalar(stmt)
         return total or 0

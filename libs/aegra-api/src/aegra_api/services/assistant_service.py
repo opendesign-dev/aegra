@@ -22,15 +22,18 @@ from uuid import uuid4
 from fastapi import Depends, HTTPException
 from langchain_core.runnables.utils import create_model
 from pydantic import TypeAdapter
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aegra_api.core.auth_deps import get_current_user
 from aegra_api.core.auth_filters import build_metadata_filter
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import AssistantVersion as AssistantVersionORM
+from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session
+from aegra_api.core.query import build_order_by, paginate
 from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
+from aegra_api.models.assistants import AssistantSearchRequest, AssistantVersionsRequest
 from aegra_api.models.auth import User
 from aegra_api.services.authenticated import Authenticated
 from aegra_api.services.langgraph_service import LangGraphService, get_langgraph_service
@@ -269,13 +272,7 @@ class AssistantService(Authenticated):
         result = await self.session.scalars(stmt)
         return [to_pydantic(a) for a in result.all()]
 
-    async def search_assistants(
-        self,
-        request: Any,  # AssistantSearchRequest
-        *,
-        sort_column: Any | None = None,
-        sort_asc: bool = False,
-    ) -> list[Assistant]:
+    async def search_assistants(self, request: AssistantSearchRequest) -> list[Assistant]:
         """Search assistants with filters"""
         value = request.model_dump()
         filters = await self._dispatch("search", value)
@@ -300,15 +297,14 @@ class AssistantService(Authenticated):
         if auth_filter is not None:
             stmt = stmt.where(auth_filter)
 
-        column = sort_column if sort_column is not None else AssistantORM.created_at
-        direction = column.asc() if sort_asc else column.desc()
-        # Tie-break on assistant_id keeps offset pagination stable when the
-        # primary sort column has duplicates.
-        stmt = stmt.order_by(direction, AssistantORM.assistant_id.asc())
-
-        offset = request.offset or 0
-        limit = request.limit or 20
-        stmt = stmt.offset(offset).limit(limit)
+        stmt = stmt.order_by(
+            *build_order_by(
+                getattr(AssistantORM, request.sort_by or "created_at"),
+                sort_order=request.sort_order,
+                tiebreak=AssistantORM.assistant_id,
+            )
+        )
+        stmt = paginate(stmt, limit=request.limit, offset=request.offset)
 
         result = await self.session.scalars(stmt)
         return [to_pydantic(a) for a in result.all()]
@@ -446,8 +442,8 @@ class AssistantService(Authenticated):
         updated_assistant = await self.session.scalar(stmt)
         return to_pydantic(updated_assistant)
 
-    async def delete_assistant(self, assistant_id: str) -> dict:
-        """Delete assistant by ID"""
+    async def delete_assistant(self, assistant_id: str, *, delete_threads: bool = False) -> dict:
+        """Delete assistant by ID, optionally cascading to its threads."""
         filters = await self._dispatch("delete", {"assistant_id": assistant_id})
 
         stmt = select(AssistantORM).where(
@@ -461,6 +457,17 @@ class AssistantService(Authenticated):
 
         if not assistant:
             raise HTTPException(404, f"Assistant '{assistant_id}' not found")
+
+        if delete_threads:
+            # The thread -> assistant link lives in metadata, served by
+            # idx_thread_metadata_gin. Deleting the rows cascades to their runs;
+            # checkpoint reclamation is the prune endpoint's job.
+            await self.session.execute(
+                delete(ThreadORM).where(
+                    ThreadORM.user_id == self.user.identity,
+                    ThreadORM.metadata_json.op("@>")({"assistant_id": assistant_id}),
+                )
+            )
 
         await self.session.delete(assistant)
         await self.session.commit()
@@ -512,11 +519,14 @@ class AssistantService(Authenticated):
         updated_assistant = await self.session.scalar(stmt)
         return to_pydantic(updated_assistant)
 
-    async def list_assistant_versions(self, assistant_id: str) -> list[Assistant]:
-        """List all versions of an assistant"""
+    async def list_assistant_versions(
+        self, assistant_id: str, request: AssistantVersionsRequest | None = None
+    ) -> list[Assistant]:
+        """List an assistant's versions, newest first."""
+        query = request or AssistantVersionsRequest()
         # Versions dispatches `search` (not `read`) per the auth dispatch spec,
         # with the {assistant_id, metadata} value shape.
-        filters = await self._dispatch("search", {"assistant_id": assistant_id, "metadata": None})
+        filters = await self._dispatch("search", {"assistant_id": assistant_id, "metadata": query.metadata})
 
         stmt = select(AssistantORM).where(
             AssistantORM.assistant_id == assistant_id,
@@ -529,11 +539,11 @@ class AssistantService(Authenticated):
         if not assistant:
             raise HTTPException(404, f"Assistant '{assistant_id}' not found")
 
-        stmt = (
-            select(AssistantVersionORM)
-            .where(AssistantVersionORM.assistant_id == assistant_id)
-            .order_by(AssistantVersionORM.version.desc())
-        )
+        stmt = select(AssistantVersionORM).where(AssistantVersionORM.assistant_id == assistant_id)
+        if query.metadata:
+            stmt = stmt.where(AssistantVersionORM.metadata_dict.op("@>")(query.metadata))
+        stmt = stmt.order_by(AssistantVersionORM.version.desc())
+        stmt = paginate(stmt, limit=query.limit, offset=query.offset)
         result = await self.session.scalars(stmt)
         versions = result.all()
 

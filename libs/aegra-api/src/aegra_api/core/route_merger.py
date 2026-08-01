@@ -2,14 +2,29 @@
 
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 import structlog
 from fastapi import FastAPI
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+    websocket_request_validation_exception_handler,
+)
 
 logger = structlog.get_logger(__name__)
 
+# Present on every FastAPI app before any user code runs.
+_FRAMEWORK_DEFAULT_HANDLERS = frozenset(
+    {
+        http_exception_handler,
+        request_validation_exception_handler,
+        websocket_request_validation_exception_handler,
+    }
+)
 
-def merge_lifespans(user_app: FastAPI, core_lifespan: Callable) -> FastAPI:
+
+def merge_lifespans(user_app: FastAPI, core_lifespan: Callable[..., Any]) -> FastAPI:
     """Merge user lifespan with Aegra's core lifespan.
 
     Both lifespans will run, with core lifespan wrapping user lifespan.
@@ -47,11 +62,15 @@ def merge_lifespans(user_app: FastAPI, core_lifespan: Callable) -> FastAPI:
     return user_app
 
 
-def merge_exception_handlers(user_app: FastAPI, core_exception_handlers: dict[type, Callable]) -> FastAPI:
+def merge_exception_handlers(user_app: FastAPI, core_exception_handlers: dict[type, Callable[..., Any]]) -> FastAPI:
     """Merge core exception handlers with user exception handlers.
 
-    Core handlers are added only if user hasn't defined a handler for that exception type.
-    User handlers take precedence.
+    Core handlers are added only if the user actually defined one for that
+    exception type. FastAPI seeds every app with its own defaults, so a handler
+    merely *being present* says nothing about the user's intent — only a
+    different callable counts as an override. Without that distinction Aegra's
+    422 handler was silently dropped on every custom-app deployment, and clients
+    got FastAPI's list-shaped ``detail`` that the SDK cannot read.
 
     Args:
         user_app: User's FastAPI/Starlette application
@@ -61,7 +80,8 @@ def merge_exception_handlers(user_app: FastAPI, core_exception_handlers: dict[ty
         Modified user_app with merged exception handlers
     """
     for exc_type, handler in core_exception_handlers.items():
-        if exc_type not in user_app.exception_handlers:
+        existing = user_app.exception_handlers.get(exc_type)
+        if existing is None or existing in _FRAMEWORK_DEFAULT_HANDLERS:
             user_app.exception_handlers[exc_type] = handler
         else:
             logger.debug(f"User app overrides exception handler for {exc_type}")

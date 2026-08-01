@@ -5,13 +5,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from aegra_api.api.runs import _apply_create_run_auth, create_run, get_run, join_run, list_runs, update_run
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
+from aegra_api.core.query import NEXT_PAGE_HEADER
 from aegra_api.models import Run, RunCreate, RunStatus, User
+from aegra_api.models.runs import RunListRequest
 
 
 class TestRunsEndpoints:
@@ -243,15 +245,74 @@ class TestRunsEndpoints:
 
         result = await list_runs(
             thread_id,
-            limit=10,
-            offset=0,
-            status=None,
+            RunListRequest(),
+            Response(),
             user=mock_user,
             session=mock_session,
         )
 
         assert len(result) == 3
-        assert result[0].run_id == "run-0"
+        assert result[0]["run_id"] == "run-0"
+
+    @pytest.mark.asyncio
+    async def test_list_runs_select_projects_fields(self, mock_user: User, mock_session: AsyncMock) -> None:
+        """``select`` narrows each row to the requested keys."""
+        thread_id = "test-thread"
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            RunORM(
+                run_id="run-0",
+                thread_id=thread_id,
+                assistant_id="agent",
+                user_id=mock_user.identity,
+                status="success",
+                input={},
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        ]
+        mock_session.scalars.return_value = mock_result
+
+        result = await list_runs(
+            thread_id,
+            RunListRequest(select=["run_id", "status"]),
+            Response(),
+            user=mock_user,
+            session=mock_session,
+        )
+
+        assert result == [{"run_id": "run-0", "status": "success"}]
+
+    @pytest.mark.asyncio
+    async def test_list_runs_sets_cursor_on_full_page(self, mock_user: User, mock_session: AsyncMock) -> None:
+        """A full page advertises the next offset so the SDK can page forward."""
+        thread_id = "test-thread"
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            RunORM(
+                run_id=f"run-{i}",
+                thread_id=thread_id,
+                assistant_id="agent",
+                user_id=mock_user.identity,
+                status="success",
+                input={},
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            for i in range(2)
+        ]
+        mock_session.scalars.return_value = mock_result
+        response = Response()
+
+        await list_runs(
+            thread_id,
+            RunListRequest(limit=2, offset=4),
+            response,
+            user=mock_user,
+            session=mock_session,
+        )
+
+        assert response.headers[NEXT_PAGE_HEADER] == "6"
 
     @pytest.mark.asyncio
     async def test_update_run_cancel(self, mock_user: User, mock_session: AsyncMock) -> None:

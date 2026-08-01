@@ -3,18 +3,31 @@
 import contextlib
 import json
 import re
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, MutableMapping
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Mapping,
+    MutableMapping,
+)
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, get_args
 
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from aegra_api.core.serializers import GeneralSerializer
+from aegra_api.models.enums import StreamMode
 from aegra_api.settings import settings
 
 # Global serializer instance
 _serializer = GeneralSerializer()
+
+# Event names that name a stream mode, and so are subject to mode filtering.
+# Anything else (metadata, end, error) is protocol and always passes.
+STREAM_MODE_EVENTS: frozenset[str] = frozenset(get_args(StreamMode))
 
 # Cached SSE keepalive payload: ``: heartbeat\r\n\r\n`` (15 bytes).
 # Matches langgraph-api's wire-format so tcpdump/logs line up with LangGraph
@@ -188,6 +201,38 @@ def create_debug_event(debug_data: dict[str, Any], event_id: str | None = None) 
                 payload["parent_checkpoint"] = None
 
     return format_sse_message("debug", debug_data, event_id)
+
+
+def event_mode(sse_message: str) -> str:
+    """The stream mode a formatted SSE message belongs to.
+
+    Subgraph events carry their namespace in the name (``values|node_a``) and
+    message events their sub-type (``messages/partial``); both reduce to the mode
+    the client asked for.
+    """
+    header, _, _ = sse_message.partition("\n")
+    name = header.removeprefix("event:").strip()
+    return name.split("|")[0].split("/")[0]
+
+
+async def filter_stream_modes(
+    stream: AsyncGenerator[str, None], modes: Collection[str] | None
+) -> AsyncGenerator[str, None]:
+    """Forward only the requested stream modes.
+
+    Control events always pass: they carry the protocol rather than graph output,
+    and a client that filtered them out could never tell the stream had ended.
+    """
+    if not modes:
+        async for message in stream:
+            yield message
+        return
+
+    allowed = set(modes)
+    async for message in stream:
+        mode = event_mode(message)
+        if mode in allowed or mode not in STREAM_MODE_EVENTS:
+            yield message
 
 
 def create_end_event(event_id: str | None = None, status: str = "success") -> str:

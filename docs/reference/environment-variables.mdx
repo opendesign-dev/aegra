@@ -169,6 +169,43 @@ Set `CRON_ENABLED=false` to disable scheduling without removing cron records. Jo
 Cron firing is **at-least-once**: if a worker crashes after claiming a cron but before the run setup commits, the claim eventually expires (after `CRON_CLAIM_DURATION_SECONDS`) and another tick re-fires the cron. Make agent runs idempotent if duplicate firings are unacceptable.
 </Note>
 
+## Run completion webhooks
+
+Pass `webhook` when creating a run and the server POSTs the final `Run` payload
+once the run reaches a terminal state. The intent is recorded in a transactional
+outbox alongside the run's terminal status, so a crash inside the retry window
+can only replay a delivery, never lose one. A background sweeper drains it.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEBHOOK_ENABLED` | `true` | Run the sweeper that drains the delivery outbox |
+| `WEBHOOK_POLL_INTERVAL_SECONDS` | `5` | How often (in seconds) the sweeper looks for due deliveries |
+| `WEBHOOK_TIMEOUT_SECONDS` | `10.0` | Per-request timeout for the outbound POST |
+| `WEBHOOK_BATCH_SIZE` | `50` | Maximum deliveries claimed per sweep |
+| `WEBHOOK_MAX_ATTEMPTS` | `5` | Attempts before a delivery is abandoned as `failed` |
+| `WEBHOOK_BACKOFF_BASE_SECONDS` | `10` | First retry delay; doubles per attempt |
+| `WEBHOOK_BACKOFF_MAX_SECONDS` | `3600` | Ceiling on the backoff delay |
+
+Rows are claimed with `FOR UPDATE SKIP LOCKED`, so running the sweeper on every
+instance is safe — each delivery is attempted by one pod at a time.
+
+<Note>
+Webhook URLs must be `http` or `https` with a host, validated at the API
+boundary. Delivery POSTs to whatever is stored, so this is the SSRF entry point:
+restrict egress at the network layer if callers are untrusted.
+</Note>
+
+## Thread-level streaming
+
+`GET /threads/{thread_id}/stream` is an open subscription that follows a thread
+across runs. It polls for the thread's next run and closes once the thread has
+been idle, so an abandoned client cannot hold a connection open indefinitely.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `THREAD_STREAM_POLL_INTERVAL_SECONDS` | `1.0` | How often (in seconds) to look for the thread's next run |
+| `THREAD_STREAM_IDLE_TIMEOUT_SECONDS` | `300.0` | Close the stream after this long with no new run |
+
 ## Prometheus metrics
 
 | Variable | Default | Description |

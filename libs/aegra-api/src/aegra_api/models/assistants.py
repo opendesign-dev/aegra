@@ -1,9 +1,16 @@
 """Assistant-related Pydantic models for Agent Protocol"""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from aegra_api.models.enums import (
+    AssistantSelectField,
+    AssistantSortBy,
+    OnConflictBehavior,
+    SortOrder,
+)
 
 
 class AssistantCreate(BaseModel):
@@ -21,7 +28,9 @@ class AssistantCreate(BaseModel):
     metadata: dict[str, Any] | None = Field(
         default_factory=dict, description="Metadata to use for searching and filtering assistants."
     )
-    if_exists: str | None = Field("error", description="What to do if assistant exists: error or do_nothing")
+    if_exists: OnConflictBehavior | None = Field(
+        "raise", description="On conflict: 'raise' returns 409, 'do_nothing' returns the existing assistant."
+    )
 
 
 class Assistant(BaseModel):
@@ -52,8 +61,9 @@ class AssistantUpdate(BaseModel):
     name: str | None = Field(None, description="The name of the assistant (auto-generated if not provided)")
     description: str | None = Field(None, description="The description of the assistant. Defaults to null.")
     config: dict[str, Any] | None = Field(default_factory=dict, description="Configuration to use for the graph.")
-    # 必须默认 None：服务层用 `request.graph_id or assistant.graph_id` 回退，
-    # 任何 truthy 默认值都会让未传该字段的 PATCH 静默改写 graph_id。
+    # Must default to None: the service falls back to `request.graph_id or
+    # assistant.graph_id`, so any truthy default would let a PATCH that omits
+    # the field silently rewrite graph_id.
     graph_id: str | None = Field(None, description="The ID of the graph")
     context: dict[str, Any] | None = Field(
         default_factory=dict,
@@ -74,29 +84,37 @@ class AssistantList(BaseModel):
 class AssistantSearchRequest(BaseModel):
     """Request model for assistant search"""
 
-    name: str | None = Field(None, description="Filter by assistant name")
-    description: str | None = Field(None, description="Filter by assistant description")
-    graph_id: str | None = Field(None, description="Filter by graph ID")
-    limit: int | None = Field(20, le=100, ge=1, description="Maximum results")
-    offset: int | None = Field(0, ge=0, description="Results offset")
-    metadata: dict[str, Any] | None = Field(
-        default_factory=dict,
-        description="Metadata to use for searching and filtering assistants.",
+    name: str | None = Field(None, description="Substring match on name.")
+    description: str | None = Field(None, description="Substring match on description.")
+    graph_id: str | None = Field(None, description="Exact match on graph id.")
+    limit: int = Field(20, le=1000, ge=1, description="Maximum rows per page.")
+    offset: int = Field(0, ge=0, description="Rows to skip.")
+    metadata: dict[str, Any] | None = Field(default_factory=dict, description="Metadata containment match.")
+    sort_by: AssistantSortBy | None = Field(None, description="Sort field; defaults to created_at.")
+    sort_order: SortOrder | None = Field(None, description="Sort direction; defaults to desc.")
+    select: list[AssistantSelectField] | None = Field(
+        None, description="Return only the listed fields; omit for the full entity."
     )
-    sort_by: Literal["assistant_id", "name", "graph_id", "created_at", "updated_at"] | None = Field(
-        None,
-        description="Field to sort by (SDK-compatible).",
-    )
-    sort_order: Literal["asc", "desc"] | None = Field(
-        None,
-        description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
-    )
+
+
+class AssistantVersionsRequest(BaseModel):
+    """Request body for listing an assistant's versions."""
+
+    metadata: dict[str, Any] | None = Field(None, description="Metadata containment match on the version.")
+    limit: int = Field(10, ge=1, le=1000, description="Maximum rows per page.")
+    offset: int = Field(0, ge=0, description="Rows to skip, counting from the newest version.")
 
 
 class AgentSchemas(BaseModel):
-    """Agent schema definitions for client integration"""
+    """Agent schema definitions for client integration.
 
-    input_schema: dict[str, Any] = Field(..., description="JSON Schema for agent inputs")
-    output_schema: dict[str, Any] = Field(..., description="JSON Schema for agent outputs")
-    state_schema: dict[str, Any] = Field(..., description="JSON Schema for agent state")
-    config_schema: dict[str, Any] = Field(..., description="JSON Schema for agent config")
+    Every schema is nullable: a graph that does not annotate one of these
+    yields null for it rather than failing the request.
+    """
+
+    graph_id: str = Field(..., description="Graph these schemas belong to.")
+    input_schema: dict[str, Any] | None = Field(None, description="JSON Schema for graph input.")
+    output_schema: dict[str, Any] | None = Field(None, description="JSON Schema for graph output.")
+    state_schema: dict[str, Any] | None = Field(None, description="JSON Schema for graph state.")
+    config_schema: dict[str, Any] | None = Field(None, description="JSON Schema for graph config.")
+    context_schema: dict[str, Any] | None = Field(None, description="JSON Schema for graph context.")

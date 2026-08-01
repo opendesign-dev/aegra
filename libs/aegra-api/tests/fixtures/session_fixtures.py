@@ -5,6 +5,24 @@ from typing import Any
 from tests.fixtures.database import DummySessionBase, override_get_session_dep
 
 
+class _Result:
+    """Stand-in for SQLAlchemy's ``ScalarResult``."""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self.rows = rows
+
+    def all(self) -> list[Any]:
+        return self.rows
+
+
+def queried_table(stmt: Any) -> str | None:
+    """Table a select targets, so a fixture can answer with the right entity."""
+    try:
+        return stmt.column_descriptions[0]["entity"].__tablename__
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return None
+
+
 class BasicSession(DummySessionBase):
     """Basic session with minimal functionality"""
 
@@ -29,16 +47,12 @@ class ThreadSession(BasicSession):
         self.threads = threads or []
 
     async def scalars(self, stmt: Any) -> Any:
-        """Mock scalars method for thread queries"""
+        """Thread rows for thread queries, nothing for other tables.
 
-        class Result:
-            def __init__(self, threads_list):
-                self.threads_list = threads_list
-
-            def all(self) -> list[Any]:
-                return self.threads_list
-
-        return Result(self.threads)
+        Search also reads the thread_state cache, so answering every statement
+        with the thread list would hand the caller the wrong entity type.
+        """
+        return _Result(self.threads if queried_table(stmt) == "thread" else [])
 
 
 class RunSession(BasicSession):

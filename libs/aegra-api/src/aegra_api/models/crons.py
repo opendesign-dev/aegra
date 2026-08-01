@@ -2,36 +2,20 @@
 
 from datetime import UTC, datetime
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from aegra_api.models.enums import CronSelectField, CronSortBy, Durability, SortOrder
 from aegra_api.settings import settings
+from aegra_api.utils.webhooks import WEBHOOK_MAX_LEN, validate_webhook_url
 
 # Field length caps. Keep these conservative; cron metadata is small by nature.
 _SCHEDULE_MAX_LEN = 256
 _TIMEZONE_MAX_LEN = 64
-_WEBHOOK_MAX_LEN = 2048
 _STREAM_MODE_MAX_LEN = 64
 _STR_FIELD_MAX_LEN = 256
 
 OnRunCompleted = Literal["delete", "keep"]
-
-
-def _validate_webhook_url(value: str | None) -> str | None:
-    """Reject malformed or non-http(s) webhook URLs at the API boundary.
-
-    The cron record stores ``webhook`` verbatim. When a future runtime wires
-    webhook delivery this is the SSRF entry point, so we constrain it now.
-    """
-    if value is None:
-        return None
-    parsed = urlparse(value)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("webhook must use http or https scheme")
-    if not parsed.netloc:
-        raise ValueError("webhook must include a host")
-    return value
 
 
 def _validate_payload_size(model: BaseModel) -> None:
@@ -53,7 +37,7 @@ class CronCreate(BaseModel):
     context: dict[str, Any] | None = None
     interrupt_before: Literal["*"] | list[str] | None = None
     interrupt_after: Literal["*"] | list[str] | None = None
-    webhook: str | None = Field(None, max_length=_WEBHOOK_MAX_LEN)
+    webhook: str | None = Field(None, max_length=WEBHOOK_MAX_LEN)
     on_run_completed: OnRunCompleted | None = None
     multitask_strategy: str | None = Field(None, max_length=_STR_FIELD_MAX_LEN)
     end_time: datetime | None = None
@@ -61,13 +45,13 @@ class CronCreate(BaseModel):
     stream_mode: str | list[str] | None = None
     stream_subgraphs: bool | None = None
     timezone: str | None = Field(None, max_length=_TIMEZONE_MAX_LEN)
-    # NOTE: checkpoint_during, stream_resumable, and durability are NOT exposed
-    # here because RunCreate has no matching fields yet. Accepting them silently
-    # drops the value at firing time. Re-add once those land on RunCreate.
+    stream_resumable: bool | None = None
+    durability: Durability | None = None
+    checkpoint_during: bool | None = Field(None, deprecated=True, description="DEPRECATED: use `durability`.")
 
     @model_validator(mode="after")
     def _check(self) -> "CronCreate":
-        self.webhook = _validate_webhook_url(self.webhook)
+        self.webhook = validate_webhook_url(self.webhook)
         if isinstance(self.stream_mode, str) and len(self.stream_mode) > _STREAM_MODE_MAX_LEN:
             raise ValueError("stream_mode is too long")
         if self.end_time is not None:
@@ -97,6 +81,7 @@ class CronResponse(BaseModel):
     next_run_date: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
+    timezone: str | None = None
 
 
 class CronUpdate(BaseModel):
@@ -108,7 +93,7 @@ class CronUpdate(BaseModel):
     metadata: dict[str, Any] | None = None
     config: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
-    webhook: str | None = Field(None, max_length=_WEBHOOK_MAX_LEN)
+    webhook: str | None = Field(None, max_length=WEBHOOK_MAX_LEN)
     interrupt_before: Literal["*"] | list[str] | None = None
     interrupt_after: Literal["*"] | list[str] | None = None
     on_run_completed: OnRunCompleted | None = None
@@ -117,12 +102,13 @@ class CronUpdate(BaseModel):
     stream_mode: str | list[str] | None = None
     stream_subgraphs: bool | None = None
     timezone: str | None = Field(None, max_length=_TIMEZONE_MAX_LEN)
-    # See CronCreate: checkpoint_during/stream_resumable/durability omitted
-    # until RunCreate gains matching fields.
+    stream_resumable: bool | None = None
+    durability: Durability | None = None
+    checkpoint_during: bool | None = Field(None, deprecated=True, description="DEPRECATED: use `durability`.")
 
     @model_validator(mode="after")
     def _check(self) -> "CronUpdate":
-        self.webhook = _validate_webhook_url(self.webhook)
+        self.webhook = validate_webhook_url(self.webhook)
         if isinstance(self.stream_mode, str) and len(self.stream_mode) > _STREAM_MODE_MAX_LEN:
             raise ValueError("stream_mode is too long")
         if self.end_time is not None:
@@ -140,10 +126,14 @@ class CronSearchRequest(BaseModel):
     assistant_id: str | None = None
     thread_id: str | None = None
     enabled: bool | None = None
+    metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")
     limit: int = Field(10, ge=1, le=1000)
     offset: int = Field(0, ge=0)
-    sort_by: str | None = None
-    sort_order: str | None = None
+    sort_by: CronSortBy | None = Field(None, description="Sort field; defaults to created_at.")
+    sort_order: SortOrder | None = Field(None, description="Sort direction; defaults to desc.")
+    select: list[CronSelectField] | None = Field(
+        None, description="Return only the listed fields; omit for the full entity."
+    )
 
 
 class CronCountRequest(BaseModel):
@@ -151,3 +141,4 @@ class CronCountRequest(BaseModel):
 
     assistant_id: str | None = None
     thread_id: str | None = None
+    metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")

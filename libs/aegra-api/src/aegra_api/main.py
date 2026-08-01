@@ -7,6 +7,8 @@ from typing import Any
 import structlog
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, APIRouter
@@ -39,6 +41,7 @@ from aegra_api.services.cron_scheduler import cron_scheduler
 from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.lease_reaper import lease_reaper
+from aegra_api.services.webhooks import webhook_sweeper
 from aegra_api.settings import settings
 from aegra_api.utils.setup_logging import setup_logging
 
@@ -138,9 +141,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if settings.cron.CRON_ENABLED:
         await cron_scheduler.start()
 
+    # Start webhook sweeper (drains the run-completion outbox)
+    if settings.webhook.WEBHOOK_ENABLED:
+        await webhook_sweeper.start()
+
     yield
 
-    # Shutdown order: cron → reaper → executor (drains jobs) → broker → Redis → DB
+    # Shutdown order: webhooks → cron → reaper → executor (drains jobs) → broker → Redis → DB
+    if settings.webhook.WEBHOOK_ENABLED:
+        await webhook_sweeper.stop()
     if settings.cron.CRON_ENABLED:
         await cron_scheduler.stop()
     if settings.redis.REDIS_BROKER_ENABLED:
@@ -168,6 +177,29 @@ async def agent_protocol_exception_handler(_request: Request, exc: HTTPException
     )
 
 
+async def validation_exception_handler(_request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Convert 422 validation errors to the Agent Protocol error format.
+
+    FastAPI's default body puts a list under ``detail``. The SDK's error mapper
+    only reads ``message``/``detail``/``error`` when they are non-empty strings,
+    so a list means the client sees a bare "422 Unprocessable Entity" and never
+    learns which field was wrong. Flattening into ``message`` fixes that; the
+    per-field records stay in ``details``.
+    """
+    errors = exc.errors()
+    summary = "; ".join(f"{'.'.join(str(part) for part in err.get('loc', ()))}: {err.get('msg', '')}" for err in errors)
+    return JSONResponse(
+        status_code=422,
+        content=jsonable_encoder(
+            AgentProtocolError(
+                error="validation_error",
+                message=summary or "Request validation failed",
+                details={"errors": errors},
+            ).model_dump()
+        ),
+    )
+
+
 async def general_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
     """Handle unexpected exceptions"""
     return JSONResponse(
@@ -182,6 +214,7 @@ async def general_exception_handler(_request: Request, exc: Exception) -> JSONRe
 
 exception_handlers = {
     HTTPException: agent_protocol_exception_handler,
+    RequestValidationError: validation_exception_handler,
     Exception: general_exception_handler,
 }
 

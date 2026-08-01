@@ -11,10 +11,12 @@ Architecture:
 - Service Layer (assistant_service.py): Business logic, validation, orchestration
 """
 
-from fastapi import APIRouter, Body, Depends, Query
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends, Query, Response
 
 from aegra_api.core.auth_deps import auth_dependency
-from aegra_api.core.orm import Assistant as AssistantORM
+from aegra_api.core.query import page
 from aegra_api.models import (
     AgentSchemas,
     Assistant,
@@ -23,21 +25,11 @@ from aegra_api.models import (
     AssistantSearchRequest,
     AssistantUpdate,
 )
+from aegra_api.models.assistants import AssistantVersionsRequest
 from aegra_api.models.errors import NOT_FOUND
 from aegra_api.services.assistant_service import AssistantService, get_assistant_service
 
 router = APIRouter(tags=["Assistants"], dependencies=auth_dependency)
-
-
-def _resolve_sort(request: AssistantSearchRequest) -> tuple[object, bool]:
-    """Resolve (ORM column, is_ascending) for /assistants/search.
-
-    sort_by is Pydantic-validated against a Literal — invalid values 422 at
-    the request boundary. Default is created_at DESC.
-    """
-    if request.sort_by:
-        return getattr(AssistantORM, request.sort_by), (request.sort_order or "desc").lower() == "asc"
-    return AssistantORM.created_at, False
 
 
 @router.post("/assistants", response_model=Assistant, response_model_by_alias=False)
@@ -68,18 +60,22 @@ async def list_assistants(
     return AssistantList(assistants=assistants, total=len(assistants))
 
 
-@router.post("/assistants/search", response_model=list[Assistant], response_model_by_alias=False)
+@router.post("/assistants/search", response_model=None)
 async def search_assistants(
     request: AssistantSearchRequest,
+    response: Response,
     service: AssistantService = Depends(get_assistant_service),
-):
+) -> list[Any]:
     """Search assistants with filters.
 
     Filter by name, description, graph ID, or metadata. Results are paginated
-    via `limit` and `offset`.
+    via `limit` and `offset`; a full page sets the `X-Pagination-Next` cursor
+    header. Pass `select` to return only the listed fields.
+
+    Declared without a response model because `select` makes the row shape
+    dynamic — full entities when omitted, projected dicts when given.
     """
-    column, asc = _resolve_sort(request)
-    return await service.search_assistants(request, sort_column=column, sort_asc=asc)
+    return page(response, await service.search_assistants(request), request)
 
 
 @router.post("/assistants/count", response_model=int)
@@ -135,14 +131,16 @@ async def update_assistant(
 @router.delete("/assistants/{assistant_id}", responses={**NOT_FOUND})
 async def delete_assistant(
     assistant_id: str,
+    delete_threads: bool = Query(False, description="Also delete every thread created against this assistant."),
     service: AssistantService = Depends(get_assistant_service),
 ):
     """Delete an assistant by its ID.
 
-    Permanently removes the assistant and all of its versions. This action
-    cannot be undone.
+    Permanently removes the assistant and all of its versions. Set
+    `delete_threads` to also remove every thread created against it. This
+    action cannot be undone.
     """
-    return await service.delete_assistant(assistant_id)
+    return await service.delete_assistant(assistant_id, delete_threads=delete_threads)
 
 
 @router.post(
@@ -172,14 +170,16 @@ async def set_assistant_latest(
 )
 async def list_assistant_versions(
     assistant_id: str,
+    request: AssistantVersionsRequest | None = None,
     service: AssistantService = Depends(get_assistant_service),
 ):
     """List all versions of an assistant.
 
-    Returns versions ordered from newest to oldest. Each version captures the
-    assistant's configuration at the time of creation or update.
+    Returns versions ordered from newest to oldest, paginated via `limit` and
+    `offset`. Each version captures the assistant's configuration at the time
+    of creation or update.
     """
-    return await service.list_assistant_versions(assistant_id)
+    return await service.list_assistant_versions(assistant_id, request)
 
 
 @router.get(
@@ -229,5 +229,20 @@ async def get_assistant_subgraphs(
     Returns the subgraph definitions used by this assistant's graph. Set
     `recurse=true` to include deeply nested subgraphs, or filter to a single
     namespace.
+    """
+    return await service.get_assistant_subgraphs(assistant_id, namespace, recurse)
+
+
+@router.get("/assistants/{assistant_id}/subgraphs/{namespace}", responses={**NOT_FOUND})
+async def get_assistant_subgraphs_by_namespace(
+    assistant_id: str,
+    namespace: str,
+    recurse: bool = Query(False, description="Recursively include nested subgraphs."),
+    service: AssistantService = Depends(get_assistant_service),
+):
+    """Get subgraphs of an assistant under a specific namespace.
+
+    Path form of the namespace filter — the SDK uses this variant whenever a
+    namespace is supplied, and the query form when it is not.
     """
     return await service.get_assistant_subgraphs(assistant_id, namespace, recurse)

@@ -116,9 +116,12 @@ class DummyThread:
 
 
 class DummyStoreItem:
-    """Mock store item for testing"""
+    """Mock store item mirroring LangGraph's ``Item``/``SearchItem`` attributes."""
 
-    def __init__(self, key: str, value: Any, namespace: tuple):
+    def __init__(self, key: str, value: Any, namespace: tuple, *, score: float | None = None) -> None:
         self.key = key
         self.value = value
         self.namespace = namespace
+        self.created_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
+        self.score = score

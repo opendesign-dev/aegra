@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import AssistantVersion as AssistantVersionORM
-from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
+from aegra_api.models import Assistant, AssistantCreate, AssistantSearchRequest, AssistantUpdate
 from aegra_api.models.auth import User
 from aegra_api.services.assistant_service import AssistantService
 from tests.fixtures.database import DummySessionBase
@@ -238,26 +238,18 @@ class TestAssistantServiceDatabase:
             )
             await assistant_service.create_assistant(request)
 
-        # Mock search request
-        mock_request = Mock()
-        mock_request.name = None
-        mock_request.description = None
-        mock_request.graph_id = None
-        mock_request.metadata = None
-        mock_request.offset = 2
-        mock_request.limit = 2
+        request = AssistantSearchRequest(offset=2, limit=2)
 
-        # Mock search results
         mock_result = Mock()
         mock_result.all.return_value = []
-
         assistant_service.session.scalars.return_value = mock_result
 
-        result = await assistant_service.search_assistants(mock_request)
+        result = await assistant_service.search_assistants(request)
 
         assert isinstance(result, list)
-        # Verify pagination parameters were applied
-        assistant_service.session.scalars.assert_called_once()
+        compiled = str(assistant_service.session.scalars.call_args.args[0].compile())
+        assert "LIMIT" in compiled.upper()
+        assert "OFFSET" in compiled.upper()
 
     @pytest.mark.asyncio
     async def test_assistant_version_history(self, assistant_service):
@@ -366,26 +358,18 @@ class TestAssistantServiceDatabase:
         )
         await assistant_service.create_assistant(request2)
 
-        # Mock search request with metadata filter
-        mock_request = Mock()
-        mock_request.name = None
-        mock_request.description = None
-        mock_request.graph_id = None
-        mock_request.metadata = {"env": "prod"}
-        mock_request.offset = 0
-        mock_request.limit = 10
+        request = AssistantSearchRequest(metadata={"env": "prod"}, offset=0, limit=10)
 
-        # Mock search results
         mock_result = Mock()
         mock_result.all.return_value = []
-
         assistant_service.session.scalars.return_value = mock_result
 
-        result = await assistant_service.search_assistants(mock_request)
+        result = await assistant_service.search_assistants(request)
 
         assert isinstance(result, list)
-        # Verify metadata filter was applied
-        assistant_service.session.scalars.assert_called_once()
+        # JSONB 包含判定，走 metadata GIN 索引。
+        compiled = str(assistant_service.session.scalars.call_args.args[0].compile())
+        assert "@>" in compiled
 
     @pytest.mark.asyncio
     async def test_assistant_count_with_filters(self, assistant_service):

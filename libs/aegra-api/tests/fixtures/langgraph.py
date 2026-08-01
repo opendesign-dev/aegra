@@ -1,6 +1,8 @@
 """LangGraph fixtures for tests"""
 
-from contextlib import asynccontextmanager
+import sys
+from collections.abc import Iterator
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -172,16 +174,28 @@ class MockLangGraphService:
         raise RuntimeError("No fake agent/graph configured")
 
 
-def patch_langgraph_service(agent: FakeAgent | None = None, graph: FakeGraph | None = None):
-    """Patch get_langgraph_service to return a mock
+@contextmanager
+def patch_langgraph_service(
+    agent: FakeAgent | None = None, graph: FakeGraph | None = None
+) -> Iterator[MockLangGraphService]:
+    """Patch get_langgraph_service everywhere it is bound.
+
+    Modules that import the factory at module scope hold their own reference, so
+    patching only the defining module would leave them on the real one. Binding
+    sites are discovered from the loaded modules rather than hardcoded, so a new
+    importer needs no change here.
 
     Usage:
         with patch_langgraph_service(agent=fake_agent):
             ... tests ...
     """
     fake = MockLangGraphService(agent=agent, graph=graph)
-    return patch(
-        "aegra_api.services.langgraph_service.get_langgraph_service",
-        autospec=True,
-        return_value=fake,
-    )
+    targets = [
+        name
+        for name, module in list(sys.modules.items())
+        if name.startswith("aegra_api.") and getattr(module, "get_langgraph_service", None) is not None
+    ]
+    with ExitStack() as stack:
+        for name in targets:
+            stack.enter_context(patch(f"{name}.get_langgraph_service", autospec=True, return_value=fake))
+        yield fake

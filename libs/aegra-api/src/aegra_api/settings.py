@@ -440,6 +440,37 @@ class EventStreamingSettings(EnvBase):
 
     FF_V2_EVENT_STREAMING: bool = True
 
+    # GET /threads/{id}/stream is an open subscription; it polls for the thread's
+    # next run and closes once the thread has been idle this long, so an
+    # abandoned client cannot pin a connection forever.
+    THREAD_STREAM_POLL_INTERVAL_SECONDS: float = 1.0
+    THREAD_STREAM_IDLE_TIMEOUT_SECONDS: float = 300.0
+
+
+class WebhookSettings(EnvBase):
+    """Run-completion webhook delivery.
+
+    Controls the sweeper that drains the ``webhook_deliveries`` outbox.
+    """
+
+    WEBHOOK_ENABLED: bool = True
+    WEBHOOK_POLL_INTERVAL_SECONDS: int = 5
+    WEBHOOK_TIMEOUT_SECONDS: float = 10.0
+    WEBHOOK_BATCH_SIZE: int = 50
+    WEBHOOK_MAX_ATTEMPTS: int = 5
+    WEBHOOK_BACKOFF_BASE_SECONDS: int = 10
+    WEBHOOK_BACKOFF_MAX_SECONDS: int = 3600
+
+    @model_validator(mode="after")
+    def _validate_intervals(self) -> "WebhookSettings":
+        if self.WEBHOOK_POLL_INTERVAL_SECONDS <= 0:
+            raise ValueError(
+                f"WEBHOOK_POLL_INTERVAL_SECONDS must be greater than 0, got {self.WEBHOOK_POLL_INTERVAL_SECONDS}"
+            )
+        if self.WEBHOOK_MAX_ATTEMPTS <= 0:
+            raise ValueError(f"WEBHOOK_MAX_ATTEMPTS must be greater than 0, got {self.WEBHOOK_MAX_ATTEMPTS}")
+        return self
+
 
 class Settings:
     """Container object that instantiates all application settings groups."""
@@ -453,6 +484,7 @@ class Settings:
         self.redis = RedisSettings()
         self.worker = WorkerSettings()
         self.cron = CronSettings()
+        self.webhook = WebhookSettings()
         self.event_streaming = EventStreamingSettings()
 
 

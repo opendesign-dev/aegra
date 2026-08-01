@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from aegra_api.api.runs import wait_for_run
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Run as RunORM
-from aegra_api.models import User
+from aegra_api.models import RunCreate, User
 
 
 def _make_session_maker(session: AsyncMock) -> MagicMock:
@@ -45,22 +45,13 @@ def _make_multi_session_maker(*sessions: AsyncMock) -> MagicMock:
     return MagicMock(side_effect=_factory)
 
 
-def _make_request() -> MagicMock:
-    """Build a standard mock RunCreate request."""
-    request = MagicMock()
-    request.assistant_id = "test-assistant"
-    request.input = {"message": "test"}
-    request.command = None
-    request.config = {}
-    request.context = None
-    request.checkpoint = None
-    request.stream_mode = None
-    request.interrupt_before = None
-    request.interrupt_after = None
-    request.multitask_strategy = None
-    request.stream_subgraphs = False
-    request.metadata = None
-    return request
+def _make_request() -> RunCreate:
+    """Build a standard RunCreate request.
+
+    A real model rather than a MagicMock: mocks hand back a MagicMock for any
+    field the test forgot to set, which the strict RunJob models then reject.
+    """
+    return RunCreate(assistant_id="test-assistant", input={"message": "test"})
 
 
 def _make_assistant() -> AssistantORM:

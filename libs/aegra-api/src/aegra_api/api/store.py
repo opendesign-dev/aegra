@@ -1,5 +1,7 @@
 """Store endpoints for Agent Protocol"""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
@@ -48,7 +50,14 @@ async def put_store_item(request: StorePutRequest, user: User = Depends(get_curr
 
     store = db_manager.get_store()
 
-    await store.aput(namespace=tuple(scoped_namespace), key=request.key, value=request.value)
+    # ``index``/``ttl`` are only forwarded when supplied so the store's own
+    # configured defaults still apply — False and None mean different things here.
+    extra: dict[str, Any] = {}
+    if request.index is not None:
+        extra["index"] = request.index
+    if request.ttl is not None:
+        extra["ttl"] = request.ttl
+    await store.aput(namespace=tuple(scoped_namespace), key=request.key, value=request.value, **extra)
 
     return Response(status_code=204)
 
@@ -59,11 +68,13 @@ async def get_store_item(
     namespace: str | list[str] | None = Query(
         None, description="Namespace path. Use dot-separated string or repeated query params."
     ),
+    refresh_ttl: bool | None = Query(None, description="Extend the item's TTL on read."),
     user: User = Depends(get_current_user),
 ) -> StoreGetResponse:
     """Get an item from the store by key.
 
-    Returns 404 if no item exists at the given namespace and key.
+    Returns 404 if no item exists at the given namespace and key. Pass
+    `refresh_ttl` to extend the item's lifetime as a side effect of reading it.
     """
     # Authorization check
     ctx = build_auth_context(user, "store", "get")
@@ -82,12 +93,18 @@ async def get_store_item(
 
     store = db_manager.get_store()
 
-    item = await store.aget(tuple(scoped_namespace), key)
+    item = await store.aget(tuple(scoped_namespace), key, refresh_ttl=refresh_ttl)
 
     if not item:
         raise HTTPException(404, "Item not found")
 
-    return StoreGetResponse(key=key, value=item.value, namespace=list(scoped_namespace))
+    return StoreGetResponse(
+        key=key,
+        value=item.value,
+        namespace=list(scoped_namespace),
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
 
 
 @router.delete("/store/items", status_code=204)
@@ -143,7 +160,8 @@ async def search_store_items(
     """Search items in the store.
 
     Filter items by namespace prefix, key-value metadata filters, or semantic
-    query. Results are paginated via `limit` and `offset`.
+    query. Results are paginated via `limit` and `offset`. When `query` is given
+    each item carries its relevance `score`.
     """
     # Authorization check
     ctx = build_auth_context(user, "store", "search")
@@ -170,17 +188,28 @@ async def search_store_items(
         tuple(scoped_prefix),
         query=request.query,
         filter=request.filter,
-        limit=request.limit or 20,
-        offset=request.offset or 0,
+        limit=request.limit,
+        offset=request.offset,
+        refresh_ttl=request.refresh_ttl,
     )
 
-    items = [StoreItem(key=r.key, value=r.value, namespace=list(r.namespace)) for r in results]
+    items = [
+        StoreItem(
+            key=r.key,
+            value=r.value,
+            namespace=list(r.namespace),
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+            score=getattr(r, "score", None),
+        )
+        for r in results
+    ]
 
     return StoreSearchResponse(
         items=items,
         total=len(items),  # LangGraph store doesn't provide total count
-        limit=request.limit or 20,
-        offset=request.offset or 0,
+        limit=request.limit,
+        offset=request.offset,
     )
 
 

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegra_api.models.auth import User
+from aegra_api.models.enums import StreamMode
 
 if TYPE_CHECKING:
     from aegra_api.core.orm import Run as RunORM
@@ -38,11 +39,13 @@ class RunExecution(BaseModel):
     input_data: dict[str, Any] | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
-    stream_mode: str | list[str] | None = None
+    stream_mode: StreamMode | list[StreamMode] | None = None
     checkpoint: dict[str, Any] | None = None
     command: dict[str, Any] | None = None
     # When true, stream via the native v3 protocol producer for Agent Protocol v2.
     event_streaming_v2: bool = False
+    # Checkpoint flush timing; None lets LangGraph apply its own default.
+    durability: str | None = None
 
 
 class RunBehavior(BaseModel):
@@ -54,6 +57,10 @@ class RunBehavior(BaseModel):
     interrupt_after: str | list[str] | None = None
     multitask_strategy: str | None = None
     subgraphs: bool = False
+    # URL notified once the run reaches a terminal state.
+    webhook: str | None = None
+    # Seconds to hold the run before execution starts.
+    after_seconds: int | None = None
 
 
 class RunJob(BaseModel):

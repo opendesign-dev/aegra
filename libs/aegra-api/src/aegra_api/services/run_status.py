@@ -17,6 +17,7 @@ from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import _get_session_maker
 from aegra_api.core.serializers import GeneralSerializer
+from aegra_api.services import webhooks
 from aegra_api.utils.status_compat import validate_run_status, validate_thread_status
 
 logger = structlog.getLogger(__name__)
@@ -60,7 +61,7 @@ async def set_thread_status(session: AsyncSession, thread_id: str, status: str) 
     """
     validated = validate_thread_status(status)
     result = cast(
-        CursorResult,
+        CursorResult[Any],
         await session.execute(
             update(ThreadORM)
             .where(ThreadORM.thread_id == thread_id)
@@ -79,11 +80,14 @@ async def finalize_run(
     thread_status: str,
     output: Any = None,
     error: str | None = None,
+    webhook: str | None = None,
 ) -> None:
     """Update run status + thread status in a single transaction.
 
     Batches two UPDATE statements into one DB round-trip instead of
     opening separate sessions for update_run_status and set_thread_status.
+    The webhook outbox row joins the same transaction, so reaching a terminal
+    state and owing a notification commit together or not at all.
     """
     validated_run = validate_run_status(status)
     validated_thread = validate_thread_status(thread_status)
@@ -105,6 +109,7 @@ async def finalize_run(
             .where(ThreadORM.thread_id == thread_id)
             .values(status=validated_thread, updated_at=datetime.now(UTC))
         )
+        await webhooks.enqueue(session, run_id, webhook)
         await session.commit()
 
     logger.info("Finalized run", run_id=run_id, status=validated_run, thread_status=validated_thread)

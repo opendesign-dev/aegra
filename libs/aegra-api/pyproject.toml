@@ -1,6 +1,6 @@
 [project]
 name = "aegra-api"
-version = "0.16.0"
+version = "0.17.0"
 description = "Aegra core API - Self-hosted Agent Protocol server"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,6 +23,8 @@ dependencies = [
     "pydantic>=2.11.7",
     "pydantic-settings>=2.14.2",
     "sse-starlette>=3.3.4,<4.0.0",
+    # Used directly for outbound webhook delivery.
+    "httpx>=0.27.0",
 
     # LangGraph
     "langgraph>=1.0.3",

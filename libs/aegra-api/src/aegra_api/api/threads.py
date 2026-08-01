@@ -3,15 +3,14 @@
 import asyncio
 import contextlib
 import json
-import warnings
 from datetime import UTC, datetime
-from typing import Any
-from uuid import uuid4
+from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette import EventSourceResponse
 
 from aegra_api.core.active_runs import active_runs
 from aegra_api.core.auth_deps import auth_dependency, get_current_user
@@ -19,6 +18,8 @@ from aegra_api.core.auth_handlers import build_auth_context, handle_event
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session
+from aegra_api.core.query import extract_paths, page
+from aegra_api.core.sse import get_sse_headers, make_sse_response, sse_to_bytes
 from aegra_api.models import (
     Thread,
     ThreadCheckpoint,
@@ -33,9 +34,15 @@ from aegra_api.models import (
     ThreadUpdate,
     User,
 )
-from aegra_api.models.errors import CONFLICT, NOT_FOUND
+from aegra_api.models.enums import ThreadStreamMode
+from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
+from aegra_api.models.threads import ThreadPruneRequest, ThreadPruneResponse
+from aegra_api.services import thread_state_cache
+from aegra_api.services.langgraph_service import create_thread_config, get_langgraph_service
 from aegra_api.services.streaming_service import streaming_service
+from aegra_api.services.thread_service import ThreadService, get_thread_service
 from aegra_api.services.thread_state_service import ThreadStateService
+from aegra_api.services.thread_streaming import stream_thread
 from aegra_api.utils.run_utils import strip_pinned_config_keys
 
 router = APIRouter(tags=["Threads"], dependencies=auth_dependency)
@@ -44,50 +51,23 @@ logger = structlog.getLogger(__name__)
 thread_state_service = ThreadStateService()
 
 
-# --- Sort resolution for /threads/search ---
-
-_ALLOWED_SORT_FIELDS: frozenset[str] = frozenset({"created_at", "updated_at", "thread_id", "status"})
-_DEFAULT_SORT_FIELD = "created_at"
-_DEFAULT_SORT_ASC = False
-
-
-def _resolve_sort(request: ThreadSearchRequest) -> tuple[Any, bool]:
-    """Resolve (ORM column, is_ascending) for /threads/search.
-
-    Precedence: SDK-style ``sort_by`` (Pydantic-validated against the column
-    Literal) wins over the legacy ``order_by`` string. ``order_by`` stays
-    permissive — unknown columns or malformed input silently fall back to the
-    default (``created_at DESC``) — to preserve backward compatibility.
-    """
-    if request.sort_by:
-        column = getattr(ThreadORM, request.sort_by)
-        asc = (request.sort_order or "desc").lower() == "asc"
-        return column, asc
-
-    # order_by is marked deprecated on the Pydantic Field for OpenAPI; the
-    # access-site warning is meant for callers, not for the handler honouring
-    # the field — suppress it here.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        legacy = request.order_by
-
-    if legacy:
-        parts = legacy.strip().split()
-        if parts and parts[0].lower() in _ALLOWED_SORT_FIELDS:
-            asc = len(parts) > 1 and parts[1].lower() == "asc"
-            return getattr(ThreadORM, parts[0].lower()), asc
-
-    return getattr(ThreadORM, _DEFAULT_SORT_FIELD), _DEFAULT_SORT_ASC
-
-
 # --- Helper for safe ORM -> Pydantic conversion (Test/Mock compatible) ---
 
 
-def _serialize_thread(thread_orm: ThreadORM, default_metadata: dict[str, Any] | None = None) -> Thread:
+def _serialize_thread(
+    thread_orm: ThreadORM,
+    default_metadata: dict[str, Any] | None = None,
+    *,
+    values: dict[str, Any] | None = None,
+    interrupts: dict[str, list[Any]] | None = None,
+) -> Thread:
     """
     Safely converts ThreadORM to Thread model using dictionary construction.
     This handles None values and MagicMocks that appear in tests, preventing
     Pydantic V2 ValidationErrors.
+
+    Callers pass ``values``/``interrupts`` in so list endpoints can batch one
+    cache query instead of loading state per row.
     """
 
     def _coerce_str(val: Any, default: str) -> str:
@@ -143,6 +123,8 @@ def _serialize_thread(thread_orm: ThreadORM, default_metadata: dict[str, Any] | 
             "user_id": u_id,
             "created_at": c_at,
             "updated_at": u_at,
+            "values": values,
+            "interrupts": interrupts or {},
         }
     )
 
@@ -153,168 +135,68 @@ def _serialize_thread(thread_orm: ThreadORM, default_metadata: dict[str, Any] | 
 @router.post("/threads", response_model=Thread, responses={**CONFLICT})
 async def create_thread(
     request: ThreadCreate,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    service: ThreadService = Depends(get_thread_service),
 ) -> Thread:
     """Create a new conversation thread.
 
     Threads hold conversation state and checkpoint history. Provide a
     `thread_id` for idempotent creation, or let the server generate one.
     Set `if_exists` to `"do_nothing"` to return the existing thread when the
-    ID already exists instead of raising a 409 conflict.
+    ID already exists instead of raising a 409 conflict. Pass `supersteps` to
+    pre-fill the thread's state, and `ttl` to set a retention policy.
     """
-    # Authorization check
-    ctx = build_auth_context(user, "threads", "create")
-    value = request.model_dump()
-    filters = await handle_event(ctx, value)
-
-    # If handler modified metadata, update request
-    if filters and "metadata" in filters:
-        handler_meta = filters["metadata"]
-        if isinstance(handler_meta, dict):
-            request.metadata = {**(request.metadata or {}), **handler_meta}
-    elif value.get("metadata"):
-        # Handler may have modified value dict directly
-        handler_meta = value["metadata"]
-        if isinstance(handler_meta, dict):
-            request.metadata = {**(request.metadata or {}), **handler_meta}
-
-    thread_id = request.thread_id or str(uuid4())
-
-    if request.thread_id:
-        existing_stmt = select(ThreadORM).where(
-            ThreadORM.thread_id == thread_id,
-            ThreadORM.user_id == user.identity,
-        )
-        existing = await session.scalar(existing_stmt)
-
-        if existing:
-            if request.if_exists == "do_nothing":
-                return _serialize_thread(existing)
-            else:
-                raise HTTPException(409, f"Thread '{thread_id}' already exists")
-
-    metadata = request.metadata or {}
-    # Always enforce owner from authenticated user
-    metadata["owner"] = user.identity
-    # Preserve client-provided values; only set defaults if missing.
-    metadata.setdefault("assistant_id", None)
-    metadata.setdefault("graph_id", None)
-    metadata.setdefault("thread_name", "")
-
-    thread_orm = ThreadORM(
-        thread_id=thread_id,
-        status="idle",
-        metadata_json=metadata,
-        user_id=user.identity,
-    )
-
-    session.add(thread_orm)
-    await session.commit()
-
+    thread = await service.create(request)
+    if request.supersteps:
+        await service.apply_supersteps(thread, request.supersteps)
+    # refresh is unavailable on some mock sessions; metadata is passed as fallback.
     with contextlib.suppress(Exception):
-        await session.refresh(thread_orm)
-
-    # Pass metadata explicitly in case refresh failed (tests/mocks)
-    return _serialize_thread(thread_orm, default_metadata=metadata)
+        await service.session.refresh(thread)
+    return _serialize_thread(thread, default_metadata=thread.metadata_json)
 
 
 @router.get("/threads", response_model=ThreadList)
-async def list_threads(
-    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)
-) -> ThreadList:
+async def list_threads(service: ThreadService = Depends(get_thread_service)) -> ThreadList:
     """List all threads owned by the authenticated user.
 
     Returns every thread without filtering. Use the search endpoint for
     filtered queries.
     """
-    # Authorization check (search action for listing)
-    ctx = build_auth_context(user, "threads", "search")
-    value = {}
-    filters = await handle_event(ctx, value)
-
-    # Build query with filters if provided
-    stmt = select(ThreadORM).where(ThreadORM.user_id == user.identity)
-    if filters:
-        # Apply filters from authorization handler
-        # For now, we'll apply user_id filter which is already there
-        # Additional filters can be added here based on handler response
-        pass
-    result = await session.scalars(stmt)
-    rows = result.all()
-
-    # Use safe serialization
-    user_threads = [_serialize_thread(t) for t in rows]
-    return ThreadList(threads=user_threads, total=len(user_threads))
+    rows = [_serialize_thread(t) for t in await service.list_all()]
+    return ThreadList(threads=rows, total=len(rows))
 
 
-@router.get("/threads/{thread_id}", response_model=Thread, responses={**NOT_FOUND})
+@router.get("/threads/{thread_id}", response_model=None, responses={**NOT_FOUND})
 async def get_thread(
     thread_id: str,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> Thread:
+    include: str | None = Query(None, description="Comma-separated extra fields to return. Supported: `ttl`."),
+    service: ThreadService = Depends(get_thread_service),
+) -> dict[str, Any]:
     """Get a thread by its ID.
 
-    Returns 404 if the thread does not exist or does not belong to the
-    authenticated user.
+    Returns the thread's current `values` and `interrupts` alongside its
+    metadata. Returns 404 if the thread does not exist or does not belong to
+    the authenticated user.
     """
-    # Authorization check
-    ctx = build_auth_context(user, "threads", "read")
-    value = {"thread_id": thread_id}
-    await handle_event(ctx, value)
-
-    stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
-    thread = await session.scalar(stmt)
-    if not thread:
-        raise HTTPException(404, f"Thread '{thread_id}' not found")
-
-    return _serialize_thread(thread)
+    thread = await service.get(thread_id)
+    values, interrupts = await service.state(thread)
+    body = _serialize_thread(thread, values=values, interrupts=interrupts).model_dump(mode="json")
+    if include and "ttl" in {field.strip() for field in include.split(",")}:
+        body["ttl"] = thread.ttl
+    return body
 
 
 @router.patch("/threads/{thread_id}", response_model=Thread, responses={**NOT_FOUND})
 async def update_thread(
     thread_id: str,
     request: ThreadUpdate,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    service: ThreadService = Depends(get_thread_service),
 ) -> Thread:
     """Update a thread's metadata.
 
     Merges the provided metadata with the existing metadata (shallow merge).
+    `ttl`, when given, replaces the retention policy outright.
     """
-    # Authorization check
-    ctx = build_auth_context(user, "threads", "update")
-    value = {**request.model_dump(), "thread_id": thread_id}
-    filters = await handle_event(ctx, value)
-
-    # If handler modified metadata, update request
-    if filters and "metadata" in filters:
-        handler_meta = filters["metadata"]
-        if isinstance(handler_meta, dict):
-            request.metadata = {**(request.metadata or {}), **handler_meta}
-    elif value.get("metadata"):
-        handler_meta = value["metadata"]
-        if isinstance(handler_meta, dict):
-            request.metadata = {**(request.metadata or {}), **handler_meta}
-
-    stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
-    thread = await session.scalar(stmt)
-
-    if not thread:
-        raise HTTPException(404, f"Thread '{thread_id}' not found")
-
-    thread.updated_at = datetime.now(UTC)
-
-    if request.metadata:
-        current_metadata = dict(thread.metadata_json or {})
-        current_metadata.update(request.metadata)
-        thread.metadata_json = current_metadata
-
-    await session.commit()
-    await session.refresh(thread)
-
-    return _serialize_thread(thread)
+    return _serialize_thread(await service.update(thread_id, request))
 
 
 @router.get("/threads/{thread_id}/state", response_model=ThreadState, responses={**NOT_FOUND})
@@ -361,11 +243,6 @@ async def get_thread_state(
                 checkpoint_id=None,
                 parent_checkpoint_id=None,
             )
-
-        from aegra_api.services.langgraph_service import (
-            create_thread_config,
-            get_langgraph_service,
-        )
 
         langgraph_service = get_langgraph_service()
         config: dict[str, Any] = create_thread_config(thread_id, user)
@@ -463,11 +340,6 @@ async def update_thread_state(
                 f"Thread '{thread_id}' has no associated graph. Cannot update state.",
             )
 
-        from aegra_api.services.langgraph_service import (
-            create_thread_config,
-            get_langgraph_service,
-        )
-
         langgraph_service = get_langgraph_service()
         config: dict[str, Any] = create_thread_config(thread_id, user)
 
@@ -541,6 +413,10 @@ async def update_thread_state(
                     "checkpoint_ns": updated_config.get("configurable", {}).get("checkpoint_ns", ""),
                 }
 
+                # Keep the search/list cache in step with the checkpoint just
+                # written. Best-effort: the state write is already durable.
+                await thread_state_cache.refresh(thread_id, agent, updated_config)
+
                 logger.info(
                     "state POST: updated state for thread %s checkpoint_id=%s",
                     thread_id,
@@ -586,11 +462,6 @@ async def get_thread_state_at_checkpoint(
         graph_id = thread_metadata.get("graph_id")
         if not graph_id:
             raise HTTPException(404, f"Thread '{thread_id}' has no associated graph")
-
-        from aegra_api.services.langgraph_service import (
-            create_thread_config,
-            get_langgraph_service,
-        )
 
         langgraph_service = get_langgraph_service()
 
@@ -707,11 +578,6 @@ async def get_thread_history_post(
         if not graph_id:
             logger.info(f"history POST: no graph_id set for thread {thread_id}")
             return []
-
-        from aegra_api.services.langgraph_service import (
-            create_thread_config,
-            get_langgraph_service,
-        )
 
         langgraph_service = get_langgraph_service()
 
@@ -854,53 +720,96 @@ async def delete_thread(
     return {"status": "deleted"}
 
 
-@router.post("/threads/search", response_model=list[Thread])
+@router.get("/threads/{thread_id}/stream", responses={**SSE_RESPONSE, **NOT_FOUND})
+async def stream_thread_events(
+    thread_id: str,
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    stream_mode: Annotated[list[ThreadStreamMode] | None, Query(description="Thread-level views to forward.")] = None,
+    service: ThreadService = Depends(get_thread_service),
+) -> EventSourceResponse:
+    """Stream a thread's activity via SSE, across every run on it.
+
+    Unlike the run-level stream this stays attached as runs come and go.
+    `run_modes` forwards each run's own events, `lifecycle` reports runs starting
+    and finishing, and `state_update` emits the thread's state after each run.
+    The subscription closes once the thread has been idle for
+    ``THREAD_STREAM_IDLE_TIMEOUT_SECONDS``.
+    """
+    await service.get(thread_id)
+    events = stream_thread(thread_id, service.user, modes=stream_mode, last_event_id=last_event_id)
+    return make_sse_response(
+        sse_to_bytes(events),
+        headers={**get_sse_headers(), "Location": f"/threads/{thread_id}/stream"},
+    )
+
+
+@router.post("/threads/count", response_model=int)
+async def count_threads(
+    request: ThreadSearchRequest,
+    service: ThreadService = Depends(get_thread_service),
+) -> int:
+    """Count threads matching the given filters.
+
+    Accepts the same filters as search but returns only the total.
+    """
+    return await service.count(request)
+
+
+@router.post("/threads/{thread_id}/copy", response_model=Thread, responses={**NOT_FOUND})
+async def copy_thread(
+    thread_id: str,
+    service: ThreadService = Depends(get_thread_service),
+) -> Thread:
+    """Copy a thread into a new one.
+
+    The copy carries the source's metadata, TTL and latest state under a fresh
+    id. Full checkpoint history comes along only when the configured
+    checkpointer implements per-thread copying.
+    """
+    return _serialize_thread(await service.copy(thread_id))
+
+
+@router.post("/threads/prune", response_model=ThreadPruneResponse)
+async def prune_threads(
+    request: ThreadPruneRequest,
+    service: ThreadService = Depends(get_thread_service),
+) -> ThreadPruneResponse:
+    """Reclaim storage held by the given threads.
+
+    `strategy="delete"` removes the threads and their checkpoints outright.
+    `strategy="keep_latest"` keeps each thread and its latest state but drops
+    the history behind it; threads with pending interrupts are left untouched,
+    since an interrupt only resumes against the checkpoint that raised it.
+    """
+    return ThreadPruneResponse(pruned_count=await service.prune(request))
+
+
+@router.post("/threads/search", response_model=None)
 async def search_threads(
     request: ThreadSearchRequest,
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> list[Thread]:
+    response: Response,
+    service: ThreadService = Depends(get_thread_service),
+) -> list[dict[str, Any]]:
     """Search threads with filters.
 
-    Filter by status or metadata key-value pairs. Results are paginated via
-    `limit` and `offset` and ordered by creation time (newest first).
+    Filter by status, metadata, state values, or an explicit id set. Results
+    are paginated via `limit`/`offset`; a full page sets the
+    `X-Pagination-Next` cursor header. Pass `select` to return only the listed
+    fields, or `extract` to pull specific paths into an `extracted` field.
+
+    Declared without a response model because `select` makes the row shape
+    dynamic — full entities when omitted, projected dicts when given.
     """
-    # Authorization check
-    ctx = build_auth_context(user, "threads", "search")
-    value = request.model_dump()
-    filters = await handle_event(ctx, value)
+    rows = await service.search(request)
+    cached = await service.cached_states([row.thread_id for row in rows])
 
-    # Merge handler filters with request metadata
-    # Note: ThreadSearchRequest doesn't have a filters field,
-    # so we merge authorization filters into metadata if needed
-    if filters and "metadata" in filters:
-        # If filters contain metadata, merge with request metadata
-        handler_meta = filters["metadata"]
-        if isinstance(handler_meta, dict):
-            request.metadata = {**(request.metadata or {}), **handler_meta}
-        # Other filter types can be handled here if needed
-    stmt = select(ThreadORM).where(ThreadORM.user_id == user.identity)
+    threads = []
+    for row in rows:
+        values, interrupts = thread_state_cache.as_pair(cached.get(row.thread_id))
+        threads.append(_serialize_thread(row, values=values, interrupts=interrupts))
 
-    if request.status:
-        stmt = stmt.where(ThreadORM.status == request.status)
-
-    if request.metadata:
-        # JSONB containment: type-correct, deep-nested, GIN-indexable. Mirrors
-        # AssistantService.search_assistants for cross-endpoint consistency.
-        stmt = stmt.where(ThreadORM.metadata_json.op("@>")(request.metadata))
-
-    offset = request.offset or 0
-    limit = request.limit or 20
-    column, asc = _resolve_sort(request)
-    direction = column.asc() if asc else column.desc()
-    # Secondary sort on thread_id keeps offset pagination stable when the
-    # primary sort key has duplicates (status buckets, microsecond ties).
-    stmt = stmt.order_by(direction, ThreadORM.thread_id.asc()).offset(offset).limit(limit)
-
-    result = await session.scalars(stmt)
-    rows = result.all()
-
-    # Use safe serialization
-    threads_models = [_serialize_thread(t) for t in rows]
-
-    return threads_models
+    projected = page(response, threads, request)
+    if request.extract:
+        for row, full in zip(projected, threads, strict=True):
+            row["extracted"] = extract_paths(full.model_dump(mode="json"), request.extract)
+    return projected

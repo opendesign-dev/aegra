@@ -116,7 +116,7 @@ def mock_langgraph():
 def _ensure_thread(client: TestClient) -> str:
     resp = client.post(
         "/threads",
-        json={"metadata": {"purpose": "test-history"}, "initial_state": None},
+        json={"metadata": {"purpose": "test-history"}},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["thread_id"]

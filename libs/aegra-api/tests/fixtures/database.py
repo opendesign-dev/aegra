@@ -1,6 +1,8 @@
 """Database fixtures for tests"""
 
 from collections.abc import AsyncIterator, Callable
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 
 class DummySessionBase:
@@ -46,3 +48,15 @@ def override_get_session_dep(
         yield session_factory()
 
     return _dep
+
+
+def make_session_maker(session: Any) -> MagicMock:
+    """Stand in for ``_get_session_maker()``, handing out one prepared session.
+
+    Shared home for a helper that had been copy-pasted into every test module
+    that patches the session maker.
+    """
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=ctx)

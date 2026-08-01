@@ -376,18 +376,18 @@ class TestRunsStreamingEndpoints:
             ("success", None),  # terminal branch
         ],
     )
-    async def test_stream_run_never_wires_close_handler(
+    async def test_stream_run_close_handler_is_opt_in(
         self,
         mock_user: User,
         mock_session: AsyncMock,
         run_status: str,
         last_event_id: str | None,
     ) -> None:
-        """``stream_run`` (reconnect) must never wire ``client_close_handler_callable``.
+        """``stream_run`` (reconnect) wires no close handler unless asked.
 
         The endpoint is a reconnect-style join: multiple clients can attach
-        to the same run. A single client disconnecting must NOT cancel the
-        shared run — hence the endpoint deliberately omits the close handler.
+        to the same run, so one client disconnecting must not cancel the shared
+        run. Clients that do want that opt in via ``cancel_on_disconnect``.
         Covers both the terminal branch (early return with ``end`` event) and
         the active branch (live streaming via broker).
         """
@@ -422,8 +422,20 @@ class TestRunsStreamingEndpoints:
                 last_event_id=last_event_id,
                 user=mock_user,
             )
+            opted_in = await stream_run(
+                thread_id,
+                run_id,
+                last_event_id=last_event_id,
+                cancel_on_disconnect=True,
+                user=mock_user,
+            )
 
         assert response.client_close_handler_callable is None
+        if run_status == "running":
+            assert opted_in.client_close_handler_callable is not None
+        else:
+            # A terminal run emits a single `end` event; there is nothing to cancel.
+            assert opted_in.client_close_handler_callable is None
 
     @pytest.mark.asyncio
     async def test_stream_run_not_found(self, mock_user: User, mock_session: AsyncMock) -> None:

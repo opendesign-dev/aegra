@@ -76,7 +76,7 @@ class TestCreateThread:
         """Test creating a thread with basic metadata"""
         resp = client.post(
             "/threads",
-            json={"metadata": {"purpose": "testing"}, "initial_state": None},
+            json={"metadata": {"purpose": "testing"}},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -92,7 +92,7 @@ class TestCreateThread:
         """Test creating a thread with thread name in metadata"""
         resp = client.post(
             "/threads",
-            json={"metadata": {"thread_name": "Test Thread"}, "initial_state": None},
+            json={"metadata": {"thread_name": "Test Thread"}},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -318,6 +318,115 @@ class TestGetThread:
         assert data["thread_id"] == "test-123"
         assert data["metadata"]["purpose"] == "testing"
 
+    def test_get_thread_without_graph_id_returns_null_values(self):
+        """A thread with no graph bound yields null values instead of failing."""
+        app = create_test_app(include_runs=False, include_threads=True)
+        thread = _thread_row("test-123", metadata={"purpose": "testing"})
+
+        class Session(DummySessionBase):
+            async def scalar(self, _stmt):
+                return thread
+
+        app.dependency_overrides[core_get_session] = override_get_session_dep(Session)
+        resp = make_client(app).get("/threads/test-123")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # The SDK's Thread requires both keys; missing ones are a client KeyError.
+        assert data["values"] is None
+        assert data["interrupts"] == {}
+
+    def test_get_thread_carries_state_values_and_interrupts(self, monkeypatch):
+        """A graph-bound thread carries its state and task-grouped interrupts."""
+        app = create_test_app(include_runs=False, include_threads=True)
+        thread = _thread_row("test-123", metadata={"graph_id": "agent"})
+
+        class Session(DummySessionBase):
+            async def scalar(self, _stmt):
+                return thread
+
+        app.dependency_overrides[core_get_session] = override_get_session_dep(Session)
+
+        from aegra_api.services.thread_service import ThreadService
+
+        async def fake_state(_self, _thread):
+            return {"messages": [{"role": "user", "content": "hi"}]}, {"task-1": [{"value": "confirm?"}]}
+
+        monkeypatch.setattr(ThreadService, "state", fake_state)
+        resp = make_client(app).get("/threads/test-123")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["values"]["messages"][0]["content"] == "hi"
+        assert data["interrupts"]["task-1"][0]["value"] == "confirm?"
+
+    def test_get_thread_include_ttl_adds_retention_policy(self, monkeypatch):
+        """`include=ttl` surfaces the retention policy the SDK asks for by name."""
+        app = create_test_app(include_runs=False, include_threads=True)
+        thread = _thread_row("test-123")
+        thread.ttl = {"strategy": "delete", "ttl": 60}
+
+        class Session(DummySessionBase):
+            async def scalar(self, _stmt):
+                return thread
+
+        app.dependency_overrides[core_get_session] = override_get_session_dep(Session)
+        client = make_client(app)
+
+        assert "ttl" not in client.get("/threads/test-123").json()
+        assert client.get("/threads/test-123?include=ttl").json()["ttl"] == {"strategy": "delete", "ttl": 60}
+
+    def test_get_thread_serializes_real_interrupt_objects(self, monkeypatch):
+        """Regression: LangGraph's Interrupt is a dataclass and 500s unencoded.
+
+        Mocking with a dict bypasses that path, so this uses the real object.
+        """
+        from langgraph.types import Interrupt
+
+        app = create_test_app(include_runs=False, include_threads=True)
+        thread = _thread_row("test-123", metadata={"graph_id": "agent"})
+
+        class Session(DummySessionBase):
+            async def scalar(self, _stmt):
+                return thread
+
+        app.dependency_overrides[core_get_session] = override_get_session_dep(Session)
+
+        class _Task:
+            id = "task-1"
+            interrupts = (Interrupt(value={"q": "confirm?"}, id="i1"),)
+
+        class _Snapshot:
+            values = {"messages": []}
+            tasks = (_Task(),)
+
+        class _Agent:
+            def with_config(self, _config):
+                return self
+
+            async def aget_state(self, _config, **_kwargs):
+                return _Snapshot()
+
+        class _GraphCtx:
+            async def __aenter__(self):
+                return _Agent()
+
+            async def __aexit__(self, *_exc):
+                return False
+
+        class _Service:
+            def get_graph(self, *_args, **_kwargs):
+                return _GraphCtx()
+
+        from aegra_api.services import thread_service as thread_service_module
+
+        monkeypatch.setattr(thread_service_module, "get_langgraph_service", lambda: _Service())
+        resp = make_client(app).get("/threads/test-123")
+
+        assert resp.status_code == 200
+        # The SDK's Interrupt shape is {value, id}, grouped by task id.
+        assert resp.json()["interrupts"]["task-1"] == [{"value": {"q": "confirm?"}, "id": "i1"}]
+
     def test_get_thread_not_found(self):
         """Test getting a non-existent thread"""
         app = create_test_app(include_runs=False, include_threads=True)
@@ -471,14 +580,14 @@ class TestSearchThreads:
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
 
-    def test_search_sdk_state_updated_at_returns_422(self, client):
-        """sort_by='state_updated_at' is in the SDK's literal but not in our schema → 422."""
+    def test_search_accepts_state_updated_at_sort(self, client):
+        """sort_by='state_updated_at' orders by the materialized state cache."""
         resp = client.post(
             "/threads/search",
             json={"sort_by": "state_updated_at", "sort_order": "desc"},
         )
-        assert resp.status_code == 422
-        assert "sort_by" in resp.text
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
 
     def test_search_invalid_sort_by_returns_422(self, client):
         """Unknown sort_by is rejected at the model layer, regardless of order_by.
@@ -573,7 +682,7 @@ class TestThreadGetState:
         mock_agent.aget_state.return_value = mock_snapshot
         mock_agent.with_config = Mock(return_value=mock_agent)
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -613,7 +722,7 @@ class TestThreadUpdateState:
         mock_agent.aget_state.return_value = mock_snapshot
         mock_agent.with_config = Mock(return_value=mock_agent)
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -642,7 +751,7 @@ class TestThreadUpdateState:
         mock_agent.with_config = Mock(return_value=mock_agent)
         mock_agent.with_config.return_value = mock_agent
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -702,7 +811,7 @@ class TestThreadUpdateState:
         mock_agent.aupdate_state.return_value = {"configurable": {"checkpoint_id": "copy-cp", "checkpoint_ns": ""}}
         mock_agent.with_config = Mock(return_value=mock_agent)
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -744,7 +853,7 @@ class TestThreadUpdateState:
         mock_agent.aupdate_state.return_value = {"configurable": {"checkpoint_id": "new-cp", "checkpoint_ns": ""}}
         mock_agent.with_config = Mock(return_value=mock_agent)
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -776,7 +885,7 @@ class TestThreadUpdateState:
         mock_agent.aupdate_state.return_value = {"configurable": {"checkpoint_id": "new-cp", "checkpoint_ns": ""}}
         mock_agent.with_config = Mock(return_value=mock_agent)
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -873,7 +982,7 @@ class TestThreadStateCheckpoint:
         mock_agent.aget_state.return_value = mock_snapshot
         mock_agent.with_config = Mock(return_value=mock_agent)
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -949,7 +1058,7 @@ class TestThreadStateCheckpointPost:
         mock_agent.aget_state.return_value = mock_snapshot
         mock_agent.with_config = Mock(return_value=mock_agent)
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_get_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_get_service:
             mock_service = mock_get_service.return_value
             mock_service.get_graph = create_get_graph_mock(return_value=mock_agent)
 
@@ -1075,3 +1184,81 @@ class TestUpdateThread:
         data = resp.json()
         # Data should not have changed
         assert data["metadata"]["initial"] is True
+
+
+class TestThreadCountCopyPrune:
+    """SDK 契约里此前缺失的三个端点。"""
+
+    @pytest.fixture
+    def service(self):
+        from aegra_api.services.thread_service import ThreadService
+
+        service = Mock(spec=ThreadService)
+        # Search reads the state cache for its page; individual tests override
+        # this only when the cached values are what they are asserting on.
+        service.cached_states = AsyncMock(return_value={})
+        return service
+
+    @pytest.fixture
+    def client(self, service) -> TestClient:
+        from aegra_api.services.thread_service import get_thread_service
+
+        app = create_test_app(include_runs=False, include_threads=True)
+        app.dependency_overrides[get_thread_service] = lambda: service
+        return make_client(app)
+
+    def test_count_returns_total(self, client, service):
+        service.count = AsyncMock(return_value=7)
+
+        resp = client.post("/threads/count", json={"status": "idle"})
+
+        assert resp.status_code == 200
+        assert resp.json() == 7
+        assert service.count.call_args.args[0].status == "idle"
+
+    def test_copy_creates_new_thread_from_source(self, client, service):
+        service.copy = AsyncMock(return_value=_thread_row("copy-1", metadata={"copied_from": "src-1"}))
+
+        resp = client.post("/threads/src-1/copy")
+
+        assert resp.status_code == 200
+        assert resp.json()["thread_id"] == "copy-1"
+        service.copy.assert_awaited_once_with("src-1")
+
+    def test_prune_reports_pruned_count(self, client, service):
+        """The SDK reads ``pruned_count`` off the response body."""
+        service.prune = AsyncMock(return_value=2)
+
+        resp = client.post("/threads/prune", json={"thread_ids": ["t-1", "t-2"]})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"pruned_count": 2}
+
+    def test_prune_forwards_strategy(self, client, service):
+        service.prune = AsyncMock(return_value=1)
+
+        client.post("/threads/prune", json={"thread_ids": ["t-1"], "strategy": "keep_latest"})
+
+        assert service.prune.call_args.args[0].strategy == "keep_latest"
+
+    def test_prune_rejects_empty_id_list(self, client, service):
+        assert client.post("/threads/prune", json={"thread_ids": []}).status_code == 422
+
+    def test_search_select_projects_and_sets_cursor(self, client, service):
+        service.search = AsyncMock(return_value=[_thread_row(f"t-{i}") for i in range(2)])
+
+        resp = client.post("/threads/search", json={"select": ["thread_id"], "limit": 2, "offset": 4})
+
+        assert resp.status_code == 200
+        assert resp.json() == [{"thread_id": "t-0"}, {"thread_id": "t-1"}]
+        assert resp.headers["X-Pagination-Next"] == "6"
+
+    def test_search_forwards_new_filters(self, client, service):
+        service.search = AsyncMock(return_value=[])
+
+        resp = client.post("/threads/search", json={"ids": ["a", "b"], "values": {"step": 1}})
+
+        assert resp.status_code == 200
+        request = service.search.call_args.args[0]
+        assert request.ids == ["a", "b"]
+        assert request.values == {"step": 1}

@@ -66,7 +66,7 @@ class TestGetThreadState:
         thread_row.metadata_json = {"graph_id": "graph-123"}
         session.scalar.return_value = thread_row
 
-        with patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_service:
+        with patch("aegra_api.api.threads.get_langgraph_service") as mock_service:
             mock_service.return_value.get_graph = create_get_graph_mock(side_effect=Exception("boom"))
 
             with pytest.raises(HTTPException) as exc_info:
@@ -89,9 +89,9 @@ class TestGetThreadState:
         mock_agent.aget_state = AsyncMock(return_value=None)
 
         with (
-            patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_service,
+            patch("aegra_api.api.threads.get_langgraph_service") as mock_service,
             patch(
-                "aegra_api.services.langgraph_service.create_thread_config",
+                "aegra_api.api.threads.create_thread_config",
                 return_value={"configurable": {}},
             ),
         ):
@@ -117,9 +117,9 @@ class TestGetThreadState:
         mock_agent.aget_state = AsyncMock(return_value={"values": {}})
 
         with (
-            patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_service,
+            patch("aegra_api.api.threads.get_langgraph_service") as mock_service,
             patch(
-                "aegra_api.services.langgraph_service.create_thread_config",
+                "aegra_api.api.threads.create_thread_config",
                 return_value={"configurable": {}},
             ),
             patch(
@@ -155,9 +155,9 @@ class TestGetThreadState:
         config = {"configurable": {}}
 
         with (
-            patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_service,
+            patch("aegra_api.api.threads.get_langgraph_service") as mock_service,
             patch(
-                "aegra_api.services.langgraph_service.create_thread_config",
+                "aegra_api.api.threads.create_thread_config",
                 return_value=config,
             ),
             patch(
@@ -194,9 +194,9 @@ class TestGetThreadState:
         mock_agent.aget_state = AsyncMock(side_effect=HTTPException(status_code=418, detail="teapot"))
 
         with (
-            patch("aegra_api.services.langgraph_service.get_langgraph_service") as mock_service,
+            patch("aegra_api.api.threads.get_langgraph_service") as mock_service,
             patch(
-                "aegra_api.services.langgraph_service.create_thread_config",
+                "aegra_api.api.threads.create_thread_config",
                 return_value={"configurable": {}},
             ),
         ):

@@ -1,6 +1,7 @@
 """Database manager with LangGraph integration"""
 
 import structlog
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
 from psycopg.rows import dict_row
@@ -100,6 +101,17 @@ class DatabaseManager:
             self._store = None
 
         logger.info("✅ Database connections closed")
+
+    def supports(self, capability: str) -> bool:
+        """Whether the checkpointer actually implements an optional method.
+
+        ``BaseCheckpointSaver`` declares ``acopy_thread``/``adelete_for_runs`` but
+        raises ``NotImplementedError``; only an override makes them usable. Callers
+        probe here instead of catching mid-operation, so a feature that cannot be
+        honored is refused before anything has been mutated.
+        """
+        implementation = getattr(type(self.get_checkpointer()), capability, None)
+        return implementation is not None and implementation is not getattr(BaseCheckpointSaver, capability, None)
 
     def get_checkpointer(self) -> AsyncPostgresSaver:
         """Return the live AsyncPostgresSaver instance."""

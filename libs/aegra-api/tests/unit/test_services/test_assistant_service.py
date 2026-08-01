@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi import HTTPException
 
-from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
+from aegra_api.models import Assistant, AssistantCreate, AssistantSearchRequest, AssistantUpdate
 from aegra_api.models.auth import User
 from aegra_api.services.assistant_service import AssistantService, to_pydantic
 
@@ -464,7 +464,7 @@ class TestAssistantServiceCreate:
         """Test duplicate assistant handling with error policy"""
         request = AssistantCreate(
             graph_id="test-graph",
-            if_exists="error",
+            if_exists="raise",
         )
 
         # Mock existing assistant
@@ -843,22 +843,21 @@ class TestAssistantServiceSearch:
     @pytest.mark.asyncio
     async def test_search_assistants_with_filters(self, assistant_service: AssistantService) -> None:
         """Test assistant search with various filters"""
-        # Mock search request
-        mock_request = Mock()
-        mock_request.name = "test"
-        mock_request.description = "description"
-        mock_request.graph_id = "graph-1"
-        mock_request.metadata = {"env": "test"}
-        mock_request.offset = 0
-        mock_request.limit = 10
+        request = AssistantSearchRequest(
+            name="test",
+            description="description",
+            graph_id="graph-1",
+            metadata={"env": "test"},
+            offset=0,
+            limit=10,
+        )
 
-        # Mock search results
         mock_result = Mock()
         mock_result.all.return_value = []
 
         assistant_service.session.scalars.return_value = mock_result
 
-        result = await assistant_service.search_assistants(mock_request)
+        result = await assistant_service.search_assistants(request)
 
         assert isinstance(result, list)
         assistant_service.session.scalars.assert_called_once()
@@ -1205,7 +1204,7 @@ class TestAuthDispatch:
         The user's request.metadata is left untouched; the auth filter ANDs in."""
         from sqlalchemy.dialects import postgresql
 
-        request = Mock(name=None, description=None, graph_id=None, metadata={"env": "prod"}, offset=0, limit=20)
+        request = AssistantSearchRequest(metadata={"env": "prod"}, offset=0, limit=20)
         result = Mock()
         result.all.return_value = []
         assistant_service.session.scalars.return_value = result

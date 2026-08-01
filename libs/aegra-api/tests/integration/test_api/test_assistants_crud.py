@@ -241,7 +241,7 @@ class TestDeleteAssistant:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "deleted"
-        mock_assistant_service.delete_assistant.assert_called_once_with("test-assistant-123")
+        mock_assistant_service.delete_assistant.assert_called_once_with("test-assistant-123", delete_threads=False)
 
     def test_delete_assistant_not_found(self, client, mock_assistant_service):
         """Test deleting non-existent assistant"""
@@ -493,10 +493,10 @@ class TestSearchAssistantsSortAndAuth:
         )
 
         assert resp.status_code == 200
-        kwargs = mock_assistant_service.search_assistants.call_args.kwargs
-        assert kwargs.get("sort_asc") is True
-        sort_column = kwargs.get("sort_column")
-        assert getattr(sort_column, "key", None) == "name"
+        # 排序语义在 core.query 单测中覆盖，这里只验证请求体如实到达服务层。
+        request = mock_assistant_service.search_assistants.call_args.args[0]
+        assert request.sort_by == "name"
+        assert request.sort_order == "asc"
 
     def test_search_with_sort_by_only_defaults_to_desc(self, client, mock_assistant_service):
         mock_assistant_service.search_assistants.return_value = []
@@ -504,8 +504,9 @@ class TestSearchAssistantsSortAndAuth:
         resp = client.post("/assistants/search", json={"sort_by": "updated_at"})
 
         assert resp.status_code == 200
-        kwargs = mock_assistant_service.search_assistants.call_args.kwargs
-        assert kwargs.get("sort_asc") is False
+        request = mock_assistant_service.search_assistants.call_args.args[0]
+        assert request.sort_by == "updated_at"
+        assert request.sort_order is None  # 由 build_order_by 落到 desc
 
     def test_invalid_sort_by_returns_422(self, client, mock_assistant_service):
         resp = client.post("/assistants/search", json={"sort_by": "; DROP TABLE"})
@@ -675,10 +676,12 @@ class TestGetAssistantSchemas:
     def test_get_assistant_schemas(self, client, mock_assistant_service):
         """Test getting assistant schemas"""
         schemas = {
+            "graph_id": "test-graph",
             "input_schema": {"type": "object", "properties": {}},
             "output_schema": {"type": "object", "properties": {}},
             "config_schema": {"type": "object", "properties": {}},
             "state_schema": {"type": "object", "properties": {}},
+            "context_schema": None,
         }
         mock_assistant_service.get_assistant_schemas.return_value = schemas
 
@@ -686,10 +689,26 @@ class TestGetAssistantSchemas:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert "input_schema" in data
-        assert "output_schema" in data
-        assert "config_schema" in data
-        assert "state_schema" in data
+        # SDK 的 GraphSchema 要求这六个键齐备，缺一个客户端就会 KeyError。
+        assert data["graph_id"] == "test-graph"
+        for key in ("input_schema", "output_schema", "config_schema", "state_schema", "context_schema"):
+            assert key in data
+
+    def test_schemas_tolerate_graph_without_optional_schemas(self, client, mock_assistant_service):
+        """graph 未声明某类 schema 时该项为 null，不应 500（此前四项为 required）。"""
+        mock_assistant_service.get_assistant_schemas.return_value = {
+            "graph_id": "bare-graph",
+            "input_schema": None,
+            "output_schema": None,
+            "config_schema": None,
+            "state_schema": None,
+            "context_schema": None,
+        }
+
+        resp = client.get("/assistants/test-assistant-123/schemas")
+
+        assert resp.status_code == 200
+        assert resp.json()["input_schema"] is None
 
 
 class TestGetAssistantGraph:
@@ -773,3 +792,82 @@ class TestGetAssistantSubgraphs:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, dict)
+
+    def test_get_assistant_subgraphs_namespace_path_form(self, client, mock_assistant_service):
+        """SDK 传 namespace 时走路径形式，而非 query 参数。"""
+        mock_assistant_service.get_assistant_subgraphs.return_value = {"ns1": {"nodes": [], "edges": []}}
+
+        resp = client.get("/assistants/test-assistant-123/subgraphs/ns1?recurse=true")
+
+        assert resp.status_code == 200
+        mock_assistant_service.get_assistant_subgraphs.assert_called_once_with("test-assistant-123", "ns1", True)
+
+
+class TestSearchSelectAndPagination:
+    """select 投影与 X-Pagination-Next 游标。"""
+
+    def test_select_projects_only_requested_fields(self, client, mock_assistant_service):
+        mock_assistant_service.search_assistants.return_value = [make_assistant(assistant_id="a-1")]
+
+        resp = client.post("/assistants/search", json={"select": ["assistant_id", "graph_id"]})
+
+        assert resp.status_code == 200
+        assert resp.json() == [{"assistant_id": "a-1", "graph_id": "test-graph"}]
+
+    def test_omitted_select_returns_full_entity(self, client, mock_assistant_service):
+        mock_assistant_service.search_assistants.return_value = [make_assistant(assistant_id="a-1")]
+
+        resp = client.post("/assistants/search", json={})
+
+        assert resp.status_code == 200
+        assert "created_at" in resp.json()[0]
+
+    def test_response_uses_metadata_not_alias(self, client, mock_assistant_service):
+        """回归：SDK 的 Assistant 读 metadata；按 alias 输出会变成 metadata_dict。
+
+        search 改用 response_model=None 后，不带 select 的分支会落到
+        jsonable_encoder（按 alias 序列化），与带 select 的分支键名不一致。
+        """
+        mock_assistant_service.search_assistants.return_value = [make_assistant(metadata={"env": "prod"})]
+
+        full = client.post("/assistants/search", json={}).json()[0]
+        selected = client.post("/assistants/search", json={"select": ["assistant_id", "metadata"]}).json()[0]
+
+        assert "metadata" in full
+        assert "metadata_dict" not in full
+        assert selected["metadata"] == {"env": "prod"}
+
+    def test_full_page_sets_next_cursor(self, client, mock_assistant_service):
+        mock_assistant_service.search_assistants.return_value = [
+            make_assistant(assistant_id=f"a-{i}") for i in range(2)
+        ]
+
+        resp = client.post("/assistants/search", json={"limit": 2, "offset": 4})
+
+        assert resp.status_code == 200
+        assert resp.headers["X-Pagination-Next"] == "6"
+
+    def test_partial_page_omits_next_cursor(self, client, mock_assistant_service):
+        mock_assistant_service.search_assistants.return_value = [make_assistant(assistant_id="a-1")]
+
+        resp = client.post("/assistants/search", json={"limit": 20})
+
+        assert resp.status_code == 200
+        assert "X-Pagination-Next" not in resp.headers
+
+    def test_limit_accepts_sdk_upper_bound(self, client, mock_assistant_service):
+        """SDK 允许 limit 到 1000，此前上限为 100。"""
+        mock_assistant_service.search_assistants.return_value = []
+
+        assert client.post("/assistants/search", json={"limit": 1000}).status_code == 200
+        assert client.post("/assistants/search", json={"limit": 1001}).status_code == 422
+
+
+class TestDeleteThreadsCascade:
+    def test_delete_threads_flag_forwarded(self, client, mock_assistant_service):
+        mock_assistant_service.delete_assistant.return_value = {"status": "deleted"}
+
+        resp = client.delete("/assistants/test-assistant-123?delete_threads=true")
+
+        assert resp.status_code == 200
+        mock_assistant_service.delete_assistant.assert_called_once_with("test-assistant-123", delete_threads=True)

@@ -1,8 +1,8 @@
-# LangSmith Platform 数据面对齐差距分析
+# LangSmith Platform 数据面对齐现状
 
-> 分析对象：当前工作区（`feat/runtime-hardening`，aegra-api 0.16.0）
+> 分析对象：`feat/runtime-hardening`，aegra-api 0.17.0
 > 对齐目标：LangSmith Deployment / Agent Server 数据面 API
-> 分析日期：2026-07-31
+> 更新日期：2026-08-01（上一版 2026-07-31 记录的差距已按本文第五节落地）
 
 ## 一、依据与方法
 
@@ -10,359 +10,329 @@
 
 | 来源 | 说明 | 权威性 |
 |:--|:--|:--|
-| `langgraph-sdk 0.4.2` 源码 | `.venv/Lib/site-packages/langgraph_sdk/_async/{assistants,runs,threads,cron,store}.py`，AST 提取每个方法的动词、路径、请求字段 | 最高 —— 这是客户端真实发出的请求 |
-| —— 版本时效 | 0.4.2 发布于 2026-06-01，是分析当日 PyPI 上的**最新版本**（已核对）。仓库同时装有 `langgraph 1.2.6`，而 PyPI 最新为 1.2.10 —— 该库属运行时，不定义数据面 HTTP 契约，不影响本文结论 | — |
+| `langgraph-sdk 0.4.2` 源码 | `.venv/Lib/site-packages/langgraph_sdk/_async/{assistants,runs,threads,cron,store}.py`，逐方法核对动词、路径、请求字段 | 最高 —— 这是客户端真实发出的请求 |
 | `langgraph_sdk/schema.py` | `Assistant`/`Thread`/`ThreadState`/`Run`/`Cron`/`Item` 等 TypedDict，以及 `StreamMode`/`RunStatus` 等 Literal | 最高 —— 客户端期望的响应形状 |
-| `docs/openapi.json` | 本项目导出的 spec（40 个端点） | 高 |
+| `docs/openapi.json` | 本项目导出的 spec（47 条路径 / 61 个操作） | 高 |
 | `libs/aegra-api/src/` 源码 | 校验 OpenAPI 与实现不一致处 | 最高 |
-| [docs.langchain.com](https://docs.langchain.com/langsmith/server-api-ref) | 补充确认资源分组、`supersteps`/`prune` 语义、thread 状态枚举 | 中 —— 官方未公开完整 OpenAPI JSON，需部署实例的 `/openapi.json` 才能取全 |
+| [docs.langchain.com](https://docs.langchain.com/langsmith/server-api-ref) | 补充确认资源分组、`supersteps`/`prune` 语义、thread 状态枚举 | 中 —— 官方未公开完整 OpenAPI JSON |
 
-SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官方文档中列出，但不在 SDK 数据面调用范围内，且已确认上游无人使用，本文不计入。
+SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官方文档中列出，但不在 SDK 数据面调用范围内，本文不计入。
+
+两边都按 `(method, path)` 计数才可比：spec 的 61 个操作里，4 个是基础设施（`/health`、`/live`、`/ready`、`/info`）、1 个根路径、3 个示例自定义路由，余下 **57 = SDK 数据面 51 + Aegra 自有 6**。这 6 个不在 SDK 契约里，重做分析时会被差集算作「多余」，是预期的：
+
+| Aegra 自有端点 | 用途 |
+|:--|:--|
+| `GET /assistants`、`GET /threads` | 不分页的全量列表，早于 `search` 存在 |
+| `PATCH /threads/{id}/runs/{run_id}` | 改 run 状态（SDK 用 `/cancel`） |
+| `GET /threads/{id}/history` | `POST` 版的 query-param 便捷形式 |
+| `POST /threads/{id}/commands`、`POST /threads/{id}/stream/events` | Aegra 自有的双向命令协议（见 9.3 末的提醒） |
 
 ## 二、总览
 
 | 资源 | SDK 端点 | 已实现 | 缺失 | 参数/响应不完整 |
 |:--|--:|--:|--:|--:|
-| Assistants | 12 | 11 | 1 | 4 |
-| Threads | 14 | 10 | 4 | 4 |
-| Runs | 14 | 12 | 2 | 4 |
-| Crons | 6 | 6 | 0 | 4 |
-| Store | 5 | 5 | 0 | 4 |
-| **合计** | **51** | **44** | **7** | **20** |
+| Assistants | 12 | 12 | 0 | 0 |
+| Threads | 14 | 14 | 0 | 0 |
+| Runs | 14 | 14 | 0 | 0 |
+| Crons | 6 | 6 | 0 | 0 |
+| Store | 5 | 5 | 0 | 0 |
+| **合计** | **51** | **51** | **0** | **0** |
 
-端点覆盖率 86%（44/51）。但**端点存在 ≠ 功能可用** —— 20 个端点存在参数或响应字段缺口，其中 7 处会导致 SDK 调用静默失效（第六节）。
+端点覆盖率 100%。SDK 会发送的每个请求字段现在都落在三类之一：**生效**、**记录并在字段说明里写明其语义边界**、**4xx/501 拒绝**。没有静默忽略项 —— 这是上一版分析的头号问题（客户端拿到 200 却以为选项生效）。
 
-端点与参数的差集由 AST 机械比对得出而非人工通读，并逐项回到项目源码确认参数是否真正生效（方法与陷阱见第十节）。
+第四节列出四处语义边界，其中两处是 `langgraph-checkpoint-postgres` 尚未实现的 checkpointer 方法所致（4.4），依赖升级后自动恢复。
 
-图例：✅ 对齐 · ⚠️ 存在但不完整 · ❌ 缺失
+图例：✅ 对齐 · ⚠️ 有语义边界（见备注） · ❌ 缺失
 
 ## 三、端点级对比
 
 ### 3.1 Assistants
 
-| SDK 方法 | 端点 | 状态 | 差距 |
+| SDK 方法 | 端点 | 状态 | 备注 |
 |:--|:--|:-:|:--|
-| `get()` | `GET /assistants/{id}` | ✅ | — |
+| `get()` | `GET /assistants/{id}` | ✅ | |
 | `get_graph()` | `GET /assistants/{id}/graph` | ✅ | 支持 `xray` |
-| `get_schemas()` | `GET /assistants/{id}/schemas` | ⚠️ | 响应缺 `graph_id`、`context_schema`；四个 schema 声明为 required（SDK 侧全部 nullable） |
-| `get_subgraphs()` | `GET /assistants/{id}/subgraphs` | ✅ | 支持 `recurse`、`namespace`（query 形式） |
-| `get_subgraphs()` | `GET /assistants/{id}/subgraphs/{namespace}` | ❌ | **路径形式缺失**。SDK 传 `namespace` 参数时走这条路径 |
-| `create()` | `POST /assistants` | ⚠️ | `if_exists` 默认值为 `"error"`，SDK 发 `"raise"`/`"do_nothing"`（行为等价，仅 OpenAPI 声明不符） |
-| `update()` | `PATCH /assistants/{id}` | ✅ | — |
-| `delete()` | `DELETE /assistants/{id}` | ⚠️ | 缺 `delete_threads` 参数 |
-| `search()` | `POST /assistants/search` | ⚠️ | 缺 `select`；不返回 `X-Pagination-Next` 响应头，导致 `response_format="object"` 的 `next` 恒为 `None`（见 6.6）；`limit` 上限 100（SDK 允许 1000） |
-| `count()` | `POST /assistants/count` | ✅ | — |
-| `get_versions()` | `POST /assistants/{id}/versions` | ⚠️ | 无请求体，缺 `limit`、`offset`、`metadata` |
-| `set_latest()` | `POST /assistants/{id}/latest` | ✅ | — |
+| `get_schemas()` | `GET /assistants/{id}/schemas` | ✅ | 含 `graph_id`、`context_schema`；五个 schema 均可空 |
+| `get_subgraphs()` | `GET /assistants/{id}/subgraphs` | ✅ | query 形式 |
+| `get_subgraphs()` | `GET /assistants/{id}/subgraphs/{namespace}` | ✅ | 路径形式，SDK 传 `namespace` 时走这条 |
+| `create()` | `POST /assistants` | ✅ | `if_exists` 取 `raise`/`do_nothing` |
+| `update()` | `PATCH /assistants/{id}` | ✅ | |
+| `delete()` | `DELETE /assistants/{id}` | ✅ | 支持 `delete_threads` |
+| `search()` | `POST /assistants/search` | ✅ | 支持 `select`；满页返回 `X-Pagination-Next`；`limit` 上限 1000 |
+| `count()` | `POST /assistants/count` | ✅ | |
+| `get_versions()` | `POST /assistants/{id}/versions` | ✅ | 支持 `limit`、`offset`、`metadata` |
+| `set_latest()` | `POST /assistants/{id}/latest` | ✅ | |
 
 ### 3.2 Threads
 
-| SDK 方法 | 端点 | 状态 | 差距 |
+| SDK 方法 | 端点 | 状态 | 备注 |
 |:--|:--|:-:|:--|
-| `get()` | `GET /threads/{id}` | ⚠️ | 缺 `include` 参数；**响应缺 `values`、`interrupts`**（见 6.2） |
-| `create()` | `POST /threads` | ⚠️ | 缺 `supersteps`、`ttl`；存在非标准字段 `initial_state`。SDK 的 `graph_id` 被合并进 `metadata.graph_id`，项目接受 `metadata`，故该参数实际可用 |
-| `update()` | `PATCH /threads/{id}` | ⚠️ | 缺 `ttl`、`return_minimal`（`Prefer` 头） |
-| `delete()` | `DELETE /threads/{id}` | ✅ | — |
-| `search()` | `POST /threads/search` | ⚠️ | 缺 `values`、`ids`、`select`、`extract`；`sort_by` 缺 `state_updated_at` |
-| `count()` | `POST /threads/count` | ❌ | 缺失 |
-| `copy()` | `POST /threads/{id}/copy` | ❌ | 缺失 |
-| `prune()` | `POST /threads/prune` | ❌ | 缺失。官方用于回收 checkpoint 存储（DeltaChannel-aware），`strategy` 取 `PruneStrategy = delete｜keep_latest` |
+| `get()` | `GET /threads/{id}` | ✅ | 响应含 `values`、`interrupts`；支持 `include=ttl` |
+| `create()` | `POST /threads` | ✅ | 支持 `supersteps`、`ttl`；`graph_id` 经 `metadata` 传入 |
+| `update()` | `PATCH /threads/{id}` | ✅ | 支持 `ttl` |
+| `delete()` | `DELETE /threads/{id}` | ✅ | |
+| `search()` | `POST /threads/search` | ✅ | 支持 `values`、`ids`、`select`、`extract`、`sort_by=state_updated_at` |
+| `count()` | `POST /threads/count` | ✅ | |
+| `copy()` | `POST /threads/{id}/copy` | ⚠️ | 复制实体 + 最新状态；checkpoint 历史取决于 checkpointer 能力（见 4.4） |
+| `prune()` | `POST /threads/prune` | ⚠️ | 返回 `{"pruned_count": N}`；`keep_latest` 对存在待处理中断的 thread 跳过（见 4.2） |
 | `get_state()` | `GET /threads/{id}/state` | ✅ | 支持 `subgraphs` |
-| `get_state()` | `GET /threads/{id}/state/{checkpoint_id}` | ✅ | — |
-| `get_state()` | `POST /threads/{id}/state/checkpoint` | ✅ | — |
+| `get_state()` | `GET /threads/{id}/state/{checkpoint_id}` | ✅ | |
+| `get_state()` | `POST /threads/{id}/state/checkpoint` | ✅ | |
 | `update_state()` | `POST /threads/{id}/state` | ✅ | 支持 `values`、`as_node`、`checkpoint` |
 | `get_history()` | `POST /threads/{id}/history` | ✅ | 支持 `limit`、`before`、`metadata`、`checkpoint` |
-| `join_stream()` | `GET /threads/{id}/stream` | ❌ | 缺失。thread 级流式（跨 run 连续订阅） |
+| `join_stream()` | `GET /threads/{id}/stream` | ⚠️ | 三种 `ThreadStreamMode` 全支持；空闲超时后关闭（见 4.3） |
 
 ### 3.3 Runs
 
-| SDK 方法 | 端点 | 状态 | 差距 |
+| SDK 方法 | 端点 | 状态 | 备注 |
 |:--|:--|:-:|:--|
-| `create()` | `POST /threads/{id}/runs` | ⚠️ | 缺 8 个参数（见 4.1） |
-| `create()` | `POST /runs`（stateless） | ⚠️ | 同上，缺 8 个 |
-| `stream()` | `POST /threads/{id}/runs/stream` | ⚠️ | 缺 9 个（多 `feedback_keys`） |
-| `stream()` | `POST /runs/stream` | ⚠️ | 同上，缺 9 个 |
-| `wait()` | `POST /threads/{id}/runs/wait` | ⚠️ | 缺 7 个（不含 `stream_resumable`） |
-| `wait()` | `POST /runs/wait` | ⚠️ | 同上，缺 7 个 |
-| `create_batch()` | `POST /runs/batch` | ❌ | 缺失 |
-| `list()` | `GET /threads/{id}/runs` | ⚠️ | 缺 `select`；`limit` **无上限**（SDK 侧上限 1000） |
-| `get()` | `GET /threads/{id}/runs/{run_id}` | ⚠️ | 响应缺 `metadata`、`multitask_strategy`（见 6.1） |
+| `create()` | `POST /threads/{id}/runs` | ✅ | 完整请求契约见 3.6 |
+| `create()` | `POST /runs`（stateless） | ✅ | 同上 |
+| `stream()` | `POST /threads/{id}/runs/stream` | ✅ | |
+| `stream()` | `POST /runs/stream` | ✅ | |
+| `wait()` | `POST /threads/{id}/runs/wait` | ✅ | |
+| `wait()` | `POST /runs/wait` | ✅ | |
+| `create_batch()` | `POST /runs/batch` | ✅ | 顺序创建，响应顺序与请求一致 |
+| `list()` | `GET /threads/{id}/runs` | ✅ | 支持 `select`；`limit` 上限 1000；满页返回 `X-Pagination-Next` |
+| `get()` | `GET /threads/{id}/runs/{run_id}` | ✅ | 响应含 `metadata`、`multitask_strategy` |
 | `cancel()` | `POST /threads/{id}/runs/{run_id}/cancel` | ✅ | 支持 `wait`、`action` |
-| `cancel_many()` | `POST /runs/cancel` | ❌ | 缺失。参数为 `thread_id`+`run_ids` 或 `status`（`BulkCancelRunsStatus = pending｜running｜all`）+ `action` |
-| `join()` | `GET /threads/{id}/runs/{run_id}/join` | ✅ | — |
-| `join_stream()` | `GET /threads/{id}/runs/{run_id}/stream` | ⚠️ | **参数名不匹配 + 未生效**（见 6.3） |
+| `cancel_many()` | `POST /runs/cancel` | ⚠️ | `thread_id`+`run_ids` 或 `status`；`action=rollback` 依赖 checkpointer 能力（见 4.4） |
+| `join()` | `GET /threads/{id}/runs/{run_id}/join` | ✅ | |
+| `join_stream()` | `GET /threads/{id}/runs/{run_id}/stream` | ✅ | `stream_mode` 真正过滤事件，`cancel_on_disconnect` 生效 |
 | `delete()` | `DELETE /threads/{id}/runs/{run_id}` | ✅ | 额外支持 `force` |
 
 ### 3.4 Crons
 
-六个端点全部存在，差距集中在参数：
-
-| SDK 方法 | 端点 | 状态 | 缺失参数 |
+| SDK 方法 | 端点 | 状态 | 备注 |
 |:--|:--|:-:|:--|
-| `create_for_thread()` | `POST /threads/{id}/runs/crons` | ⚠️ | `checkpoint_during`、`stream_resumable`、`durability` |
-| `create()` | `POST /runs/crons` | ⚠️ | 同上 |
-| `delete()` | `DELETE /runs/crons/{cron_id}` | ✅ | — |
-| `update()` | `PATCH /runs/crons/{cron_id}` | ⚠️ | `stream_resumable`、`durability` |
-| `search()` | `POST /runs/crons/search` | ⚠️ | `metadata`、`select` |
-| `count()` | `POST /runs/crons/count` | ⚠️ | `metadata` |
+| `create_for_thread()` | `POST /threads/{id}/runs/crons` | ✅ | 支持 `checkpoint_during`、`stream_resumable`、`durability` |
+| `create()` | `POST /runs/crons` | ✅ | 同上 |
+| `delete()` | `DELETE /runs/crons/{cron_id}` | ✅ | |
+| `update()` | `PATCH /runs/crons/{cron_id}` | ✅ | 同上 |
+| `search()` | `POST /runs/crons/search` | ✅ | 支持 `metadata`、`select`；满页返回 `X-Pagination-Next` |
+| `count()` | `POST /runs/crons/count` | ✅ | 支持 `metadata` |
+
+`CronResponse` 补上 `timezone` 后与 SDK 的 `Cron` 14 字段一致。`_build_payload` 与 `_build_run_create` 的字段集保持同步 —— 只在前者接受而不在后者转发，等于每次定时触发都静默丢用户的值。
 
 ### 3.5 Store
 
-五个端点全部存在，差距集中在 TTL 与语义检索：
-
-| SDK 方法 | 端点 | 状态 | 缺失参数/字段 |
+| SDK 方法 | 端点 | 状态 | 备注 |
 |:--|:--|:-:|:--|
-| `put_item()` | `PUT /store/items` | ⚠️ | `index`（按字段建向量索引）、`ttl` |
-| `get_item()` | `GET /store/items` | ⚠️ | `refresh_ttl`；响应缺 `created_at`、`updated_at` |
-| `delete_item()` | `DELETE /store/items` | ✅ | — |
-| `search_items()` | `POST /store/items/search` | ⚠️ | `refresh_ttl`；响应缺 `score`（语义相关度） |
-| `list_namespaces()` | `POST /store/namespaces` | ✅ | — |
+| `put_item()` | `PUT /store/items` | ✅ | 支持 `index`、`ttl` |
+| `get_item()` | `GET /store/items` | ✅ | 支持 `refresh_ttl`；响应含 `created_at`、`updated_at` |
+| `delete_item()` | `DELETE /store/items` | ✅ | |
+| `search_items()` | `POST /store/items/search` | ✅ | 支持 `refresh_ttl`；响应含 `score` |
+| `list_namespaces()` | `POST /store/namespaces` | ✅ | |
 
-## 四、请求参数缺失明细
+`index` 与 `ttl` 仅在显式给出时下传，`False`/`None` 语义不同，省略才能让 store 自身的配置默认值继续生效。
 
-### 4.1 Run 创建（影响 6 个端点）
+### 3.6 Run 创建请求契约
 
-`create()` / `stream()` / `wait()` 共用同一请求体，但发送的字段集不同：`create()` 21 个、`stream()` 23 个（多 `feedback_keys` 与 `on_disconnect`）、`wait()` 19 个。项目统一接受 15 个，缺失情况：
+`create()` / `stream()` / `wait()` 共用一个请求体但发送的字段集不同：`stream()` 23 个、`create()` 21 个、`wait()` 19 个，并集 23 个。`RunCreate` 现在全部接受，无缺口。上一版有 9 个是「接受但静默丢弃」，这里单独列出它们的落地方式：
 
-| 参数 | SDK 类型 | 语义 | 影响 | 影响方法 |
-|:--|:--|:--|:--|:--|
-| `webhook` | `str` | run 终态时 POST 最终 Run 载荷 | 传了不报错，但永不回调 | 全部 |
-| `after_seconds` | `int` | 延迟指定秒数后开始 | 传了立即执行，延迟语义丢失 | 全部 |
-| `if_not_exists` | `"create"｜"reject"` | 目标 thread 不存在时创建还是 404 | 传 `create` 仍 404 | 全部 |
-| `durability` | `"sync"｜"async"｜"exit"` | checkpoint 持久化时机 | 无法控制持久化策略 | 全部 |
-| `checkpoint_during` | `bool` | `durability` 的旧别名 | 同上 | 全部 |
-| `checkpoint_id` | `str` | `checkpoint` 的扁平化形式 | 只能用嵌套 `checkpoint` 传 | 全部 |
-| `langsmith_tracer` | 对象 | 客户端侧追踪配置 | 忽略 | 全部 |
-| `stream_resumable` | `bool` | 事件是否落盘以支持断线重放 | 断线后无法重放 | `create`、`stream` |
-| `feedback_keys` | `list[str]` | LangSmith 反馈键 | 忽略 | 仅 `stream` |
-
-项目额外接受的非 SDK 字段：`stream`（布尔开关，SDK 用独立端点区分）。
-
-其中 `multitask_strategy` 虽被接受并存入 `execution_params`，但 **无任何执行逻辑**（`services/multitask.py` 已移除），`reject`/`interrupt`/`rollback`/`enqueue` 四种策略全部静默失效。
-
-### 4.2 Thread 创建与检索
-
-| 参数 | 端点 | 语义 | 现状 |
-|:--|:--|:--|:--|
-| `supersteps` | `POST /threads` | 用一串顺序状态更新预填 thread（导入历史会话、构造测试场景） | 缺失；项目有非标准的 `initial_state` |
-| `ttl` | `POST /threads`、`PATCH /threads/{id}` | 按 thread 设置保留策略 `{"strategy":"delete","ttl":分钟}` | 缺失（retention 整体已移除） |
-| `graph_id` | `POST /threads` | 创建时绑定 graph | **可用** —— SDK 把它合并进 `payload["metadata"]["graph_id"]` 而非作为顶层字段发送，项目接受 `metadata` |
-| `values` | `POST /threads/search` | 按状态内容过滤（JSONB 包含） | 缺失 |
-| `ids` | `POST /threads/search` | 按 id 集合批量取 | 缺失 |
-| `extract` | `POST /threads/search` | 从状态中投影指定路径 | 缺失 |
-| `include` | `GET /threads/{id}` | 控制是否附带 state | 缺失 |
-| `select` | search 系列 | 字段投影，减小响应体 | 全部缺失（assistants/threads/runs/crons） |
-| `state_updated_at` | `sort_by` | 按状态更新时间排序 | 缺失 |
-
-## 五、响应模型对比
-
-| SDK 类型 | 期望字段 | 项目缺失 | 影响 |
-|:--|:--|:--|:--|
-| `Thread` | `thread_id`、`created_at`、`updated_at`、`metadata`、`status`、`values`、`interrupts`、`extracted` | **`values`、`interrupts`**、`extracted` | 高 —— 见 6.2 |
-| `Run` | `run_id`、`thread_id`、`assistant_id`、`created_at`、`updated_at`、`status`、`metadata`、`multitask_strategy` | **`metadata`、`multitask_strategy`** | 高 —— 见 6.1 |
-| `GraphSchema` | `graph_id`、`input_schema`、`output_schema`、`state_schema`、`config_schema`、`context_schema` | `graph_id`、`context_schema` | 中 —— 无法发现 graph 的 context 契约 |
-| `Assistant` | `assistant_id`、`graph_id`、`config`、`context`、`created_at`、`updated_at`、`metadata`、`version`、`name`、`description` | 无缺失（`metadata` 经 `metadata_dict` 别名映射） | — |
-| `ThreadState` | `values`、`next`、`checkpoint`、`metadata`、`created_at`、`parent_checkpoint`、`tasks`、`interrupts` | 无缺失 | — |
-| `Cron` | 14 字段 | 无缺失 | — |
-| `Item` | `namespace`、`key`、`value`、`created_at`、`updated_at` | `created_at`、`updated_at` | 低 |
-| `SearchItem` | `Item` + `score` | `score` | 中 —— 语义检索无法排序 |
-| `AssistantsSearchResponse` | `assistants`、`next`（分页游标，取自 `X-Pagination-Next` 头） | 不返回该响应头 | 中 —— 见 6.6 |
-
-### 5.1 错误响应契约
-
-SDK 的 `_map_status_error()` 按 HTTP 状态码映射异常类（400→`BadRequestError`、401→`AuthenticationError`、403→`PermissionDeniedError`、404→`NotFoundError`、409→`ConflictError`、422→`UnprocessableEntityError`、429→`RateLimitError`、≥500→`InternalServerError`）。项目的状态码使用与之一致。
-
-错误消息由 `_extract_error_message()` 从响应体按 `message` → `detail` → `error` 顺序提取，**且要求值是非空字符串**，否则回退到 `"<status> <reason>"`。
-
-| 项目响应形状 | 适用范围 | SDK 提取结果 |
+| 参数 | SDK 类型 | 落地方式 |
 |:--|:--|:--|
-| `{error, message, details}`（`AgentProtocolError`） | 400/401/403/404/409/5xx | ✅ 命中 `message`，错误信息完整 |
-| `{detail: [ValidationError, ...]}`（FastAPI 默认） | **422** | ❌ `detail` 是数组不是字符串，回退为通用文案（见 6.7） |
+| `webhook` | `str` | run 到终态时，outbox 行与终态同事务落库，sweeper 投递（见 五.12） |
+| `after_seconds` | `int` | 写入 `runs.scheduled_at`，`execute_run` 内等待（见 4.1） |
+| `if_not_exists` | `create｜reject` | `reject` 时目标 thread 不存在即 404；默认仍是自动创建 |
+| `durability` | `sync｜async｜exit` | 下传 `astream(durability=...)` |
+| `checkpoint_during` | `bool` | 已弃用别名：`True` → `async`，`False` → `exit`；显式 `durability` 优先 |
+| `checkpoint_id` | `str` | 折叠进嵌套的 `checkpoint`，不覆盖同时传入的 `checkpoint_ns` |
+| `stream_resumable` | `bool` | 事件进 run 的重放缓冲，配合 `Last-Event-ID`（内存级，见 4.4 末） |
+| `feedback_keys` | `list[str]` | 记入 `runs.metadata`，供 tracing 后端取用 |
+| `langsmith_tracer` | 对象 | 同上。这两项按 SDK 定义是客户端侧 tracer 配置，服务端无可执行语义，故记录而非执行 |
 
-`APIError` 还会 best-effort 读响应体的 `code`、`param`、`type` 三个字段。项目的信封用 `error`/`details` 命名，故 `err.code`、`err.type` 恒为 `None` —— 属于 best-effort 范畴，不影响异常类型判断。
+`multitask_strategy` 此前也被接受并存入 `execution_params`，但四种策略全无执行逻辑；现已实现（见 五.11）。
 
-`err.request_id` 对齐：SDK 读 `x-request-id` 响应头，项目以默认配置挂载 `CorrelationIdMiddleware`（未覆盖 `header_name`），暴露的是 `X-Request-ID` —— httpx 的 header 查找大小写不敏感，故此项**已对齐**。
+项目额外接受一个非 SDK 字段：`stream`（布尔开关；SDK 用独立端点区分流式与否）。枚举类字段一律由 `models/enums.py` 的 Literal 校验，非法值 422 —— 不再出现「传了没报错也没生效」。
 
-### 5.2 认证与传输层
+## 四、语义边界
+
+四处行为与 Platform 一致但有实现层面的取舍，写在这里而不是留给使用者踩：
+
+### 4.1 `after_seconds` 占用执行槽位
+
+延迟在 `execute_run` 内部等待，好处是 dev 与 prod 两种模式共用一条路径、不需要额外的调度器；代价是 worker 模式下等待期间占一个并发槽。短延迟无影响，长延迟应改用 cron。
+
+### 4.2 `prune(strategy="keep_latest")` 跳过有中断的 thread
+
+`keep_latest` 的实现是「读出最新状态 → `adelete_thread` → 用 `aupdate_state` 重新落一个 checkpoint」。中断只能在抛出它的那个 checkpoint 上恢复，所以存在待处理中断的 thread 会被跳过而不是被压缩 —— 否则那次 run 就再也接不上了。这类 thread 不计入 `pruned_count`。
+
+### 4.3 thread 级流式是轮询 + 空闲关闭
+
+`GET /threads/{id}/stream` 建立在按 run 分键的 broker 之上：轮询该 thread 的下一个 run 并转发。`THREAD_STREAM_IDLE_TIMEOUT_SECONDS`（默认 300 秒）无新 run 即关闭，避免被遗弃的订阅长期占住连接。
+
+### 4.4 两项能力受 checkpointer 限制
+
+`langgraph-checkpoint-postgres` 2.x 的 `AsyncPostgresSaver` 只实现了 `adelete_thread`；`acopy_thread` 与 `adelete_for_runs` 仍是 `BaseCheckpointSaver` 里抛 `NotImplementedError` 的声明。`db_manager.supports()` 按「子类是否覆盖了基类方法」探测，两处据此分别处理：
+
+| 能力 | 依赖方法 | 当前行为 |
+|:--|:--|:--|
+| `POST /threads/{id}/copy` | `acopy_thread` | 降级为「实体 + 最新物化状态」，记一条 info 日志。复制出的 thread 可读可续跑，只是没有历史 checkpoint。 |
+| `rollback`（`multitask_strategy` 与 `POST /runs/cancel?action=rollback`） | `adelete_for_runs` | **501**，且在中断任何 run 之前就拒绝。 |
+
+两者取舍不同是刻意的：copy 降级后仍交付一个可用的 thread；而 rollback 的全部意义就是丢弃状态，静默保留等于假装成功 —— 那正是本次要消除的失效模式。依赖升级后两处都会自动恢复完整语义，无需改代码。
+
+另有一项按 SDK 定义即为客户端侧行为、服务端只需守约的：`stream_resumable` 的重放依赖 run 的内存事件缓冲（配合 `Last-Event-ID`），不跨进程重启。字段说明里已写明。
+
+## 五、本次落地清单
+
+对照上一版分析的三档优先级：
+
+**P0 —— 静默失效**
+
+1. `Thread` 响应补 `values` + `interrupts`。新增 `thread_state` 物化缓存（`services/thread_state_cache.py`），在 run 结束、显式状态更新、superstep 预填三处刷新；列表端点一次批量读取，不产生 N+1。
+2. `Run` 响应补 `metadata` + `multitask_strategy`，ORM 接回 `d1f7b3a9c5e2` 已建的两列。
+3. `join_stream` 的 `_stream_mode` 更名为 `stream_mode` 并真正过滤事件（`core/sse.py:filter_stream_modes`），补 `cancel_on_disconnect`。
+4. 恢复 422 的 Agent Protocol 信封：校验错误压成字符串放进 `message`，明细留在 `details.errors`。
+   同时修掉一个只在自定义 app 部署下暴露的隐性回归：`merge_exception_handlers` 把 FastAPI 自带的默认 handler 误判为「用户已覆盖」而跳过注册，于是配了 `http.app` 的部署（含本仓库默认的 `aegra.json`）仍返回 FastAPI 的列表形 `detail`。单元测试直接注册 handler，测不出这条 —— 是跑真实服务器时才发现的。
+5. search 响应补 `X-Pagination-Next`（`core/query.py:set_next_page`）。
+6. 消除静默忽略：`webhook`、`after_seconds`、`if_not_exists`、`durability`、`checkpoint_during`、`checkpoint_id`、`stream_resumable`、`feedback_keys`、`langsmith_tracer` 全部接受并生效或记录，非法枚举值 422。
+
+**P1 —— 端点缺失**
+
+7. `POST /threads/count`、`POST /threads/{id}/copy`、`POST /threads/prune`。
+8. `GET /assistants/{id}/subgraphs/{namespace}`。
+9. `POST /runs/cancel`、`POST /runs/batch`。
+10. `select` 字段投影（assistants/threads/runs/crons 四处），`extract` 路径投影（threads）。
+
+**P2 —— 功能族**
+
+11. `multitask_strategy` 四种策略（`services/multitask.py`）：`reject` 409；`interrupt` 停在途 run；`rollback` 停并丢弃其 checkpoint（受 4.4 限制）；`enqueue` 以 `runs.dispatched` 列排队，前一个 run 终结时交接。
+12. `webhook` 回调（`services/webhooks.py`）：outbox 行与 `finalize_run` 同事务落库，sweeper 以指数退避投递。
+13. `after_seconds` + `durability`（后者经 `astream(durability=...)` 下传）。
+14. Thread TTL 列与 `POST /threads/prune`。
+15. Store `index`/`ttl`/`refresh_ttl`/`score`/时间戳。
+16. `supersteps` 预填。
+17. `GET /threads/{id}/stream`，覆盖 `run_modes`/`lifecycle`/`state_update` 三种模式。
+
+**schema 变更**
+
+迁移 `a3d6e0b95f17`（revises `f2c8a5e13d94`），三项全部是追加式：
+
+- `runs.dispatched BOOLEAN NOT NULL DEFAULT true` —— `enqueue` 排队期间为 `false`。交接用的是这一列上的条件 UPDATE，这才让同一 thread 上两个 run 并发终结时不会重复派发同一个排队 run。默认 `true` 使既有行读作「已派发」。
+- `idx_runs_thread_queued` —— 上述队列查询的部分索引。
+- 重建 `f2c8a5e13d94` 当时按「无查询方」删掉的两个 GIN 索引（`idx_thread_state_values_gin`、`idx_cron_metadata_gin`）—— 它们现在分别服务 `POST /threads/search` 的 `values` 过滤与 cron 的 `metadata` 过滤。
+
+`d1f7b3a9c5e2` 建的 `runs.metadata`、`runs.multitask_strategy`、`runs.scheduled_at`、`thread.ttl`、`thread_state`、`webhook_deliveries` 都还在库里，本次只是在 ORM 上重新声明，没有新建。
+
+## 六、升级注意（0.16.0 → 0.17.0）
+
+minor 而非 patch，因为带 schema 迁移，且有两处请求契约收紧：
+
+| 变更 | 影响 | 迁移动作 |
+|:--|:--|:--|
+| `POST /threads/search` 移除 `order_by` | 已标记 deprecated 的旧单字段形式（`"updated_at ASC"`），现在 422 | 改用 `sort_by` + `sort_order` |
+| 四处 search 的 `limit`/`offset` 由 `int \| None` 收为 `int` | 显式传 `null` 现在 422（此前回落到默认值） | 省略该字段，或给具体数字。SDK 始终发整数，不受影响 |
+| `POST /threads/prune` 响应形状 | `{"pruned": [...]}` → `{"pruned_count": N}` | 该端点未随 tag 发布过，仅影响跟着未发布分支走的调用方 |
+| `Thread` 新增 `values`/`interrupts`、`Run` 新增 `metadata`/`multitask_strategy`、`Cron` 新增 `timezone`、store item 新增时间戳与 `score` | 追加字段，旧客户端忽略即可 | 无 |
+| 五个端点改为 `response_model=None` | `select`/`include` 让行形状动态化，spec 上这些操作不再声明具体 schema：`POST /assistants/search`、`POST /threads/search`、`GET /threads/{id}`、`GET /threads/{id}/runs`、`POST /runs/crons/search` | 按 spec 生成客户端的工具需重新生成 |
+
+多实例部署照旧：`RUN_MIGRATIONS_ON_STARTUP=false` + 带外执行 `aegra db upgrade`。迁移里的并发索引构建都在 `autocommit_block` 内、且带 `IF [NOT] EXISTS` 守卫，可重入。
+
+## 七、错误响应契约
+
+SDK 的 `_map_status_error()` 按状态码映射异常类（400→`BadRequestError`、401→`AuthenticationError`、403→`PermissionDeniedError`、404→`NotFoundError`、409→`ConflictError`、422→`UnprocessableEntityError`、429→`RateLimitError`、≥500→`InternalServerError`）。项目的状态码使用与之一致。
+
+错误消息由 `_extract_error_message()` 从响应体按 `message` → `detail` → `error` 顺序提取，**且要求值是非空字符串**。所有状态码（含 422）现在都走 `{error, message, details}` 信封，`message` 恒为字符串。
+
+`APIError` 另会 best-effort 读 `code`、`param`、`type`；项目的信封用 `error`/`details` 命名，故 `err.code`、`err.type` 恒为 `None` —— 不影响异常类型判断。
+
+`err.request_id` 读 `x-request-id` 响应头，项目以默认配置挂载 `CorrelationIdMiddleware` 暴露 `X-Request-ID`，httpx 查找大小写不敏感，已对齐。
+
+## 八、认证
 
 SDK 从 `api_key` 参数或 `LANGSMITH_API_KEY` / `LANGCHAIN_API_KEY` 环境变量解析出 key，以 **`x-api-key`** 请求头发送。
 
-项目不硬编码任何认证头，而是把认证委托给 `aegra.json` 的 `auth.path` 所指的 `@auth.authenticate` handler。因此对齐是**可配置的而非默认的**：要让 SDK 客户端开箱可用，自定义 handler 必须读取 `x-api-key` 头。这一点值得写进部署文档。
+项目不硬编码任何认证头，而是把认证委托给 `aegra.json` 的 `auth.path` 所指的 `@auth.authenticate` handler。因此对齐是**可配置的而非默认的**：要让 SDK 客户端开箱可用，自定义 handler 必须读取 `x-api-key` 头。见 `docs/guides/authentication`。
 
-### 5.3 易误判为缺失、实际已对齐的项
+## 九、流式协议
 
-以下几项在 SDK 侧有专门类型或机制，看字段名容易判成缺失，但读实现后确认可用。记录在此以免重复排查：
+### 9.1 run 级 `StreamMode`
 
-| 项 | SDK 机制 | 项目现状 |
-|:--|:--|:--|
-| `on_run_created` 回调 | 从 **`Content-Location`** 响应头正则提取 `RunCreateMetadata{run_id, thread_id}`，不是读响应体 | ✅ 五处流式/创建端点均设 `Content-Location: /threads/{id}/runs/{run_id}`，且在 CORS `expose_headers` 中暴露（浏览器可读）|
-| `Config{tags, recursion_limit, configurable}` | 整个 config 传给运行时 | ✅ `create_run_config()` 对入参 `deepcopy` 后只增不删（仅注入 `configurable.thread_id`/`run_id` 与 `metadata`），故 `tags`、`recursion_limit` 原样透传 |
-| `err.request_id` | 读 `x-request-id` 响应头 | ✅ `CorrelationIdMiddleware` 默认暴露 `X-Request-ID`，httpx 查找大小写不敏感 |
-| `graph_id`（创建 thread） | 被 SDK 合并进 `metadata.graph_id` | ✅ 项目接受 `metadata`（见 4.2）|
-| v2 流式协议 | 客户端转换，但依赖服务端 `type｜ns1｜ns2` 事件名约定 | ✅ 项目按该格式拼接（见 8.3）|
-| `interrupt_before/after` 的 `"*"` | `All = Literal["*"]` | ✅ 支持全节点通配 |
+九个取值（`values`、`updates`、`messages`、`messages-tuple`、`custom`、`debug`、`events`、`tasks`、`checkpoints`）全部为合法输入，由 `models/enums.py:StreamMode` 校验 —— 非法值 422 而非静默产出空流。`tasks`/`checkpoints` 透传 LangGraph，无专门事件构造。
 
-## 六、静默失效清单（最高优先级）
+`langgraph` 核心库自己的 `StreamMode` 只有 7 个值（无 `events`、`messages-tuple`）—— 这两个是 API 层概念，由 Agent Server 翻译成核心库的模式，项目已实现该翻译（`messages-tuple` 对 Python graph 归一化为 `messages`）。
 
-以下七处**不报错、不 4xx**，客户端以为生效但实际无效。这类问题比端点缺失更危险 —— 缺失会拿到 404，静默失效拿到 200。
+### 9.2 thread 级 `ThreadStreamMode`
 
-### 6.1 `Run.metadata` 与 `multitask_strategy` 不返回
+| 模式 | 语义 | 状态 |
+|:--|:--|:-:|
+| `run_modes` | 转发该 thread 上各 run 的 run 级事件 | ✅ |
+| `lifecycle` | thread 生命周期事件（`run.start`/`run.end`） | ✅ |
+| `state_update` | 每个 run 结束后的 thread 状态快照 | ✅ |
 
-SDK 的 `Run` TypedDict 把这两个字段列为一等成员。项目的 `Run` 响应模型不含它们，对应的数据库列也已从 ORM 移除。任何读 `run["metadata"]` 的客户端代码会 `KeyError`。
+省略时默认 `run_modes`，与 SDK 客户端默认一致。
 
-### 6.2 `Thread.values` / `interrupts` 不返回
+### 9.3 v1 / v2 事件形状
 
-SDK 的 `Thread` TypedDict 含 `values`（当前状态）和 `interrupts`（task_id → Interrupt 列表）。项目的 `Thread` 响应只有 6 个字段，两者都缺。
-
-影响面最大的一处：Agent Chat UI 一类客户端依赖 `thread.values` 直接渲染会话历史，依赖 `thread.interrupts` 判断是否需要人工介入。缺这两个字段时，客户端必须对每个 thread 额外调 `GET /threads/{id}/state`，N+1 请求，且 `POST /threads/search` 的批量列表页无法渲染。
-
-### 6.3 `join_stream` 的参数完全未生效
-
-| | SDK 发送 | 项目声明 |
-|:--|:--|:--|
-| 流式模式 | `?stream_mode=values` | `?_stream_mode=`（下划线前缀，名字对不上） |
-| 断连取消 | `?cancel_on_disconnect=true` | 未声明 |
-
-即便名字对上，`_stream_mode` 在 [runs.py:371](../libs/aegra-api/src/aegra_api/api/runs.py#L371) 只出现在函数签名里，**函数体从未使用它**。所以 `client.runs.join_stream(..., stream_mode=["values"], cancel_on_disconnect=True)` 能连上流，但模式过滤和断连取消双双无效。
-
-### 6.4 `multitask_strategy` 无执行逻辑
-
-见 4.1 末段。四种 double-texting 策略全部静默失效，同一 thread 的并发 run 没有任何串行化保护。
-
-### 6.5 被静默忽略的请求字段
-
-Pydantic 模型未设 `extra="forbid"`，4.1 表中的 9 个参数传入后既不报错也不生效。`webhook` 最典型：客户端配了回调地址，run 完成后什么都不发，且无从察觉。
-
-### 6.6 分页游标 `X-Pagination-Next` 不返回
-
-`response_format` 是纯客户端参数，不发给服务端：SDK 在 `response_format="object"` 时挂一个响应回调读 `X-Pagination-Next` 头，组装成 `{"assistants": [...], "next": cursor}`。
-
-项目源码中完全没有这个头（`grep -r X-Pagination-Next` 无结果），所以 `next` 恒为 `None`，客户端无法翻页，只能靠 `offset` 自行推进。服务端要做的只是在 search 响应上补这个头。
-
-### 6.7 422 校验错误的具体原因丢失
-
-项目的 422 走 FastAPI 默认信封 `{"detail": [{...}]}`，而 SDK 的 `_extract_error_message()` 要求 `detail` 是**字符串**。数组不匹配，于是回退到 `"422 Unprocessable Entity"` —— 客户端拿不到「哪个字段错了」，只能看到通用文案。
-
-其余状态码走项目自己的 `{error, message, details}` 信封，`message` 能被正确提取。所以问题只出在 422：把校验错误压成一条字符串放进 `message`、明细保留在 `details`，即可对齐（这正是 0.15.0 里 `validation_exception_handler` 的做法，本次回退将其移除）。
-
-## 七、OpenAPI 声明偏差
-
-功能可用但对外声明与 Platform 不一致，会影响基于 spec 生成客户端的工具（LangGraph Studio 等）：
-
-| 位置 | 声明 | SDK 实际 | 后果 |
-|:--|:--|:--|:--|
-| `POST /threads` | `threadId`、`ifExists`（camelCase 别名） | `thread_id`、`if_exists` | 模型有 `populate_by_name=True`，snake_case 能被接受，仅 spec 不准 |
-| `POST /assistants` | `if_exists` 默认 `"error"` | `"raise"` | 行为等价（都走 409 分支），仅枚举值不符 |
-| `GET /assistants/{id}/schemas` | 四个 schema 为 required | 全部 nullable | graph 未暴露某个 schema 时构造响应会 500 |
-| `POST /threads/search` | 同时有 `order_by` 与 `sort_by` | 只有 `sort_by` | 冗余字段 |
-| `GET /threads/{id}/runs` | `limit` 无上限 | 上限 1000 | 可传任意大值，DoS 面 |
-
-## 八、流式协议对比
-
-SDK 定义了**两套彼此独立**的流式模式枚举，对应两类端点：`StreamMode` 用于 run 级流式，`ThreadStreamMode` 用于 thread 级流式。
-
-### 8.1 run 级 `StreamMode`
-
-| 模式 | SDK 定义 | 项目 | 说明 |
-|:--|:-:|:-:|:--|
-| `values` | ✅ | ✅ | 默认模式 |
-| `updates` | ✅ | ✅ | |
-| `messages` | ✅ | ✅ | |
-| `messages-tuple` | ✅ | ✅ | Python graph 会被归一化为 `messages` |
-| `custom` | ✅ | ✅ | 透传 LangGraph |
-| `debug` | ✅ | ✅ | 始终强制开启 |
-| `events` | ✅ | ✅ | |
-| `tasks` | ✅ | ⚠️ | 透传 LangGraph，未见专门事件构造 |
-| `checkpoints` | ✅ | ⚠️ | 同上 |
-
-项目侧的合法性校验已随 `_parse_stream_modes` 移除，非法 `stream_mode` 不再返回 422。
-
-另注：`langgraph` 核心库自己的 `StreamMode` 只有 7 个值（无 `events`、`messages-tuple`）—— 这两个是 API 层概念，由 Agent Server 翻译成核心库的模式，项目已实现该翻译（`messages-tuple` 对 Python graph 归一化为 `messages`）。
-
-### 8.2 thread 级 `ThreadStreamMode`
-
-`GET /threads/{id}/stream` 用的是另一套枚举，与 run 级完全不重叠：
-
-| 模式 | 语义 | Platform | 项目 |
-|:--|:--|:-:|:-:|
-| `run_modes` | 转发该 thread 上各 run 的 run 级事件 | ✅ | ❌ |
-| `lifecycle` | thread 生命周期事件（run 开始/结束等） | ✅ | ❌ |
-| `state_update` | thread 状态变更事件 | ✅ | ❌ |
-
-三者均不可用，因为端点本身缺失（3.2）。补齐时需注意：0.15.0 曾实现过该端点，但只支持 `run_modes` 一种模式（源码中有 `Only the 'run_modes' thread stream mode is supported` 的 422），即便直接恢复那份实现，也只覆盖 1/3。
-
-### 8.3 SSE 事件类型与协议版本（v1 / v2）
-
-SDK 的 `runs.stream()` 有 `version: Literal["v1","v2"]` 参数（默认 `v1`），两个版本的事件形状不同：
-
-| | v1（`StreamPart`） | v2（`StreamPartV2`） |
-|:--|:--|:--|
-| 形状 | `(event, data, id)` 三元组 | `{"type", "ns", "data"}` 字典 |
-| 子图层级 | 编码在 `event` 名里 | 拆成 `ns: list[str]` |
-| 流结束 | `end` 事件 | 转换器返回 `None`（吞掉该事件）|
-| 中断 | 需自行从 data 里找 | `values` 类型额外带 `interrupts` 字段 |
-
-**`version` 不发给服务端** —— 它是纯客户端转换（`_wrap_stream_v2` → `_sse_to_v2_dict`）。但转换**依赖服务端的事件名约定**：
+`runs.stream()` 的 `version` 参数**不发给服务端** —— 它是纯客户端转换（`_wrap_stream_v2` → `_sse_to_v2_dict`）。但转换依赖服务端的事件名约定：
 
 ```
 event.split("|")  →  parts[0] 作为 type，parts[1:] 作为 ns
 ```
 
-即子图事件的 SSE 事件名必须形如 `values|node_a|inner`，客户端才能解出 `ns: ["node_a", "inner"]`。
+`graph_streaming.py` 在 `stream_subgraphs=True` 时拼 `f"{mode}|{ns_str}"`，因此 v1 与 v2 均可用。
 
-**项目已满足该约定**：`graph_streaming.py` 在 `stream_subgraphs=True` 时拼 `f"{mode}|{ns_str}"`（`ns_str = "|".join(namespace)`）。因此 v1 与 v2 均可用，**此项已对齐** ✅。
+> **勿与项目的 `event_streaming_v2` 混淆。** 后者是 Aegra 自有的双向命令协议，服务于 `POST /threads/{id}/commands` 与 `POST /threads/{id}/stream/events` 两个非 SDK 端点，与 SDK 的 v2 流式格式无关。
 
-v2 定义了 11 个具体事件类型（`values`、`updates`、`messages`、`messages/partial`、`messages/complete`、`messages/metadata`、`custom`、`checkpoints`、`tasks`、`debug`、`metadata`）。项目实际发出：`metadata`、`values`、`updates`、`messages`（含三个 `messages/*` 变体）、`debug`、`end`、`error` —— 与 v1 解码器兼容；`checkpoints`、`tasks` 两类事件透传 LangGraph 但无专门构造（与 8.1 表中的 ⚠️ 一致）。
+### 9.4 断线重放
 
-> **勿与项目的 `event_streaming_v2` 混淆。** 后者是 Aegra 自有的双向命令协议（`services/event_streaming/protocol.py` 构造 `{"type":"event","seq","method","params"}` 与 `{"type":"success","id","result"}`），服务于两个非 SDK 端点 `POST /threads/{id}/commands` 和 `POST /threads/{id}/stream/events`，与 SDK 的 v2 流式格式无关。
+| 能力 | 状态 |
+|:--|:-:|
+| `Last-Event-ID` 头恢复 | ✅ |
+| `"-"` 从头重放 | ⚠️ 未显式识别该值，但 `replay()` 找不到匹配 id 时 fallback 返回全部事件，效果等价 |
+| `stream_resumable` | ⚠️ 事件缓冲在内存，不跨重启（见 4.4 末） |
+| thread 级 join | ✅ |
 
-### 8.4 断线重放
+## 十、验证方式
 
-| 能力 | Platform | 项目 |
-|:--|:-:|:-:|
-| `Last-Event-ID` 头恢复 | ✅ | ✅ |
-| `"-"` 从头重放 | ✅ | ⚠️ 未显式识别该值，但 `replay()` 找不到匹配 id 时会 fallback 返回全部事件，效果等价 —— 依赖 fallback 而非契约，且仅在事件仍在 buffer 内时成立 |
-| `stream_resumable` 落盘 | ✅ | ❌ 参数未接受 |
-| thread 级 join（`GET /threads/{id}/stream`） | ✅ | ❌ 端点缺失 |
+本文的「已实现」不是靠读代码断言的，每一项都跑过。复现步骤：
 
-## 九、补齐建议（按投入产出排序）
+**静态**
 
-### P0 —— 静默失效，客户端无从察觉
+```bash
+make lint          # ruff check
+make security      # bandit，无 issue
+make openapi       # 重新导出 spec，diff 应为空
+uv run --package aegra-api pytest libs/aegra-api/tests/unit libs/aegra-api/tests/integration
+```
 
-1. **`Thread` 响应补 `values` + `interrupts`**（6.2）。影响面最大，直接决定 Agent Chat UI 类客户端能否工作。需要在 thread 读取路径上带出 checkpointer 状态。
-2. **`Run` 响应补 `metadata` + `multitask_strategy`**（6.1）。需要恢复对应数据库列 —— 迁移 `d1f7b3a9c5e2` 已经加过这两列且当前仍在库中，只需在 ORM 与响应模型上接回来。
-3. **修 `join_stream` 参数**（6.3）。把 `_stream_mode` 改名为 `stream_mode` 并在函数体内实际使用，补 `cancel_on_disconnect`。改动量小、收益直接。
-4. **恢复 422 的 Agent Protocol 信封**（6.7）。把校验错误压成字符串放进 `message`、明细留在 `details`，SDK 才能提取出具体原因。0.15.0 的 `validation_exception_handler` 是现成实现。
-5. **search 响应补 `X-Pagination-Next` 头**（6.6）。只需加一个响应头，`response_format="object"` 的分页游标就能工作。
-6. **给已移除的请求字段一个明确的错误**（6.5）。要么实现，要么 `extra="forbid"` 返回 422 —— 静默忽略是最差选项。
+单元 + 集成 1840 passed / 1 skipped。与本次对齐直接相关的新增用例：
 
-### P1 —— 端点缺失，客户端拿到 404
+| 文件 | 覆盖 |
+|:--|:--|
+| `tests/unit/test_services/test_multitask.py` | 四种策略 + `rollback` 的 501 门控在中断任何 run 之前触发 |
+| `tests/unit/test_services/test_thread_state_cache.py` | 中断编码成 SDK 的 `{value, id}`、指纹与键序无关、缓存写失败不外抛 |
+| `tests/unit/test_services/test_webhooks.py` | outbox 行不自行 commit、退避封顶、达上限置 `failed` |
+| `tests/unit/test_models/test_run_create_contract.py` | `checkpoint_id` 折叠、`checkpoint_during` → `durability`、webhook URL 校验、各枚举非法值 422 |
+| `tests/unit/test_api/test_validation_envelope.py` | 422 信封，含自定义 app 合并的回归 |
+| `tests/unit/test_core/test_query.py` | 排序方向/tie-break、`select` 投影键名、`extract` 路径解析、分页游标 |
+| `tests/integration/test_api/test_bulk_runs.py` | `POST /runs/cancel` 四种目标组合、`POST /runs/batch` |
 
-7. `POST /threads/count`、`POST /threads/{id}/copy` —— 实现简单，SDK 有对应方法。
-8. `GET /assistants/{id}/subgraphs/{namespace}` —— query 形式已实现，补一条路径路由即可。
-9. `POST /runs/cancel`（批量取消）、`POST /runs/batch`（批量创建）。
-10. `select` 字段投影（assistants/threads/runs/crons 四处 search）—— 大列表场景的响应体优化。
+**迁移**
 
-### P2 —— 功能族缺失，需要设计
+在真实 Postgres 上从 `d1f7b3a9c5e2` 升到 `a3d6e0b95f17` 跑通。另外单独验证了四件容易想当然的事：
 
-11. **`multitask_strategy` 执行逻辑**（6.4）。这是 Platform 的核心并发语义，需要 double-texting 串行化。注意：迁移在库里留下了 `uq_runs_one_running_per_thread` 唯一索引，实现前先确认它已被 `f2c8a5e13d94` 删除，否则并发 run 会撞唯一约束。
-12. **`webhook` 回调**。Platform 语义是 run 终态 POST 最终 Run 载荷，需要事务性 outbox 才能保证不丢。
-13. **`after_seconds` 延迟运行** + `durability` 持久化策略。
-14. **Thread TTL / `POST /threads/prune`** —— retention 功能族，配合 checkpoint 存储回收。
-15. **Store `index` / `ttl` / `refresh_ttl` / `score`** —— 语义检索与过期，依赖 `AsyncPostgresStore` 的 index/ttl 配置。
-16. **`supersteps`** 预填 thread 状态。
-17. **`GET /threads/{id}/stream`** thread 级流式 + `stream_resumable` 事件落盘。注意要覆盖 `ThreadStreamMode` 的三种模式（`run_modes`/`lifecycle`/`state_update`），0.15.0 的实现只做了第一种。
+- DDL 可重入（重跑只出 `NOTICE ... skipping`）。
+- 队列认领的 `UPDATE ... WHERE run_id = (SELECT ... FOR UPDATE SKIP LOCKED)` 确实只取最旧一条、只影响一行。
+- 状态缓存的 upsert 在 `values_hash` 未变时是 `INSERT 0 0`，即真的跳过写入。
+- `thread_state` 的 `values` 是 SQL 保留字，SQLAlchemy 编译出的是**不带引号**的 `values`；已确认 Postgres 在 INSERT 列名与 `SET` 位置接受该写法。
 
-## 十、如何重做这个分析
+**端到端**
 
-升级 `langgraph-sdk` 后，用 AST 解析 `.venv/Lib/site-packages/langgraph_sdk/_async/{assistants,runs,threads,cron,store}.py`（顶层 `LangGraphClient` 只组装这五个子客户端，没有额外 HTTP 方法；`_sync` 与 `_async` 端点集合已验证一致），找出所有 `self.http.<verb>(...)` 调用；项目侧先 `make openapi` 再解析 `docs/openapi.json`。两边取差集即可。
+对真实服务（`docker compose up -d`，migrations 走启动路径）跑 37 项契约检查，覆盖本文第三节的每一处 ⚠️ 与新增字段：36 通过。唯一未通过的是 4.4 记录的 `acopy_thread` 限制 —— 即预期行为。
+
+## 十一、如何重做这个分析
+
+升级 `langgraph-sdk` 后，解析 `.venv/Lib/site-packages/langgraph_sdk/_async/{assistants,runs,threads,cron,store}.py`（顶层 `LangGraphClient` 只组装这五个子客户端；`_sync` 与 `_async` 端点集合已验证一致），找出所有 `self.http.<verb>(...)` 调用；项目侧先 `make openapi` 再解析 `docs/openapi.json`。两边取差集。
 
 以下五个坑是实际踩过的，直接按朴素方式提取会得出错误结论：
 
-1. **`@overload` 方法要取最后一个同名定义。** `assistants.search`、`threads.update`、`runs.create/stream/wait` 都有重载声明，声明体是 `...`，提取出来是空集。漏了这一步会以为这些端点「没有任何参数」。
-2. **路径可能是三元表达式或变量。** `create()`/`stream()`/`wait()` 的路径形如 `f"/threads/{id}/runs" if thread_id else "/runs"`，必须展开成两条；`stream()`/`wait()` 还先赋值给 `endpoint` 变量再传入，需回溯变量赋值。不展开会少算 5 个端点（46 而非 51）。
-3. **动词不能按方法名推断。** `join()`/`join_stream()` 走 `http.request_reconnect`/`http.stream`，真实动词在 `method=` 实参里 —— 这两个是 `GET`，而 `stream()`/`wait()`/`cancel()` 是 `POST`。
-4. **嵌套键会混进请求字段。** `supersteps` 内部的 `updates`/`values`/`as_node`/`command` 和 `ttl` 内部的 `strategy` 都是嵌套结构的键，不是顶层字段。按 dict 字面量键统计会虚增缺失项。
-5. **有些「缺失」其实可用，有些「参数」根本不发给服务端。** `graph_id` 被 SDK 合并进 `metadata`（3.2）；`response_format` 是纯客户端参数，服务端只需返回 `X-Pagination-Next` 头（6.6）。这两类必须读 SDK 实现才能判断，不能只比字段名。
+1. **`@overload` 方法要取最后一个同名定义。** `assistants.search`、`threads.update`、`runs.create/stream/wait` 都有重载声明，声明体是 `...`，提取出来是空集。
+2. **路径可能是三元表达式或变量。** `create()`/`stream()`/`wait()` 的路径形如 `f"/threads/{id}/runs" if thread_id else "/runs"`，必须展开成两条；`stream()`/`wait()` 还先赋值给 `endpoint` 变量再传入。不展开会少算 5 个端点。
+3. **动词不能按方法名推断。** `join()`/`join_stream()` 走 `http.request_reconnect`/`http.stream`，真实动词在 `method=` 实参里。
+4. **嵌套键会混进请求字段。** `supersteps` 内部的 `updates`/`values`/`as_node`/`command` 和 `ttl` 内部的 `strategy` 都是嵌套结构的键。
+5. **有些「缺失」其实可用，有些「参数」根本不发给服务端。** `graph_id` 被 SDK 合并进 `metadata`；`response_format` 是纯客户端参数，服务端只需返回 `X-Pagination-Next` 头；`version` 同理。
 
-判定 ✅/⚠️/❌ 时，端点存在性可以机械比对，但**参数是否真正生效必须读项目实现** —— 6.3 的 `_stream_mode` 就是签名里声明了、函数体从未使用的例子，只看 OpenAPI 会误判为「已支持」。
+判定时端点存在性可以机械比对，但**参数是否真正生效必须读实现** —— 旧版的 `_stream_mode` 就是签名里声明了、函数体从未使用的例子，只看 OpenAPI 会误判为「已支持」。

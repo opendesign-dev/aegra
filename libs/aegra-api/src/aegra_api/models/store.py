@@ -1,6 +1,7 @@
 """Store-related Pydantic models for Agent Protocol"""
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -11,6 +12,14 @@ class StorePutRequest(BaseModel):
     namespace: list[str] = Field(..., description="Storage namespace")
     key: str = Field(..., description="Item key")
     value: dict[str, Any] = Field(..., description="Item value (must be a JSON object)")
+    index: Literal[False] | list[str] | None = Field(
+        None,
+        description=(
+            "Fields to embed for semantic search, as dotted paths into `value`. "
+            "`false` skips indexing this item; omit to use the store's configured default."
+        ),
+    )
+    ttl: float | None = Field(None, gt=0, description="Lifetime in minutes; omit to keep the item indefinitely.")
 
     @field_validator("value", mode="before")
     @classmethod
@@ -31,6 +40,8 @@ class StoreGetResponse(BaseModel):
     key: str = Field(..., description="The item's key within its namespace.")
     value: Any = Field(..., description="The stored value.")
     namespace: list[str] = Field(..., description="The namespace path where this item is stored.")
+    created_at: datetime | None = Field(None, description="When the item was first written.")
+    updated_at: datetime | None = Field(None, description="When the item was last written.")
 
 
 class StoreSearchRequest(BaseModel):
@@ -39,8 +50,11 @@ class StoreSearchRequest(BaseModel):
     namespace_prefix: list[str] = Field(..., description="Namespace prefix to search")
     filter: dict[str, Any] | None = Field(None, description="Optional dictionary of key-value pairs to filter results.")
     query: str | None = Field(None, description="Search query")
-    limit: int | None = Field(20, le=100, ge=1, description="Maximum results")
-    offset: int | None = Field(0, ge=0, description="Results offset")
+    limit: int = Field(20, le=100, ge=1, description="Maximum results")
+    offset: int = Field(0, ge=0, description="Results offset")
+    refresh_ttl: bool | None = Field(
+        None, description="Extend the TTL of matched items; omit to use the store's configured default."
+    )
 
 
 class StoreItem(BaseModel):
@@ -49,6 +63,9 @@ class StoreItem(BaseModel):
     key: str = Field(..., description="The item's key within its namespace.")
     value: Any = Field(..., description="The stored value.")
     namespace: list[str] = Field(..., description="The namespace path where this item is stored.")
+    created_at: datetime | None = Field(None, description="When the item was first written.")
+    updated_at: datetime | None = Field(None, description="When the item was last written.")
+    score: float | None = Field(None, description="Semantic relevance; null unless `query` was given.")
 
 
 class StoreSearchResponse(BaseModel):

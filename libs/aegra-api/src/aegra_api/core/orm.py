@@ -73,7 +73,7 @@ def _strip_null_bytes(value: Any, _depth: int = 0) -> Any:
     return value
 
 
-class JsonbSafe(TypeDecorator):
+class JsonbSafe(TypeDecorator[Any]):
     """JSONB column that strips NULL bytes from string values before write.
 
     Drop-in replacement for ``JSONB``. Read path is untouched — only
@@ -98,15 +98,18 @@ class Assistant(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     graph_id: Mapped[str] = mapped_column(Text, nullable=False)
-    config: Mapped[dict] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
-    context: Mapped[dict] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
+    config: Mapped[dict[str, Any]] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
+    context: Mapped[dict[str, Any]] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
     user_id: Mapped[str] = mapped_column(Text, nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
-    metadata_dict: Mapped[dict] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"), name="metadata")
+    metadata_dict: Mapped[dict[str, Any]] = mapped_column(
+        JsonbSafe, server_default=text("'{}'::jsonb"), name="metadata"
+    )
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
 
-    # idx_assistant_user_assistant 的左前缀已覆盖 user_id 等值查询，无需单列索引。
+    # The (user_id, assistant_id) left prefix already serves user_id equality
+    # lookups, so no separate single-column index is needed.
     __table_args__ = (
         Index("idx_assistant_user_assistant", "user_id", "assistant_id", unique=True),
         Index(
@@ -127,10 +130,12 @@ class AssistantVersion(Base):
     )
     version: Mapped[int] = mapped_column(Integer, primary_key=True)
     graph_id: Mapped[str] = mapped_column(Text, nullable=False)
-    config: Mapped[dict | None] = mapped_column(JsonbSafe)
-    context: Mapped[dict | None] = mapped_column(JsonbSafe)
+    config: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe)
+    context: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
-    metadata_dict: Mapped[dict] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"), name="metadata")
+    metadata_dict: Mapped[dict[str, Any]] = mapped_column(
+        JsonbSafe, server_default=text("'{}'::jsonb"), name="metadata"
+    )
     name: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
 
@@ -141,14 +146,41 @@ class Thread(Base):
     thread_id: Mapped[str] = mapped_column(Text, primary_key=True)
     status: Mapped[str] = mapped_column(Text, server_default=text("'idle'"))
     # Database column is 'metadata_json' (per database.py). ORM attribute 'metadata_json' must map to that column.
-    metadata_json: Mapped[dict] = mapped_column("metadata_json", JsonbSafe, server_default=text("'{}'::jsonb"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata_json", JsonbSafe, server_default=text("'{}'::jsonb")
+    )
+    # Per-thread retention policy: {"strategy": "delete", "ttl": <minutes>}.
+    ttl: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, nullable=True)
     user_id: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
 
-    # 索引以 alembic 迁移为准，此处仅镜像 B-tree 定义供参考；GIN 索引由迁移
-    # 手写 CONCURRENTLY 创建，不走 ORM autogenerate。
+    # Alembic owns the indexes; the B-tree declarations here only mirror them.
+    # GIN indexes are built CONCURRENTLY by migrations, outside autogenerate.
     __table_args__ = (Index("idx_thread_user_created", "user_id", text("created_at DESC")),)
+
+
+class ThreadStateCache(Base):
+    """Materialized copy of a thread's latest state, one row per thread.
+
+    Split out of the wide ``thread`` row so list, search and count scan a narrow
+    table instead of dragging large state blobs along. The checkpointer stays the
+    source of truth; only threads that have been materialized have a row here.
+
+    Deliberately not named ``ThreadState`` — that name belongs to
+    ``models.threads.ThreadState``, which mirrors the SDK type for a full
+    checkpoint snapshot and is a different thing from this latest-value cache.
+    """
+
+    __tablename__ = "thread_state"
+
+    thread_id: Mapped[str] = mapped_column(Text, ForeignKey("thread.thread_id", ondelete="CASCADE"), primary_key=True)
+    values: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, nullable=True)
+    # Interrupts grouped by task id, matching the SDK's Thread.interrupts shape.
+    interrupts: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, nullable=True)
+    # Digest of ``values`` so an unchanged state skips the write.
+    values_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
 
 
 class Run(Base):
@@ -159,20 +191,34 @@ class Run(Base):
     thread_id: Mapped[str] = mapped_column(Text, ForeignKey("thread.thread_id", ondelete="CASCADE"), nullable=False)
     assistant_id: Mapped[str | None] = mapped_column(Text, ForeignKey("assistant.assistant_id", ondelete="CASCADE"))
     status: Mapped[str] = mapped_column(Text, server_default=text("'pending'"))
-    input: Mapped[dict | None] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
+    input: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
     # Some environments may not yet have a 'config' column; make it nullable without default to match existing DB.
     # If migrations add this column later, it's already represented here.
-    config: Mapped[dict | None] = mapped_column(JsonbSafe, nullable=True)
-    context: Mapped[dict | None] = mapped_column(JsonbSafe, nullable=True)
-    output: Mapped[dict | None] = mapped_column(JsonbSafe)
+    config: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, nullable=True)
+    context: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, nullable=True)
+    output: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe)
     error_message: Mapped[str | None] = mapped_column(Text)
     user_id: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
 
+    # First-class members of the SDK's Run contract, so they are real columns
+    # rather than keys inside execution_params.
+    metadata_dict: Mapped[dict[str, Any]] = mapped_column(
+        JsonbSafe, server_default=text("'{}'::jsonb"), name="metadata"
+    )
+    multitask_strategy: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Set when ``after_seconds`` delays the run; NULL means start immediately.
+    scheduled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+
+    # False while ``multitask_strategy="enqueue"`` holds the run behind another
+    # run on the same thread. The drain claims queued runs via this column.
+    dispatched: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
+
     # Worker execution: stores RunJob params so workers can reconstruct
     # the job from the database after receiving a run_id via Redis.
-    execution_params: Mapped[dict | None] = mapped_column(JsonbSafe, nullable=True)
+    execution_params: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, nullable=True)
 
     # Lease-based crash recovery: tracks which worker owns a run and
     # when the lease expires. A background reaper re-enqueues runs
@@ -180,7 +226,8 @@ class Run(Base):
     claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
 
-    # idx_runs_thread_created 同时服务 thread_id 外键级联与等值查询，无需单列索引。
+    # idx_runs_thread_created serves both the thread_id FK cascade and thread_id
+    # equality lookups, so no separate single-column index is needed.
     __table_args__ = (
         Index("idx_runs_thread_created", "thread_id", text("created_at DESC")),
         Index("idx_runs_user", "user_id"),
@@ -189,6 +236,30 @@ class Run(Base):
         Index("idx_runs_created_at", "created_at"),
         Index("idx_runs_lease_reaper", "status", "lease_expires_at"),
     )
+
+
+class WebhookDelivery(Base):
+    """Outbox row for a run-completion webhook.
+
+    Written in the same transaction that finalizes the run, so a crash inside the
+    retry window cannot lose the notification. A sweeper drains it.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, server_default=text("gen_random_uuid()::text"))
+    run_id: Mapped[str] = mapped_column(Text, ForeignKey("runs.run_id", ondelete="CASCADE"), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, server_default=text("'pending'"), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"), nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"), nullable=False
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
+
+    __table_args__ = (Index("idx_webhook_deliveries_due", "status", "next_attempt_at"),)
 
 
 class Cron(Base):
@@ -205,8 +276,10 @@ class Cron(Base):
     user_id: Mapped[str] = mapped_column(Text, nullable=False)
     schedule: Mapped[str] = mapped_column(Text, nullable=False)
     # JsonbSafe strips NULL bytes from user payloads — same protection as runs.input.
-    payload: Mapped[dict] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
-    metadata_dict: Mapped[dict] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"), name="metadata")
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
+    metadata_dict: Mapped[dict[str, Any]] = mapped_column(
+        JsonbSafe, server_default=text("'{}'::jsonb"), name="metadata"
+    )
     on_run_completed: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, server_default=text("true"), nullable=False)
     end_time: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)

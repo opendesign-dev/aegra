@@ -5,7 +5,7 @@ resume-command validation, and config/context merging logic.
 """
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -21,6 +21,7 @@ from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import _get_session_maker
 from aegra_api.models import Run, RunCreate, User
 from aegra_api.models.run_job import RunBehavior, RunExecution, RunIdentity, RunJob
+from aegra_api.services import multitask
 from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.run_status import set_thread_status
@@ -70,6 +71,21 @@ async def _validate_resume_command(session: AsyncSession, thread_id: str, comman
 
 
 _THREAD_NAME_MAX_LENGTH = 100
+
+
+def _run_metadata(request: RunCreate) -> dict[str, Any]:
+    """Run metadata plus the LangSmith hints the SDK sends alongside it.
+
+    ``feedback_keys`` and ``langsmith_tracer`` configure the client's own tracer;
+    the server has nothing to execute for them, so it records them on the run
+    where a tracing backend can pick them up.
+    """
+    metadata = dict(request.metadata or {})
+    if request.feedback_keys:
+        metadata["feedback_keys"] = request.feedback_keys
+    if request.langsmith_tracer:
+        metadata["langsmith_tracer"] = request.langsmith_tracer
+    return metadata
 
 
 def _resolve_content_text(content: Any) -> str:
@@ -137,10 +153,12 @@ async def update_thread_metadata(
     *,
     user_id: str | None = None,
     input_data: dict[str, Any] | None = None,
+    create_missing: bool = True,
 ) -> None:
     """Update thread metadata with assistant and graph information (dialect agnostic).
 
-    If thread doesn't exist, auto-creates it.
+    A missing thread is auto-created unless *create_missing* is false, which is
+    how ``if_not_exists="reject"`` turns into a 404.
     When *input_data* is provided and the thread has no name yet, the first
     human message content is used as ``thread_name``.
     Does NOT commit — the caller controls the transaction boundary.
@@ -151,6 +169,8 @@ async def update_thread_metadata(
     thread_name = _extract_thread_name(input_data or {})
 
     if not thread:
+        if not create_missing:
+            raise HTTPException(404, f"Thread '{thread_id}' not found")
         # Auto-create thread if it doesn't exist
         if not user_id:
             raise HTTPException(400, "Cannot auto-create thread: user_id is required")
@@ -200,8 +220,12 @@ async def _prepare_run(
     Validates inputs, resolves the assistant, persists the RunORM record,
     builds a RunJob, submits it to the executor, and returns the triple
     ``(run_id, run_model, job)``.
+
+    ``multitask_strategy="enqueue"`` persists the run undispatched; the run that
+    currently owns the thread hands it over when it finalizes.
     """
     await _validate_resume_command(session, thread_id, request.command)
+    dispatch = await multitask.resolve(session, thread_id, request.multitask_strategy)
 
     run_id = str(uuid4())
     langgraph_service = get_langgraph_service()
@@ -246,7 +270,13 @@ async def _prepare_run(
 
     # Mark thread as busy and update metadata
     await update_thread_metadata(
-        session, thread_id, assistant.assistant_id, assistant.graph_id, user_id=user.identity, input_data=request.input
+        session,
+        thread_id,
+        assistant.assistant_id,
+        assistant.graph_id,
+        user_id=user.identity,
+        input_data=request.input,
+        create_missing=request.if_not_exists != "reject",
     )
     await set_thread_status(session, thread_id, "busy")
 
@@ -262,14 +292,17 @@ async def _prepare_run(
             checkpoint=request.checkpoint,
             command=request.command,
             event_streaming_v2=event_streaming_v2,
+            durability=request.durability,
         ),
         behavior=RunBehavior(
             interrupt_before=request.interrupt_before,
             interrupt_after=request.interrupt_after,
             multitask_strategy=request.multitask_strategy,
             subgraphs=request.stream_subgraphs or False,
+            webhook=request.webhook,
+            after_seconds=request.after_seconds,
         ),
-        run_metadata=request.metadata or {},
+        run_metadata=_run_metadata(request),
     )
 
     # Persist run record with trace metadata for worker observability.
@@ -298,14 +331,20 @@ async def _prepare_run(
         output=None,
         error_message=None,
         execution_params=exec_params,
+        metadata_dict=job.run_metadata,
+        multitask_strategy=request.multitask_strategy,
+        scheduled_at=now + timedelta(seconds=request.after_seconds) if request.after_seconds else None,
+        dispatched=dispatch,
     )
     session.add(run_orm)
     await session.commit()
 
     run = Run.model_validate(run_orm)
 
-    # Submit to executor
-    await executor.submit(job)
-    logger.info("Submitted run to executor", run_id=run_id)
+    if dispatch:
+        await executor.submit(job)
+        logger.info("Submitted run to executor", run_id=run_id)
+    else:
+        logger.info("Queued run behind the thread's active run", run_id=run_id, thread_id=thread_id)
 
     return run_id, run, job

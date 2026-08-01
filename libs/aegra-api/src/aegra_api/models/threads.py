@@ -1,11 +1,42 @@
 """Thread-related Pydantic models for Agent Protocol"""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from aegra_api.models.enums import (
+    OnConflictBehavior,
+    PruneStrategy,
+    SortOrder,
+    ThreadSelectField,
+    ThreadSortBy,
+)
 from aegra_api.utils.status_compat import validate_thread_status
+
+# Cap on ``extract`` paths per search request, per the SDK docstring.
+_MAX_EXTRACT_PATHS = 10
+
+
+class ThreadTTL(BaseModel):
+    """Retention policy for a single thread."""
+
+    strategy: PruneStrategy = Field("delete", description="What to do once the thread expires.")
+    ttl: float = Field(..., gt=0, description="Lifetime in minutes.")
+
+
+class SuperstepUpdate(BaseModel):
+    """One state write applied while pre-filling a thread."""
+
+    values: dict[str, Any] | list[dict[str, Any]] | None = Field(None, description="State values to write.")
+    command: dict[str, Any] | None = Field(None, description="Drive the write as a command instead of values.")
+    as_node: str = Field(..., description="Node to attribute the write to.")
+
+
+class Superstep(BaseModel):
+    """A superstep: a batch of state writes applied in order."""
+
+    updates: list[SuperstepUpdate] = Field(..., min_length=1, description="Updates applied in order.")
 
 
 class ThreadCreate(BaseModel):
@@ -14,16 +45,20 @@ class ThreadCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     metadata: dict[str, Any] | None = Field(None, description="Thread metadata")
-    initial_state: dict[str, Any] | None = Field(None, description="LangGraph initial state")
     thread_id: str | None = Field(
         None,
         alias="threadId",
         description="Optional client-provided thread ID for idempotent creation",
     )
-    if_exists: str | None = Field(
+    if_exists: OnConflictBehavior | None = Field(
         "raise",
         alias="ifExists",
-        description="Behavior when thread exists: 'raise' (default) or 'do_nothing'",
+        description="On conflict: 'raise' returns 409, 'do_nothing' returns the existing thread.",
+    )
+    ttl: ThreadTTL | None = Field(None, description="Retention policy; omit to keep the thread indefinitely.")
+    supersteps: list[Superstep] | None = Field(
+        None,
+        description="Pre-fill the thread with a sequence of state writes (import a transcript, seed a test).",
     )
 
 
@@ -31,6 +66,7 @@ class ThreadUpdate(BaseModel):
     """Request model for updating threads"""
 
     metadata: dict[str, Any] | None = Field(None, description="Thread metadata to update")
+    ttl: ThreadTTL | None = Field(None, description="Replaces the retention policy; omit to leave it unchanged.")
 
 
 class Thread(BaseModel):
@@ -47,6 +83,12 @@ class Thread(BaseModel):
     user_id: str = Field(..., description="Identifier of the user who owns this thread.")
     created_at: datetime = Field(..., description="Timestamp when the thread was created.")
     updated_at: datetime = Field(..., description="Timestamp when the thread was last updated.")
+    # First-class in the SDK's Thread: clients render transcripts straight off
+    # these, so omitting them forces a state lookup per row and breaks list views.
+    values: dict[str, Any] | None = Field(None, description="Current thread state, null until materialized.")
+    interrupts: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict, description="Pending interrupts grouped by task id."
+    )
 
     @field_validator("status", mode="before")
     @classmethod
@@ -64,25 +106,45 @@ class ThreadList(BaseModel):
     total: int
 
 
+class ThreadPruneRequest(BaseModel):
+    """Request body for reclaiming thread storage."""
+
+    thread_ids: list[str] = Field(..., min_length=1, description="Threads to prune.")
+    strategy: PruneStrategy = Field(
+        "delete",
+        description="'delete' removes the threads outright; 'keep_latest' drops history but keeps the latest state.",
+    )
+
+
+class ThreadPruneResponse(BaseModel):
+    """Response body for POST /threads/prune."""
+
+    pruned_count: int = Field(..., description="Number of threads pruned.")
+
+
 class ThreadSearchRequest(BaseModel):
     """Request model for thread search"""
 
-    metadata: dict[str, Any] | None = Field(None, description="Metadata filters")
-    status: str | None = Field(None, description="Thread status filter (idle, busy, interrupted, error)")
-    limit: int | None = Field(20, le=100, ge=1, description="Maximum results")
-    offset: int | None = Field(0, ge=0, description="Results offset")
-    order_by: str | None = Field(
-        "created_at DESC",
-        deprecated=True,
-        description="DEPRECATED: use sort_by + sort_order. Legacy single-field form, e.g. 'updated_at ASC'.",
+    metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")
+    status: str | None = Field(None, description="Filter by status: idle, busy, interrupted, or error.")
+    values: dict[str, Any] | None = Field(
+        None, description="State containment match; only matches threads whose state is materialized."
     )
-    sort_by: Literal["thread_id", "status", "created_at", "updated_at"] | None = Field(
-        None,
-        description="Field to sort by (SDK-compatible). Takes precedence over order_by.",
+    ids: list[str] | None = Field(None, min_length=1, description="Restrict to this set of thread ids.")
+    limit: int = Field(20, le=1000, ge=1, description="Maximum rows per page.")
+    offset: int = Field(0, ge=0, description="Rows to skip.")
+    sort_by: ThreadSortBy | None = Field(None, description="Sort field; defaults to created_at.")
+    sort_order: SortOrder | None = Field(None, description="Sort direction; defaults to desc.")
+    select: list[ThreadSelectField] | None = Field(
+        None, description="Return only the listed fields; omit for the full entity."
     )
-    sort_order: Literal["asc", "desc"] | None = Field(
+    extract: dict[str, str] | None = Field(
         None,
-        description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
+        max_length=_MAX_EXTRACT_PATHS,
+        description=(
+            "Alias to dot/bracket path into the thread, e.g. {'last_msg': 'values.messages[-1]'}. "
+            "Results land in each row's `extracted` field."
+        ),
     )
 
     @field_validator("status")

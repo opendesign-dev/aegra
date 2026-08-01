@@ -104,6 +104,7 @@ async def stream_graph_events(
     stream_mode: list[str],
     context: dict[str, Any] | None = None,
     subgraphs: bool = False,
+    durability: str | None = None,
     output_keys: list[str] | None = None,
     on_checkpoint: Callable[[CheckpointPayload | None], None] = lambda _: None,
     on_task_result: Callable[[TaskResultPayload], None] = lambda _: None,
@@ -121,6 +122,7 @@ async def stream_graph_events(
         stream_mode: List of stream modes (e.g., ["messages", "values", "debug"])
         context: Optional context dictionary
         subgraphs: Whether to include subgraph namespaces in event types
+        durability: Checkpoint flush timing; None leaves LangGraph's default
         output_keys: Optional output channel keys for astream
         on_checkpoint: Callback invoked when checkpoint events are received
         on_task_result: Callback invoked when task result events are received
@@ -170,6 +172,9 @@ async def stream_graph_events(
     # Choose streaming method based on mode and graph type
     use_astream_events = "events" in stream_mode or is_js_graph
 
+    # Omitted rather than passed as None so LangGraph applies its own default.
+    durability_kwarg = {"durability": durability} if durability else {}
+
     # Yield metadata event
     yield (
         "metadata",
@@ -186,6 +191,7 @@ async def stream_graph_events(
                 version="v2",
                 stream_mode=list(stream_modes_set),
                 subgraphs=subgraphs,
+                **durability_kwarg,
             )
         ) as stream:
             async for event in stream:
@@ -272,6 +278,7 @@ async def stream_graph_events(
                 stream_mode=list(stream_modes_set),
                 output_keys=output_keys,
                 subgraphs=subgraphs,
+                **durability_kwarg,
             )
         ) as stream:
             async for event in stream:

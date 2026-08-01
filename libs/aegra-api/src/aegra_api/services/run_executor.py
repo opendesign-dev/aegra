@@ -14,7 +14,9 @@ import structlog
 from aegra_api.core.active_runs import active_runs
 from aegra_api.core.auth_ctx import with_auth_ctx
 from aegra_api.core.redis_manager import redis_manager
+from aegra_api.models.enums import StreamMode
 from aegra_api.models.run_job import RunJob
+from aegra_api.services import multitask, thread_state_cache
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.event_streaming.native_stream import stream_native_v3_events
 from aegra_api.services.graph_streaming import stream_graph_events
@@ -50,6 +52,12 @@ async def execute_run(job: RunJob) -> None:
     is_lease_loss = False
 
     try:
+        if job.behavior.after_seconds:
+            # The run stays `pending` for the delay. In worker mode this holds a
+            # slot, so long delays trade concurrency for not needing a scheduler.
+            logger.info("Delaying run start", run_id=run_id, seconds=job.behavior.after_seconds)
+            await asyncio.sleep(job.behavior.after_seconds)
+
         await update_run_status(run_id, "running")
 
         final_output = await _stream_graph(job)
@@ -61,6 +69,7 @@ async def execute_run(job: RunJob) -> None:
                 status="interrupted",
                 thread_status="interrupted",
                 output=final_output.data,
+                webhook=job.behavior.webhook,
             )
         else:
             await finalize_run(
@@ -69,6 +78,7 @@ async def execute_run(job: RunJob) -> None:
                 status="success",
                 thread_status="idle",
                 output=final_output.data,
+                webhook=job.behavior.webhook,
             )
 
     except asyncio.CancelledError:
@@ -79,13 +89,28 @@ async def execute_run(job: RunJob) -> None:
             is_lease_loss = True
             logger.info("Lease-loss cancel, skipping finalize", run_id=run_id)
         else:
-            await finalize_run(run_id, thread_id, status="interrupted", thread_status="idle", output={})
+            await finalize_run(
+                run_id,
+                thread_id,
+                status="interrupted",
+                thread_status="idle",
+                output={},
+                webhook=job.behavior.webhook,
+            )
             await _best_effort_signal(streaming_service.signal_run_cancelled, run_id)
         raise
     except Exception as exc:
         logger.exception("Run failed", run_id=run_id)
         safe_message = f"{type(exc).__name__}: execution failed"
-        await finalize_run(run_id, thread_id, status="error", thread_status="error", output={}, error=str(exc))
+        await finalize_run(
+            run_id,
+            thread_id,
+            status="error",
+            thread_status="error",
+            output={},
+            error=str(exc),
+            webhook=job.behavior.webhook,
+        )
         await _best_effort_signal(streaming_service.signal_run_error, run_id, safe_message, type(exc).__name__)
     else:
         status = "interrupted" if final_output.has_interrupt else "success"
@@ -96,6 +121,8 @@ async def execute_run(job: RunJob) -> None:
         if not is_lease_loss:
             await streaming_service.cleanup_run(run_id)
             await _signal_run_done(run_id)
+            # The thread is free now — hand it to whatever enqueue held back.
+            await multitask.drain(thread_id)
 
 
 # ------------------------------------------------------------------
@@ -149,6 +176,10 @@ async def _stream_graph(job: RunJob) -> _GraphResult:
         else:
             await _stream_legacy(job, graph, execution_input, run_config, stream_modes, result)
 
+        # Refresh the thread's state cache while the graph is still loaded, so
+        # search and list see this run's output without a per-row graph load.
+        await thread_state_cache.refresh(job.identity.thread_id, graph, run_config)
+
     return result
 
 
@@ -169,6 +200,7 @@ async def _stream_legacy(
         stream_mode=stream_modes,
         context=job.execution.context,
         subgraphs=job.behavior.subgraphs,
+        durability=job.execution.durability,
         on_checkpoint=lambda _: None,
         on_task_result=lambda _: None,
     ):
@@ -239,7 +271,7 @@ def _resolve_input(job: RunJob) -> Any:
     return job.execution.input_data
 
 
-def _resolve_stream_modes(stream_mode: str | list[str] | None) -> list[str]:
+def _resolve_stream_modes(stream_mode: StreamMode | list[StreamMode] | None) -> list[str]:
     """Normalize stream_mode to a list."""
     if stream_mode is None:
         return _DEFAULT_STREAM_MODES.copy()

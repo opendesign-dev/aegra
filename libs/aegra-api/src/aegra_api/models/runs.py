@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import Any, Self
 
 from pydantic import (
     BaseModel,
@@ -12,7 +12,19 @@ from pydantic import (
     model_validator,
 )
 
+from aegra_api.models.enums import (
+    BulkCancelRunsStatus,
+    CancelAction,
+    DisconnectMode,
+    Durability,
+    IfNotExists,
+    MultitaskStrategy,
+    OnCompletionBehavior,
+    RunSelectField,
+    StreamMode,
+)
 from aegra_api.utils.status_compat import validate_run_status
+from aegra_api.utils.webhooks import WEBHOOK_MAX_LEN, validate_webhook_url
 
 # Constraints for ``RunCreate.metadata`` keys/values, enforced at request
 # time so the OpenAPI schema is honest about what reaches OTEL.  Without
@@ -41,20 +53,61 @@ class RunCreate(BaseModel):
         None,
         description="Checkpoint configuration (e.g., {'checkpoint_id': '...', 'checkpoint_ns': ''})",
     )
+    checkpoint_id: str | None = Field(
+        None, description="Flat form of `checkpoint.checkpoint_id`; merged into `checkpoint` when given."
+    )
     stream: bool = Field(False, description="Enable streaming response")
-    stream_mode: str | list[str] | None = Field(None, description="Requested stream mode(s)")
-    on_disconnect: str | None = Field(
+    stream_mode: StreamMode | list[StreamMode] | None = Field(None, description="Requested stream mode(s)")
+    stream_resumable: bool | None = Field(
+        None,
+        description=(
+            "Buffer this run's events so a reconnect with `Last-Event-ID` can replay them. "
+            "The buffer is in-memory per run and does not survive a server restart."
+        ),
+    )
+    on_disconnect: DisconnectMode | None = Field(
         None,
         description="Behavior on client disconnect: 'cancel' (default) or 'continue'.",
     )
-    on_completion: Literal["delete", "keep"] | None = Field(
+    on_completion: OnCompletionBehavior | None = Field(
         None,
         description="Behavior after stateless run completes: 'delete' (default) removes the ephemeral thread, 'keep' preserves it.",
     )
 
-    multitask_strategy: str | None = Field(
+    multitask_strategy: MultitaskStrategy | None = Field(
         None,
-        description="Strategy for handling concurrent runs on same thread: 'reject', 'interrupt', 'rollback', or 'enqueue'.",
+        description=(
+            "How to handle a run started while the thread already has one in flight: "
+            "'reject' returns 409, 'interrupt' stops the in-flight run, 'rollback' stops it and "
+            "discards its state, 'enqueue' (default) lets both proceed."
+        ),
+    )
+    if_not_exists: IfNotExists | None = Field(
+        None,
+        description=("When the target thread does not exist: 'create' (default) creates it, 'reject' returns 404."),
+    )
+    durability: Durability | None = Field(
+        None,
+        description="When checkpoints are flushed: 'sync', 'async' (default), or 'exit'.",
+    )
+    checkpoint_during: bool | None = Field(
+        None,
+        deprecated=True,
+        description="DEPRECATED: use `durability`. True maps to 'async', False to 'exit'.",
+    )
+    after_seconds: int | None = Field(
+        None, ge=0, description="Delay execution by this many seconds; the run stays `pending` until due."
+    )
+    webhook: str | None = Field(
+        None,
+        max_length=WEBHOOK_MAX_LEN,
+        description="URL that receives a POST with the final Run payload once the run reaches a terminal state.",
+    )
+    feedback_keys: list[str] | None = Field(
+        None, description="LangSmith feedback keys; recorded on the run and echoed to tracing."
+    )
+    langsmith_tracer: dict[str, Any] | None = Field(
+        None, description="Client-side LangSmith tracing hints; recorded on the run, not acted on server-side."
     )
 
     # Human-in-the-loop fields (core HITL functionality)
@@ -126,8 +179,18 @@ class RunCreate(BaseModel):
         return metadata
 
     @model_validator(mode="after")
-    def validate_input_command_exclusivity(self) -> Self:
-        """Ensure input and command are mutually exclusive."""
+    def normalize(self) -> Self:
+        """Fold the SDK's flat/legacy spellings into the canonical fields."""
+        self.webhook = validate_webhook_url(self.webhook)
+
+        if self.checkpoint_id:
+            self.checkpoint = {**(self.checkpoint or {}), "checkpoint_id": self.checkpoint_id}
+
+        # checkpoint_during predates durability and carries the same meaning:
+        # True kept checkpoints during the run, False only at exit.
+        if self.durability is None and self.checkpoint_during is not None:
+            self.durability = "async" if self.checkpoint_during else "exit"
+
         # Empty input dict alongside command: drop it for frontend compatibility.
         if self.input is not None and self.command is not None:
             if self.input == {}:
@@ -147,7 +210,7 @@ class Run(BaseModel):
     Status values: pending, running, error, success, timeout, interrupted
     """
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     run_id: str = Field(..., description="Unique identifier for the run.")
     thread_id: str = Field(..., description="Thread this run belongs to.")
@@ -171,6 +234,11 @@ class Run(BaseModel):
     user_id: str = Field(..., description="Identifier of the user who owns this run.")
     created_at: datetime = Field(..., description="Timestamp when the run was created.")
     updated_at: datetime = Field(..., description="Timestamp when the run was last updated.")
+    # First-class in the SDK's Run; reading run["metadata"] must not KeyError.
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, alias="metadata_dict", description="Metadata supplied when the run was created."
+    )
+    multitask_strategy: str | None = Field(None, description="Strategy applied for concurrent runs on the same thread.")
 
     @field_validator("status", mode="before")
     @classmethod
@@ -180,6 +248,12 @@ class Run(BaseModel):
             raise ValueError(f"Status must be a string, got {type(v)}")
         return validate_run_status(v)
 
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def default_metadata(cls, v: dict[str, Any] | None) -> dict[str, Any]:
+        """Rows written before the column existed read back as NULL."""
+        return v or {}
+
 
 class RunStatus(BaseModel):
     """Simple run status response"""
@@ -188,3 +262,44 @@ class RunStatus(BaseModel):
     status: str = Field(..., description="Current run status value.")
 
     message: str | None = Field(None, description="Optional human-readable status message.")
+
+
+class RunListRequest(BaseModel):
+    """Query parameters for listing a thread's runs."""
+
+    limit: int = Field(10, ge=1, le=1000, description="Maximum rows per page.")
+    offset: int = Field(0, ge=0, description="Rows to skip.")
+    status: str | None = Field(None, description="Filter by run status.")
+    select: list[RunSelectField] | None = Field(
+        None, description="Return only the listed fields; omit for the full entity."
+    )
+
+
+class BulkCancelRequest(BaseModel):
+    """Request body for POST /runs/cancel.
+
+    Either target explicit runs (`thread_id` plus `run_ids`) or a whole status
+    bucket (`status`). One of the two must be given.
+    """
+
+    thread_id: str | None = Field(None, description="Thread whose runs should be cancelled.")
+    run_ids: list[str] | None = Field(None, min_length=1, description="Explicit runs to cancel.")
+    status: BulkCancelRunsStatus | None = Field(
+        None, description="Cancel every run in this bucket: 'pending', 'running', or 'all'."
+    )
+
+    @model_validator(mode="after")
+    def require_a_target(self) -> Self:
+        if not self.run_ids and not self.status:
+            raise ValueError("Provide run_ids or status to select which runs to cancel")
+        if self.run_ids and not self.thread_id:
+            raise ValueError("run_ids requires thread_id")
+        return self
+
+
+class BulkCancelResponse(BaseModel):
+    """Response body for POST /runs/cancel."""
+
+    cancelled_count: int = Field(..., description="Number of runs transitioned out of an active state.")
+    run_ids: list[str] = Field(default_factory=list, description="Runs that were cancelled.")
+    action: CancelAction = Field(..., description="Action applied to each run.")
