@@ -5,7 +5,7 @@ need a non-streaming counterpart to the SDK's ``/runs/wait``, which can only
 hand back a ``StreamingResponse``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import structlog
@@ -23,11 +23,15 @@ from aegra_api.settings import settings
 logger = structlog.getLogger(__name__)
 
 
+_TERMINAL_STATUSES = frozenset({"success", "error", "interrupted"})
+
+
 @dataclass(frozen=True)
 class RunResult:
-    """Terminal state of an interop run."""
+    """State of an interop run, as persisted."""
 
     run_id: str
+    thread_id: str
     status: str
     output: dict[str, Any]
     error: str | None
@@ -37,20 +41,24 @@ class RunResult:
         return self.status == "success"
 
 
-async def _read_run(run_id: str, thread_id: str, user_id: str) -> tuple[str, dict[str, Any], str | None]:
-    """Open a short-lived session and read the run's terminal status and output."""
+async def read_run_result(run_id: str, user_id: str) -> RunResult | None:
+    """Read a run the caller owns, or None if there is no such run.
+
+    Scoped by ``user_id`` in the WHERE clause, so an id guessed off the wire
+    (A2A's ``taskId``) cannot read another user's run.
+    """
     maker = _get_session_maker()
     async with maker() as session:
-        run_orm = await session.scalar(
-            select(RunORM).where(
-                RunORM.run_id == run_id,
-                RunORM.thread_id == thread_id,
-                RunORM.user_id == user_id,
-            )
-        )
-    if run_orm is None:
-        return "error", {}, "Run disappeared before its result could be read"
-    return run_orm.status, run_orm.output or {}, run_orm.error_message
+        run = await session.scalar(select(RunORM).where(RunORM.run_id == run_id, RunORM.user_id == user_id))
+    if run is None:
+        return None
+    return RunResult(
+        run_id=run.run_id,
+        thread_id=run.thread_id,
+        status=run.status,
+        output=run.output or {},
+        error=run.error_message,
+    )
 
 
 async def prepare_interop_run(thread_id: str, request: RunCreate, user: User) -> str:
@@ -83,8 +91,17 @@ async def execute_and_wait(thread_id: str, request: RunCreate, user: User) -> Ru
 
     await executor.wait_for_completion(run_id, timeout=settings.worker.BG_JOB_TIMEOUT_SECS)
 
-    status, output, error = await _read_run(run_id, thread_id, user.identity)
-    if status not in ("success", "error", "interrupted"):
-        logger.warning("Interop run did not reach a terminal state", run_id=run_id, status=status)
-        error = error or f"Run did not complete (status={status})"
-    return RunResult(run_id=run_id, status=status, output=output, error=error)
+    result = await read_run_result(run_id, user.identity)
+    if result is None:
+        return RunResult(
+            run_id=run_id,
+            thread_id=thread_id,
+            status="error",
+            output={},
+            error="Run disappeared before its result could be read",
+        )
+    if result.status in _TERMINAL_STATUSES:
+        return result
+
+    logger.warning("Interop run did not reach a terminal state", run_id=run_id, status=result.status)
+    return replace(result, error=result.error or f"Run did not complete (status={result.status})")

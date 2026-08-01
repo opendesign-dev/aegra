@@ -6,12 +6,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from a2a.compat.v0_3 import types as a2a
+from fastapi import HTTPException
 
 from aegra_api.models import Assistant, User
 from aegra_api.services.a2a_server import (
     PROTOCOL_VERSION,
     build_agent_card,
     build_task,
+    get_task,
     message_to_input,
     output_text,
     send_message,
@@ -178,6 +180,7 @@ class TestSendMessage:
     def _run(**overrides: Any) -> RunResult:
         defaults: dict[str, Any] = {
             "run_id": "run-1",
+            "thread_id": "ctx-1",
             "status": "success",
             "output": {"messages": [{"role": "assistant", "content": "pong"}]},
             "error": None,
@@ -241,3 +244,46 @@ class TestSendMessage:
         assert task.status.state is a2a.TaskState.failed
         assert task.status.message is not None
         assert task.status.message.parts[0].root.text == "boom"
+
+
+class TestGetTask:
+    """Covers get_task against a stubbed run store."""
+
+    @pytest.mark.asyncio
+    async def test_rebuilds_the_task_from_the_persisted_run(self) -> None:
+        stored = RunResult(
+            run_id="run-7",
+            thread_id="ctx-7",
+            status="success",
+            output={"messages": [{"role": "assistant", "content": "cached"}]},
+            error=None,
+        )
+
+        with patch("aegra_api.services.a2a_server.read_run_result", AsyncMock(return_value=stored)):
+            task = await get_task("run-7", USER)
+
+        assert task.id == "run-7"
+        assert task.context_id == "ctx-7"
+        assert task.status.state is a2a.TaskState.completed
+        assert task.artifacts is not None
+        assert task.artifacts[0].parts[0].root.text == "cached"
+
+    @pytest.mark.asyncio
+    async def test_thread_id_becomes_the_context_id(self) -> None:
+        stored = RunResult(run_id="run-7", thread_id="ctx-9", status="error", output={}, error="nope")
+
+        with patch("aegra_api.services.a2a_server.read_run_result", AsyncMock(return_value=stored)):
+            task = await get_task("run-7", USER)
+
+        assert task.context_id == "ctx-9"
+        assert task.status.state is a2a.TaskState.failed
+
+    @pytest.mark.asyncio
+    async def test_missing_run_raises_404(self) -> None:
+        with (
+            patch("aegra_api.services.a2a_server.read_run_result", AsyncMock(return_value=None)),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await get_task("gone", USER)
+
+        assert exc.value.status_code == 404

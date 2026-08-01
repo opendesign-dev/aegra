@@ -26,7 +26,7 @@ from starlette.types import Receive, Scope, Send
 
 from aegra_api.core.auth_deps import require_auth
 from aegra_api.core.orm import _get_session_maker
-from aegra_api.models import RunCreate, User
+from aegra_api.models import Assistant, RunCreate, User
 from aegra_api.models.errors import AgentProtocolError, get_error_type
 from aegra_api.services.assistant_service import AssistantService
 from aegra_api.services.interop import execute_and_wait
@@ -102,13 +102,18 @@ async def _graph_input_schema(graph_id: str, user: User, cache: dict[str, dict[s
     return schema
 
 
+async def _visible_assistants(user: User) -> list[Assistant]:
+    """Assistants the caller can see, read through a short-lived session."""
+    maker = _get_session_maker()
+    async with maker() as session:
+        return await AssistantService(session, user, get_langgraph_service()).list_assistants()
+
+
 @mcp_server.list_tools()
 async def list_tools() -> list[mcp_types.Tool]:
     """One tool per assistant visible to the caller."""
     user = _current_user()
-    maker = _get_session_maker()
-    async with maker() as session:
-        assistants = await AssistantService(session, user, get_langgraph_service()).list_assistants()
+    assistants = await _visible_assistants(user)
 
     tools: list[mcp_types.Tool] = []
     taken: set[str] = set()
@@ -131,12 +136,8 @@ async def _resolve_assistant_id(tool_name: str, user: User) -> str:
     Resolved per call rather than from the transport's tool cache: that cache is
     process-global and would let one user's listing decide another's call.
     """
-    maker = _get_session_maker()
-    async with maker() as session:
-        assistants = await AssistantService(session, user, get_langgraph_service()).list_assistants()
-
     taken: set[str] = set()
-    for assistant in assistants:
+    for assistant in await _visible_assistants(user):
         if tool_name_for(assistant.name, assistant.assistant_id, taken) == tool_name:
             return assistant.assistant_id
     raise ValueError(f"Unknown tool '{tool_name}'")

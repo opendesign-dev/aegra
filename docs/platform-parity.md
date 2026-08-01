@@ -12,13 +12,22 @@
 |:--|:--|:--|
 | `langgraph-sdk 0.4.2` 源码 | `.venv/Lib/site-packages/langgraph_sdk/_async/{assistants,runs,threads,cron,store}.py`，逐方法核对动词、路径、请求字段 | 最高 —— 这是客户端真实发出的请求 |
 | `langgraph_sdk/schema.py` | `Assistant`/`Thread`/`ThreadState`/`Run`/`Cron`/`Item` 等 TypedDict，以及 `StreamMode`/`RunStatus` 等 Literal | 最高 —— 客户端期望的响应形状 |
-| `docs/openapi.json` | 本项目导出的 spec（47 条路径 / 61 个操作） | 高 |
+| `docs/openapi.json` | 本项目导出的 spec（51 条路径 / 65 个操作） | 高 |
 | `libs/aegra-api/src/` 源码 | 校验 OpenAPI 与实现不一致处 | 最高 |
 | [docs.langchain.com](https://docs.langchain.com/langsmith/server-api-ref) | 补充确认资源分组、`supersteps`/`prune` 语义、thread 状态枚举 | 中 —— 官方未公开完整 OpenAPI JSON |
 
 SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 是另外两个端点组：它们不在 `langgraph-sdk` 的调用范围内（客户端是 MCP client 与 A2A agent，不是 LangGraph SDK），所以不计入这 51 条，改在第十二节单独对齐 —— 判定依据也随之换成各自的协议规范，而非 SDK 源码。
 
-两边都按 `(method, path)` 计数才可比：spec 的 61 个操作里，4 个是基础设施（`/health`、`/live`、`/ready`、`/info`）、1 个根路径、3 个示例自定义路由，余下 **57 = SDK 数据面 51 + Aegra 自有 6**。这 6 个不在 SDK 契约里，重做分析时会被差集算作「多余」，是预期的：
+两边都按 `(method, path)` 计数才可比。spec 的 65 个操作拆成四堆：
+
+| 组 | 数量 | 内容 |
+|:--|--:|:--|
+| SDK 数据面 | 51 | 第三节逐条对比的那些 |
+| Aegra 自有 | 8 | 见下表 |
+| 基础设施 | 4 | `/health`、`/live`、`/ready`、`/info` |
+| 互操作 | 2 | `POST /a2a/{id}`、`GET /.well-known/agent-card.json`（第十二节） |
+
+那 8 个不在 SDK 契约里，重做分析时会被差集算作「多余」，是预期的：
 
 | Aegra 自有端点 | 用途 |
 |:--|:--|
@@ -26,6 +35,9 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 是另外两个端
 | `PATCH /threads/{id}/runs/{run_id}` | 改 run 状态（SDK 用 `/cancel`） |
 | `GET /threads/{id}/history` | `POST` 版的 query-param 便捷形式 |
 | `POST /threads/{id}/commands`、`POST /threads/{id}/stream/events` | Aegra 自有的双向命令协议（见 9.3 末的提醒） |
+| `POST /runs/search`、`POST /runs/count` | 跨 thread 查 run（见 3.3 末） |
+
+根路径 `/` 与示例自定义路由不进导出的 spec，故不在这 65 个里。`POST /mcp` 也不在 —— 它是 MCP 传输层端点，由协议自身的 `tools/list` 自描述，与 Platform 的处理一致。
 
 ## 二、总览
 
@@ -38,7 +50,9 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 是另外两个端
 | Store | 5 | 5 | 0 | 0 |
 | **合计** | **51** | **51** | **0** | **0** |
 
-端点覆盖率 100%。SDK 会发送的每个请求字段现在都落在三类之一：**生效**、**记录并在字段说明里写明其语义边界**、**4xx/501 拒绝**。没有静默忽略项 —— 这是上一版分析的头号问题（客户端拿到 200 却以为选项生效）。
+数据面之外，Platform 的另两组端点也已对齐：MCP（`/mcp`）与 A2A（`/a2a/{id}` + agent card），见第十二节。
+
+端点覆盖率 100%。SDK 会发送的每个请求字段现在都落在三类之一：**生效**、**记录并在字段说明里写明其语义边界**、**4xx/501 拒绝**。没有静默忽略项 —— 这是 0.16.0 版分析的头号问题（客户端拿到 200 却以为选项生效）。
 
 第四节列出四处语义边界，其中两处是 `langgraph-checkpoint-postgres` 尚未实现的 checkpointer 方法所致（4.4），依赖升级后自动恢复。
 
@@ -134,7 +148,7 @@ cron 的 `metadata` 按 SDK 语义（"metadata to assign to the cron job runs"�
 
 ### 3.6 Run 创建请求契约
 
-`create()` / `stream()` / `wait()` 共用一个请求体但发送的字段集不同：`stream()` 23 个、`create()` 21 个、`wait()` 19 个，并集 23 个。`RunCreate` 现在全部接受，无缺口。上一版有 9 个是「接受但静默丢弃」，这里单独列出它们的落地方式：
+`create()` / `stream()` / `wait()` 共用一个请求体但发送的字段集不同：`stream()` 23 个、`create()` 21 个、`wait()` 19 个，并集 23 个。`RunCreate` 现在全部接受，无缺口。0.16.0 时有 9 个是「接受但静默丢弃」，这里单独列出它们的落地方式：
 
 | 参数 | SDK 类型 | 落地方式 |
 |:--|:--|:--|
@@ -177,13 +191,13 @@ cron 的 `metadata` 按 SDK 语义（"metadata to assign to the cron job runs"�
 | `POST /threads/{id}/copy` | `acopy_thread` | 降级为「实体 + 最新物化状态」，记一条 info 日志。复制出的 thread 可读可续跑，只是没有历史 checkpoint。 |
 | `rollback`（`multitask_strategy` 与 `POST /runs/cancel?action=rollback`） | `adelete_for_runs` | **501**，且在中断任何 run 之前就拒绝。 |
 
-两者取舍不同是刻意的：copy 降级后仍交付一个可用的 thread；而 rollback 的全部意义就是丢弃状态，静默保留等于假装成功 —— 那正是本次要消除的失效模式。依赖升级后两处都会自动恢复完整语义，无需改代码。
+两者取舍不同是刻意的：copy 降级后仍交付一个可用的 thread；而 rollback 的全部意义就是丢弃状态，静默保留等于假装成功 —— 那正是这轮对齐要消除的失效模式。依赖升级后两处都会自动恢复完整语义，无需改代码。
 
 另有一项按 SDK 定义即为客户端侧行为、服务端只需守约的：`stream_resumable` 的重放依赖 run 的内存事件缓冲（配合 `Last-Event-ID`），不跨进程重启。字段说明里已写明。
 
-## 五、本次落地清单
+## 五、0.17.0 落地清单
 
-对照上一版分析的三档优先级：
+对照 0.16.0 版分析的三档优先级。这一节是历史记录 —— 上面的第三、四节才是当前状态。
 
 **P0 —— 静默失效**
 
@@ -220,7 +234,7 @@ cron 的 `metadata` 按 SDK 语义（"metadata to assign to the cron job runs"�
 - `idx_runs_thread_queued` —— 上述队列查询的部分索引。
 - 重建 `f2c8a5e13d94` 当时按「无查询方」删掉的两个 GIN 索引（`idx_thread_state_values_gin`、`idx_cron_metadata_gin`）—— 它们现在分别服务 `POST /threads/search` 的 `values` 过滤与 cron 的 `metadata` 过滤。
 
-`d1f7b3a9c5e2` 建的 `runs.metadata`、`runs.multitask_strategy`、`runs.scheduled_at`、`thread.ttl`、`thread_state`、`webhook_deliveries` 都还在库里，本次只是在 ORM 上重新声明，没有新建。
+`d1f7b3a9c5e2` 建的 `runs.metadata`、`runs.multitask_strategy`、`runs.scheduled_at`、`thread.ttl`、`thread_state`、`webhook_deliveries` 都还在库里，0.17.0 只是在 ORM 上重新声明，没有新建。
 
 迁移 `b5e1c47a9d38`（revises `a3d6e0b95f17`）补两个索引，同样是纯追加：
 
@@ -346,7 +360,7 @@ make openapi       # 重新导出 spec，diff 应为空
 uv run --package aegra-api pytest libs/aegra-api/tests/unit libs/aegra-api/tests/integration
 ```
 
-单元 + 集成 1840 passed / 1 skipped。与本次对齐直接相关的新增用例：
+单元 + 集成 2008 passed / 1 skipped（0.18.2）。数据面对齐相关的用例：
 
 | 文件 | 覆盖 |
 |:--|:--|
@@ -358,9 +372,11 @@ uv run --package aegra-api pytest libs/aegra-api/tests/unit libs/aegra-api/tests
 | `tests/unit/test_core/test_query.py` | 排序方向/tie-break、`select` 投影键名、`extract` 路径解析、分页游标 |
 | `tests/integration/test_api/test_bulk_runs.py` | `POST /runs/cancel` 四种目标组合、`POST /runs/batch` |
 
+互操作端点（MCP / A2A）的用例单列在 12.6。
+
 **迁移**
 
-在真实 Postgres 上从 `d1f7b3a9c5e2` 升到 `a3d6e0b95f17` 跑通。另外单独验证了四件容易想当然的事：
+`d1f7b3a9c5e2` → `a3d6e0b95f17`（0.17.0）在真实 Postgres 上跑通。当时单独验证了四件容易想当然的事，对后续迁移同样适用：
 
 - DDL 可重入（重跑只出 `NOTICE ... skipping`）。
 - 队列认领的 `UPDATE ... WHERE run_id = (SELECT ... FOR UPDATE SKIP LOCKED)` 确实只取最旧一条、只影响一行。
@@ -369,7 +385,14 @@ uv run --package aegra-api pytest libs/aegra-api/tests/unit libs/aegra-api/tests
 
 **端到端**
 
-对真实服务（`docker compose up -d`，migrations 走启动路径）跑 37 项契约检查，覆盖本文第三节的每一处 ⚠️ 与新增字段：36 通过。唯一未通过的是 4.4 记录的 `acopy_thread` 限制 —— 即预期行为。
+对真实服务（`docker compose up -d`，migrations 走启动路径）跑：
+
+```bash
+make e2e-dev     # LocalExecutor，无 Redis
+make e2e-prod    # WorkerExecutor + Redis
+```
+
+覆盖第三节的每一处 ⚠️ 与新增字段。唯一的已知失败是 4.4 记录的 `acopy_thread` 限制 —— 即预期行为，依赖升级后自动消失。
 
 ## 十一、如何重做这个分析
 

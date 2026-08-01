@@ -26,13 +26,10 @@ from uuid import uuid4
 import structlog
 from a2a.compat.v0_3 import types as a2a
 from fastapi import HTTPException
-from sqlalchemy import select
 
-from aegra_api.core.orm import Run as RunORM
-from aegra_api.core.orm import _get_session_maker
 from aegra_api.models import Assistant, RunCreate, User
 from aegra_api.services.broker import broker_manager
-from aegra_api.services.interop import execute_and_wait, prepare_interop_run
+from aegra_api.services.interop import RunResult, execute_and_wait, prepare_interop_run, read_run_result
 from aegra_api.services.run_preparation import _resolve_content_text
 
 logger = structlog.getLogger(__name__)
@@ -125,6 +122,17 @@ def build_task(
     return a2a.Task(id=task_id, context_id=context_id, status=status, artifacts=artifacts)
 
 
+def _task_from(result: RunResult, *, context_id: str) -> a2a.Task:
+    """Render a run's persisted state as an A2A Task."""
+    return build_task(
+        task_id=result.run_id,
+        context_id=context_id,
+        state=task_state_for(result.status, result.output),
+        text=output_text(result.output),
+        error=None if result.succeeded else result.error,
+    )
+
+
 def build_agent_card(assistant: Assistant, base_url: str) -> a2a.AgentCard:
     """Describe one assistant as an A2A agent.
 
@@ -168,14 +176,7 @@ async def send_message(assistant_id: str, params: a2a.MessageSendParams, user: U
     """Handle ``message/send``: run the assistant to completion, return the Task."""
     context_id = params.message.context_id or str(uuid4())
     result = await execute_and_wait(context_id, _run_create(assistant_id, params.message, stream=False), user)
-
-    return build_task(
-        task_id=result.run_id,
-        context_id=context_id,
-        state=task_state_for(result.status, result.output),
-        text=output_text(result.output),
-        error=None if result.succeeded else result.error,
-    )
+    return _task_from(result, context_id=context_id)
 
 
 async def stream_message(
@@ -222,37 +223,20 @@ async def stream_message(
                 last_chunk=False,
             )
 
-    status, output, error = await _read_terminal_run(run_id, user.identity)
-    state = task_state_for(status, output)
+    result = await read_run_result(run_id, user.identity)
+    state = task_state_for(result.status, result.output) if result else a2a.TaskState.failed
     final_status = a2a.TaskStatus(state=state)
+    error = result.error if result else "Run disappeared before its result could be read"
     if state is a2a.TaskState.failed and error:
         final_status.message = _agent_message(error, context_id, run_id)
 
     yield a2a.TaskStatusUpdateEvent(task_id=run_id, context_id=context_id, status=final_status, final=True)
 
 
-async def _read_terminal_run(run_id: str, user_id: str) -> tuple[str, dict[str, Any], str | None]:
-    maker = _get_session_maker()
-    async with maker() as session:
-        run = await session.scalar(select(RunORM).where(RunORM.run_id == run_id, RunORM.user_id == user_id))
-    if run is None:
-        return "error", {}, "Run disappeared before its result could be read"
-    return run.status, run.output or {}, run.error_message
-
-
 async def get_task(task_id: str, user: User) -> a2a.Task:
     """Handle ``tasks/get``: rebuild the Task from the persisted run."""
-    maker = _get_session_maker()
-    async with maker() as session:
-        run = await session.scalar(select(RunORM).where(RunORM.run_id == task_id, RunORM.user_id == user.identity))
-    if run is None:
+    result = await read_run_result(task_id, user.identity)
+    if result is None:
         raise HTTPException(404, f"Task '{task_id}' not found")
 
-    output = run.output or {}
-    return build_task(
-        task_id=run.run_id,
-        context_id=run.thread_id,
-        state=task_state_for(run.status, output),
-        text=output_text(output),
-        error=run.error_message,
-    )
+    return _task_from(result, context_id=result.thread_id)
