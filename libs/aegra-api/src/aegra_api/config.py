@@ -31,6 +31,10 @@ class HttpConfig(TypedDict, total=False):
     """Apply Aegra authentication dependency to custom routes (uses FastAPI dependencies, not middleware)"""
     cors: CorsConfig | None
     """Custom CORS configuration"""
+    disable_mcp: bool
+    """Disable the /mcp endpoint that exposes assistants as MCP tools. Enabled by default."""
+    disable_a2a: bool
+    """Disable the /a2a/{assistant_id} endpoint and its agent card. Enabled by default."""
 
 
 class StoreIndexConfig(TypedDict, total=False):

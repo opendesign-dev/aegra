@@ -1,8 +1,8 @@
 # LangSmith Platform 数据面对齐现状
 
-> 分析对象：`feat/runtime-hardening`，aegra-api 0.17.0
-> 对齐目标：LangSmith Deployment / Agent Server 数据面 API
-> 更新日期：2026-08-01（上一版 2026-07-31 记录的差距已按本文第五节落地）
+> 分析对象：`feature/langraph-sdk`，aegra-api 0.18.2
+> 对齐目标：LangSmith Deployment / Agent Server 数据面 API + 互操作端点（MCP / A2A）
+> 更新日期：2026-08-01（本次新增第十二节：MCP 与 A2A 端点组）
 
 ## 一、依据与方法
 
@@ -16,7 +16,7 @@
 | `libs/aegra-api/src/` 源码 | 校验 OpenAPI 与实现不一致处 | 最高 |
 | [docs.langchain.com](https://docs.langchain.com/langsmith/server-api-ref) | 补充确认资源分组、`supersteps`/`prune` 语义、thread 状态枚举 | 中 —— 官方未公开完整 OpenAPI JSON |
 
-SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 端点组虽在官方文档中列出，但不在 SDK 数据面调用范围内，本文不计入。
+SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 是另外两个端点组：它们不在 `langgraph-sdk` 的调用范围内（客户端是 MCP client 与 A2A agent，不是 LangGraph SDK），所以不计入这 51 条，改在第十二节单独对齐 —— 判定依据也随之换成各自的协议规范，而非 SDK 源码。
 
 两边都按 `(method, path)` 计数才可比：spec 的 61 个操作里，4 个是基础设施（`/health`、`/live`、`/ready`、`/info`）、1 个根路径、3 个示例自定义路由，余下 **57 = SDK 数据面 51 + Aegra 自有 6**。这 6 个不在 SDK 契约里，重做分析时会被差集算作「多余」，是预期的：
 
@@ -266,6 +266,18 @@ patch：只有追加，无 schema 迁移，默认行为一字未变。
 
 跨用户读**只覆盖集合查询**（search / count / list）。按 id 取单条、以及所有写操作，无论持有什么权限都仍然只能作用于自己的行 —— 边界是 SQL 列谓词，`@auth.on` handler 返回的 filter 只能在其上 AND 收窄，不能放宽。
 
+## 六之四、升级注意（0.18.1 → 0.18.2）
+
+patch：纯追加，无 schema 迁移，既有端点行为一字未变。
+
+| 变更 | 影响 | 迁移动作 |
+|:--|:--|:--|
+| 新增 `POST /mcp` | 每个 assistant 暴露为一个 MCP 工具，**默认开启** | 不需要时设 `http.disable_mcp: true` |
+| 新增 `POST /a2a/{assistant_id}`、`GET /.well-known/agent-card.json` | A2A 0.3 JSON-RPC，**默认开启** | 不需要时设 `http.disable_a2a: true` |
+| `http` 配置新增 `disable_mcp` / `disable_a2a` | 追加字段，与 `langgraph.json` 同名同义 | 无 |
+
+两个端点都走既有的 `@auth.authenticate`，未配置认证的部署其可见性与既有 REST 端点完全一致 —— 不会因为开了互操作端点而多暴露任何数据。详见第十二节。
+
 ## 七、错误响应契约
 
 SDK 的 `_map_status_error()` 按状态码映射异常类（400→`BadRequestError`、401→`AuthenticationError`、403→`PermissionDeniedError`、404→`NotFoundError`、409→`ConflictError`、422→`UnprocessableEntityError`、429→`RateLimitError`、≥500→`InternalServerError`）。项目的状态码使用与之一致。
@@ -372,3 +384,97 @@ uv run --package aegra-api pytest libs/aegra-api/tests/unit libs/aegra-api/tests
 5. **有些「缺失」其实可用，有些「参数」根本不发给服务端。** `graph_id` 被 SDK 合并进 `metadata`；`response_format` 是纯客户端参数，服务端只需返回 `X-Pagination-Next` 头；`version` 同理。
 
 判定时端点存在性可以机械比对，但**参数是否真正生效必须读实现** —— 旧版的 `_stream_mode` 就是签名里声明了、函数体从未使用的例子，只看 OpenAPI 会误判为「已支持」。
+
+## 十二、互操作端点（MCP / A2A）
+
+这两组端点的对齐目标与前十一节不同：**判定依据是各自的协议规范加上 Platform 的实际暴露形状，不是 `langgraph-sdk` 源码** —— SDK 根本不调它们。
+
+| 来源 | 说明 |
+|:--|:--|
+| [docs.langchain.com/langsmith/server-mcp](https://docs.langchain.com/langsmith/server-mcp) | Platform 的 MCP 契约：路径、传输、工具映射、session 语义 |
+| [docs.langchain.com/langsmith/server-a2a](https://docs.langchain.com/langsmith/server-a2a) | Platform 的 A2A 契约：路径、RPC 方法、`contextId` 映射 |
+| [A2A 0.3.0 规范](https://a2a-protocol.org/v0.3.0/specification/) | `AgentCard`/`Task`/`Message`/`Part` 的字段级形状与错误码 |
+| [MCP Streamable HTTP](https://spec.modelcontextprotocol.io/specification/2025-03-26/basic/transports/#streamable-http) | 传输层 |
+| `a2a-sdk 1.1.2` 的 `a2a.compat.v0_3.types` | A2A 0.3 的 Pydantic 模型，本项目直接用作出入参类型 |
+
+### 12.1 端点对比
+
+| 端点 | Platform | Aegra | 状态 |
+|:--|:--|:--|:-:|
+| `POST /mcp` | Streamable HTTP，无 session | 同左 | ✅ |
+| `POST /a2a/{assistant_id}` | JSON-RPC 2.0 | 同左 | ✅ |
+| `GET /.well-known/agent-card.json?assistant_id=` | 每 assistant 一张卡 | 同左 | ✅ |
+
+A2A 的三个 RPC 方法：
+
+| 方法 | 状态 | 备注 |
+|:--|:-:|:--|
+| `message/send` | ✅ | 跑到终态返回 `Task` |
+| `message/stream` | ✅ | SSE，末事件 `final=true` |
+| `tasks/get` | ✅ | 由持久化的 run 重建 `Task`；未知 id 返回 `-32001` |
+
+规范里另有 `tasks/cancel`、`tasks/resubscribe`、`tasks/pushNotificationConfig/*`、`agent/getAuthenticatedExtendedCard` 六个方法 —— Platform 同样未实现，Aegra 与之一致地返回 `-32601`，并在 agent card 上如实声明 `pushNotifications: false`。
+
+### 12.2 协议版本：为什么是 0.3 而不是 1.0
+
+A2A 1.0 已发布，`a2a-sdk` 自 1.0.0（2026-04-20）起把 types 换成 protobuf 生成，形状与 0.3 不兼容：
+
+| | A2A 0.3 | A2A 1.0 |
+|:--|:--|:--|
+| `Part` | `{"kind": "text", "text": ...}` 判别式联合 | 扁平 `{text, raw, url, data, ...}`，无 `kind` |
+| `AgentCard` | `url` + `protocolVersion` + `preferredTransport` | `supported_interfaces[]` |
+| `TaskState` | `"completed"` | `TASK_STATE_COMPLETED` |
+
+**Platform 当前发的是 0.3 形状**（其文档示例即 `{"kind": "text"}`）。对齐目标是 Platform，所以 Aegra 也发 0.3。
+
+依赖仍钉在**最新的 `a2a-sdk 1.1.2`**，用它自带的 `a2a.compat.v0_3` 兼容层取 0.3 的 Pydantic 模型 —— 不必为了协议版本回退整个 SDK 大版本，Platform 转向 1.0 时换 import 即可，不用改依赖。
+
+### 12.3 MCP 工具映射
+
+| MCP 字段 | Platform | Aegra |
+|:--|:--|:--|
+| `name` | agent 名 | assistant 名，按 `[A-Za-z0-9_-]` 净化 |
+| `description` | agent 描述 | assistant 描述 |
+| `inputSchema` | agent 输入 schema | graph 的 `get_input_jsonschema()` |
+
+净化是 Platform 文档没写、但协议强制的：MCP 的工具名字母表不含空格、`.`、`/`，也不含中文。`"Weather Bot"` → `Weather_Bot`；净化后为空或与已有项重名时回落到 assistant id，原名保留在 `title`。少了这一步，一个中文名 assistant 会让整个 `tools/list` 失败。
+
+工具调用起一个临时 thread、跑完即删，与 stateless run 同一套语义。
+
+### 12.4 三处刻意的强化
+
+对齐不等于照抄。以下三点 Platform 未明确，但直接照做会有问题：
+
+**每次调用重新解析工具，不读传输层缓存。** `mcp` 库的 `Server` 有一个进程级 `_tool_cache`，由 `tools/list` 填充、`tools/call` 的入参校验读取。多用户下这是串号面：A 的列表会决定 B 的调用如何被校验。因此 `call_tool(validate_input=False)`，改为每次调用按调用者身份重查 assistant，schema 校验交给 graph 自己。
+
+**`contextId` 校验归属。** `contextId` 直接来自对端 agent，映射成 `thread_id` 后若不校验，等于允许把 run 挂到别人的 thread 上。`prepare_interop_run` 在 `_prepare_run` 之前查一次 owner，不匹配返回 404（而非 403，避免泄露他人 thread 的存在）。
+
+**每个 lifespan 新建一个 session manager。** `StreamableHTTPSessionManager.run()` 每实例只能调用一次。模块级单例在同进程第二次启动时必然抛 `RuntimeError` —— `--reload`、测试、被当作库嵌入都会踩到。
+
+### 12.5 语义边界
+
+| 项 | 行为 | 原因 |
+|:--|:--|:--|
+| MCP 无 session | 每个请求独立 | 与 Platform 一致（其文档明示"does not support sessions"） |
+| A2A 每轮新建 task | 传入的 `taskId` 不续接旧 task | A2A 规范禁止在终态 task 上追加；Platform 示例也是每轮取新 `id` |
+| `message/stream` 的终态 | 从持久化的 run 读，不从 broker 的 end 事件读 | 中途断开 broker 的客户端仍能拿到收尾状态 |
+| A2A 输入形状 | graph 必须接受 `messages` 键 | 与 Platform 相同的要求；text part 只承载对话轮次 |
+
+### 12.6 验证方式
+
+| 层级 | 覆盖 |
+|:--|:--|
+| `tests/unit/test_services/test_mcp_server.py` | 工具名净化、冲突回落、截断；schema 归一化 |
+| `tests/unit/test_services/test_a2a_server.py` | part↔graph 输入互转、状态映射、card 构造、`send_message` 全路径 |
+| `tests/integration/test_api/test_mcp.py` | 真实 Streamable HTTP 传输：401 走 HTTP 状态码、`tools/list`、`tools/call` 成败两路、临时 thread 清理 |
+| `tests/integration/test_api/test_a2a.py` | JSON-RPC 信封与全部错误码、方法分发、card 发现、SSE 包封 |
+| `tests/e2e/test_mcp/`、`tests/e2e/test_a2a/` | 真实服务器：官方 MCP 客户端握手 + 调用；A2A 多轮 `contextId` 落在同一 thread、`tasks/get`、流式事件序列 |
+
+E2E 用 `stress_test` 图（确定性、不调 LLM），所以这两组测试不依赖任何 API key。
+
+单元 + 集成 2000 passed / 1 skipped；A2A 与 MCP 的 9 项 E2E 对 `docker compose` 起的真实服务全通过。
+
+**已知的两个上游坑，实测发现：**
+
+- `a2a.compat.v0_3` 的模型属性是 snake_case，别名才是 camelCase。`params.message.contextId` 能过类型检查却在运行时 `AttributeError` —— 单元测试若把 `send_message` 整个 mock 掉就测不出来，这正是 12.6 里给它补全路径用例的原因。
+- `mcp` 库把 `Tool.meta` 序列化成 `meta` 而非规范要求的 `_meta`，客户端不认。故不使用该字段，assistant 原名改由 `title` 承载。

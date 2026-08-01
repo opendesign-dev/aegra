@@ -220,13 +220,15 @@ See [authentication guide](/guides/authentication) for details.
 
 ## `http`
 
-Configure custom routes and CORS.
+Configure custom routes, CORS, and the interop endpoints.
 
 ```json
 {
   "http": {
     "app": "./custom_routes.py:app",
     "enable_custom_route_auth": false,
+    "disable_mcp": false,
+    "disable_a2a": false,
     "cors": {
       "allow_origins": ["https://example.com"],
       "allow_credentials": true
@@ -239,8 +241,12 @@ Configure custom routes and CORS.
 |-------|------|---------|-------------|
 | `app` | `string` | `None` | Import path to custom FastAPI app |
 | `enable_custom_route_auth` | `bool` | `false` | Apply Aegra auth to all custom routes |
+| `disable_mcp` | `bool` | `false` | Turn off the `/mcp` endpoint |
+| `disable_a2a` | `bool` | `false` | Turn off `/a2a/{assistant_id}` and agent card discovery |
 | `cors.allow_origins` | `list[str]` | `["*"]` | Allowed CORS origins |
 | `cors.allow_credentials` | `bool` | `false` when origins is `["*"]`, `true` otherwise | Allow credentials in CORS requests |
+
+Both interop endpoints are on by default, and the flag names match `langgraph.json` so a migrated config keeps working. See the [MCP](/guides/mcp) and [A2A](/guides/a2a) guides.
 
 See [custom routes guide](/guides/custom-routes) for details.
 

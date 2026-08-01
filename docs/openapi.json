@@ -3,7 +3,7 @@
   "info": {
     "title": "Aegra",
     "description": "Production-ready Agent Protocol server",
-    "version": "0.18.1"
+    "version": "0.18.2"
   },
   "paths": {
     "/info": {
@@ -3877,6 +3877,119 @@
           }
         }
       }
+    },
+    "/.well-known/agent-card.json": {
+      "get": {
+        "tags": [
+          "A2A"
+        ],
+        "summary": "Get Agent Card",
+        "description": "Return the A2A agent card for one assistant.\n\nDiscovery is per-assistant rather than per-deployment because an Aegra\nserver hosts many agents; the query parameter is what selects among them.",
+        "operationId": "get_agent_card__well_known_agent_card_json_get",
+        "parameters": [
+          {
+            "name": "assistant_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Assistant to describe.",
+              "title": "Assistant Id"
+            },
+            "description": "Assistant to describe."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Agent Card  Well Known Agent Card Json Get"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/a2a/{assistant_id}": {
+      "post": {
+        "tags": [
+          "A2A"
+        ],
+        "summary": "A2A Rpc",
+        "description": "Handle one A2A JSON-RPC call.\n\n``message/stream`` answers with SSE; the other methods answer with JSON.",
+        "operationId": "a2a_rpc_a2a__assistant_id__post",
+        "parameters": [
+          {
+            "name": "assistant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Assistant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events stream",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -7657,6 +7770,10 @@
     {
       "name": "Event Streaming",
       "description": "Agent Protocol v2 thread event streaming and commands."
+    },
+    {
+      "name": "A2A",
+      "description": "Agent2Agent protocol endpoint and agent card discovery."
     },
     {
       "name": "Health",

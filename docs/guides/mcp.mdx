@@ -1,0 +1,152 @@
+---
+title: "MCP endpoint"
+description: "Expose your assistants as Model Context Protocol tools over Streamable HTTP."
+---
+
+Aegra serves a [Model Context Protocol](https://modelcontextprotocol.io) endpoint at `/mcp`, so every assistant you deploy becomes a callable tool for any MCP-compliant client. This mirrors the LangSmith Agent Server contract — the same path, transport, and tool mapping — so clients pointed at a LangSmith deployment work against Aegra unchanged.
+
+The endpoint is enabled by default.
+
+## Tool mapping
+
+Each assistant visible to the caller becomes one tool:
+
+| MCP field | Source |
+|:--|:--|
+| `name` | The assistant's name, sanitized to `[A-Za-z0-9_-]` |
+| `title` | The assistant's name, unmodified |
+| `description` | The assistant's description |
+| `inputSchema` | The graph's input JSON Schema |
+
+<Note>
+**Name sanitizing.** MCP restricts tool names to letters, digits, `_`, and `-`. `"Weather Bot"` becomes `Weather_Bot`. If a name sanitizes to nothing (for example, a name written entirely in Chinese) or collides with one already in the list, the assistant's id is used instead. The original name is always preserved in `title`.
+</Note>
+
+## Connecting
+
+<CodeGroup>
+```python Python
+from langchain.agents import create_agent
+from langchain_mcp_adapters.tools import load_mcp_tools
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+server_params = {
+    "url": "http://localhost:2026/mcp",
+    "headers": {"X-Api-Key": "your-api-key"},
+}
+
+async def main() -> None:
+    async with streamablehttp_client(**server_params) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            tools = await load_mcp_tools(session)
+            agent = create_agent("claude-sonnet-5", tools)
+            print(await agent.ainvoke({"messages": "What can these agents do?"}))
+```
+
+```js JavaScript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+const client = new Client({ name: "my-client", version: "1.0.0" });
+await client.connect(new StreamableHTTPClientTransport(new URL("http://localhost:2026/mcp")));
+
+console.log(await client.listTools());
+```
+
+```bash curl
+curl -X POST http://localhost:2026/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+</CodeGroup>
+
+## Calling a tool
+
+A `tools/call` runs the assistant on a throwaway thread and returns the graph's final state as `structuredContent`, with a JSON rendering in `content`. The thread is deleted once the call finishes — nothing accumulates.
+
+```bash
+curl -X POST http://localhost:2026/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"Weather_Bot",
+        "arguments":{"messages":[{"role":"user","content":"Weather in Paris?"}]}
+      }}'
+```
+
+A run that fails comes back as `isError: true` with the error text, not as a JSON-RPC error — that is what MCP clients expect for tool-level failures.
+
+## Designing schemas for LLM callers
+
+The tool's input schema is the graph's input schema, and it is what the calling model sees. The default `MessagesState` uses `AnyMessage`, which is broad enough to confuse a model. Declare narrow input and output schemas instead:
+
+```python
+from typing_extensions import TypedDict
+from langgraph.graph import END, START, StateGraph
+
+class InputState(TypedDict):
+    question: str
+
+class OutputState(TypedDict):
+    answer: str
+
+class OverallState(InputState, OutputState):
+    pass
+
+def answer_node(state: InputState) -> OutputState:
+    return {"answer": f"You asked: {state['question']}"}
+
+builder = StateGraph(OverallState, input_schema=InputState, output_schema=OutputState)
+builder.add_node(answer_node)
+builder.add_edge(START, "answer_node")
+builder.add_edge("answer_node", END)
+graph = builder.compile()
+```
+
+Set the description in `aegra.json` — it becomes the tool description:
+
+```json
+{
+  "graphs": {
+    "my_agent": {
+      "path": "./my_agent/agent.py:graph",
+      "description": "Answers questions about internal documentation."
+    }
+  }
+}
+```
+
+## Authentication
+
+`/mcp` uses the same authentication as the rest of the API — whatever your `@auth.authenticate` handler implements. See the [authentication guide](/guides/authentication).
+
+Two consequences worth knowing:
+
+- A rejected request gets an HTTP 401 (or 403), not a JSON-RPC error inside a 200. MCP clients rely on the status code to start an auth flow.
+- The tool list is resolved per request against the caller's identity. Two users hitting `/mcp` with different credentials see different tools, and a tool one user can see is never callable by another.
+
+## Sessions
+
+There are none. Every `/mcp` request is independent, matching Agent Server. Clients still perform the `initialize` handshake; no state is carried between requests.
+
+## Disabling
+
+```json
+{
+  "http": {
+    "disable_mcp": true
+  }
+}
+```
+
+The route is not registered at all when disabled — requests to `/mcp` return 404.
+
+## Related
+
+- [A2A endpoint](/guides/a2a) — agent-to-agent communication
+- [Assistants](/guides/assistants) — how names and descriptions are set
+- [Authentication](/guides/authentication)

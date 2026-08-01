@@ -64,6 +64,14 @@
             ]
           },
           {
+            "group": "Interoperability",
+            "icon": "plug",
+            "pages": [
+              "guides/mcp",
+              "guides/a2a"
+            ]
+          },
+          {
             "group": "Configuration",
             "icon": "gear",
             "pages": [

@@ -1,6 +1,6 @@
 [project]
 name = "aegra-api"
-version = "0.18.1"
+version = "0.18.2"
 description = "Aegra core API - Self-hosted Agent Protocol server"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -58,6 +58,12 @@ dependencies = [
 
     # Cron expression parsing
     "croniter>=6.0.0",
+
+    # Interop protocols (expose graphs as MCP tools / A2A agents).
+    # a2a-sdk is used for its `compat.v0_3` models: A2A 0.3 is the wire
+    # version LangSmith Platform speaks, and 1.0 is not compatible with it.
+    "mcp>=1.26.0",
+    "a2a-sdk>=1.1.2",
 ]
 
 [project.urls]

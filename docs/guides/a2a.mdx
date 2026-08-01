@@ -1,0 +1,194 @@
+---
+title: "A2A endpoint"
+description: "Let other agents talk to your assistants over the Agent2Agent protocol."
+---
+
+Aegra implements the [Agent2Agent (A2A) protocol](https://a2a-protocol.org), so agents built on other frameworks can call your assistants through a standard JSON-RPC interface. This mirrors the LangSmith Agent Server contract — same paths, same wire shapes — so an A2A client written against a LangSmith deployment works here unchanged.
+
+Two routes, both enabled by default:
+
+| Route | Purpose |
+|:--|:--|
+| `POST /a2a/{assistant_id}` | JSON-RPC 2.0 methods |
+| `GET /.well-known/agent-card.json?assistant_id=...` | Agent card discovery |
+
+<Note>
+**Protocol version: 0.3.** Aegra speaks A2A 0.3 — `kind`-tagged message parts and a `url` on the agent card — which is the version LangSmith Platform serves today. The 1.0 wire format is a different shape and is not interchangeable.
+</Note>
+
+## Supported methods
+
+| Method | Behavior |
+|:--|:--|
+| `message/send` | Runs the assistant to completion and returns a `Task` |
+| `message/stream` | Streams progress over SSE, ending with `final: true` |
+| `tasks/get` | Returns a previously created `Task` |
+
+## Identifier mapping
+
+A2A's two identifiers map onto Aegra concepts directly:
+
+| A2A | Aegra | Meaning |
+|:--|:--|:--|
+| `contextId` | `thread_id` | The conversation. Reuse it to continue. |
+| `taskId` | `run_id` | One request. Each turn starts a new task. |
+
+Omit both on the first message — the server generates a `contextId` and returns it. Pass it back on every later turn to keep the conversation on one thread.
+
+## Discovery
+
+```bash
+curl "http://localhost:2026/.well-known/agent-card.json?assistant_id=$ASSISTANT_ID"
+```
+
+```json
+{
+  "protocolVersion": "0.3.0",
+  "name": "Weather Bot",
+  "description": "Answers weather questions.",
+  "url": "http://localhost:2026/a2a/8bd40327-56c7-46fa-800f-b92296640edc",
+  "preferredTransport": "JSONRPC",
+  "version": "3",
+  "capabilities": { "streaming": true, "pushNotifications": false },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "8bd40327-56c7-46fa-800f-b92296640edc",
+      "name": "Weather Bot",
+      "description": "Answers weather questions.",
+      "tags": ["weather_agent"]
+    }
+  ]
+}
+```
+
+Discovery is per-assistant rather than per-deployment, because one Aegra server hosts many agents. `version` tracks the assistant's version, so a card fetched after an update reflects it.
+
+## Sending a message
+
+```bash
+curl -X POST "http://localhost:2026/a2a/$ASSISTANT_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "1",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "role": "user",
+        "parts": [{"kind": "text", "text": "Weather in Paris?"}],
+        "messageId": "7f3c1c1e-1a2b-4c3d-9e8f-0a1b2c3d4e5f"
+      }
+    }
+  }'
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "result": {
+    "kind": "task",
+    "id": "9531f3a9-4ad5-452e-a40c-23e1971a50a8",
+    "contextId": "b34c08f9-9cc3-467f-8052-2d85b4e0b32e",
+    "status": { "state": "completed" },
+    "artifacts": [
+      { "artifactId": "cbadbcc6-...", "parts": [{ "kind": "text", "text": "Sunny, 21°C." }] }
+    ]
+  }
+}
+```
+
+Continue the conversation by echoing the returned `contextId`:
+
+```python
+import httpx, uuid
+
+def rpc(method: str, params: dict) -> dict:
+    return {"jsonrpc": "2.0", "id": str(uuid.uuid4()), "method": method, "params": params}
+
+def message(text: str, context_id: str | None = None) -> dict:
+    msg = {"role": "user", "parts": [{"kind": "text", "text": text}], "messageId": str(uuid.uuid4())}
+    if context_id:
+        msg["contextId"] = context_id
+    return msg
+
+url = f"http://localhost:2026/a2a/{assistant_id}"
+with httpx.Client(timeout=120) as http:
+    first = http.post(url, json=rpc("message/send", {"message": message("My name is Ada")})).json()["result"]
+    context_id = first["contextId"]
+
+    second = http.post(
+        url, json=rpc("message/send", {"message": message("What is my name?", context_id)})
+    ).json()["result"]
+```
+
+Because `contextId` *is* the thread id, both turns land on one thread — readable afterwards with `client.threads.get_state(context_id)`.
+
+## Streaming
+
+`message/stream` returns SSE, each event a JSON-RPC success envelope:
+
+```
+data: {"jsonrpc":"2.0","id":"1","result":{"kind":"task","status":{"state":"submitted"},...}}
+data: {"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","status":{"state":"working"},"final":false,...}}
+data: {"jsonrpc":"2.0","id":"1","result":{"kind":"artifact-update","artifact":{...}}}
+data: {"jsonrpc":"2.0","id":"1","result":{"kind":"status-update","status":{"state":"completed"},"final":true,...}}
+```
+
+The stream always closes with a `status-update` carrying `final: true`, read from the persisted run rather than the event stream — so a client that loses the connection mid-run still gets a terminal state on reconnect via `tasks/get`.
+
+## Task states
+
+Run status maps onto A2A task states:
+
+| Aegra run status | A2A state |
+|:--|:--|
+| `success` | `completed` |
+| `error` | `failed` |
+| `pending`, `running` | `working` |
+| `interrupted` with a pending interrupt | `input-required` |
+| `interrupted` otherwise | `canceled` |
+
+A failure puts the error text on `status.message` rather than in an artifact.
+
+## Graph requirements
+
+Your graph must accept a `messages` key — A2A text parts are conversation turns and are mapped to `{"messages": [{"role": "user", "content": ...}]}`. Data parts, if present, arrive under a `data` key.
+
+The reply sent back is the last message in the graph's final state.
+
+## Error codes
+
+JSON-RPC errors come back with HTTP 200, per the spec:
+
+| Code | Meaning |
+|:--|:--|
+| `-32700` | Malformed JSON |
+| `-32600` | Not a valid JSON-RPC 2.0 request |
+| `-32601` | Unknown method |
+| `-32602` | Invalid params |
+| `-32001` | Task not found |
+
+An unknown or unowned assistant is a transport-level 404, raised before any run is created.
+
+## Authentication
+
+`/a2a/{assistant_id}` uses the same authentication as the rest of the API. See the [authentication guide](/guides/authentication). A `contextId` naming another user's thread returns 404 — an A2A client cannot attach a run to a thread it does not own.
+
+## Disabling
+
+```json
+{
+  "http": {
+    "disable_a2a": true
+  }
+}
+```
+
+## Related
+
+- [MCP endpoint](/guides/mcp) — expose assistants as MCP tools
+- [Threads and state](/guides/threads-and-state) — what `contextId` maps onto
+- [Authentication](/guides/authentication)

@@ -1,7 +1,7 @@
 """FastAPI application for Aegra (Agent Protocol Server)"""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import structlog
@@ -12,8 +12,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, APIRouter
+from starlette.routing import Route
 
 from aegra_api import __version__
+from aegra_api.api.a2a import router as a2a_router
 from aegra_api.api.assistants import router as assistants_router
 from aegra_api.api.crons import router as crons_router
 from aegra_api.api.event_streaming import router as event_streaming_router
@@ -41,6 +43,7 @@ from aegra_api.services.cron_scheduler import cron_scheduler
 from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.lease_reaper import lease_reaper
+from aegra_api.services.mcp_server import mcp_asgi_app, mcp_lifespan
 from aegra_api.services.webhooks import webhook_sweeper
 from aegra_api.settings import settings
 from aegra_api.utils.setup_logging import setup_logging
@@ -53,6 +56,7 @@ OPENAPI_TAGS: list[dict[str, Any]] = [
     {"name": "Crons", "description": "Scheduled recurring runs on a cron schedule."},
     {"name": "Store", "description": "Persistent key-value and semantic storage available from any thread."},
     {"name": "Event Streaming", "description": "Agent Protocol v2 thread event streaming and commands."},
+    {"name": "A2A", "description": "Agent2Agent protocol endpoint and agent card discovery."},
     {"name": "Health", "description": "Server health checks and service information."},
 ]
 
@@ -145,7 +149,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if settings.webhook.WEBHOOK_ENABLED:
         await webhook_sweeper.start()
 
-    yield
+    # The MCP transport needs a task group for its lifetime. Presence of the
+    # route is the enable signal, so the opt-out is read in exactly one place.
+    async with AsyncExitStack() as stack:
+        if any(getattr(route, "path", None) == "/mcp" for route in _app.routes):
+            await stack.enter_async_context(mcp_lifespan())
+        yield
 
     # Shutdown order: webhooks → cron → reaper → executor (drains jobs) → broker → Redis → DB
     if settings.webhook.WEBHOOK_ENABLED:
@@ -321,7 +330,7 @@ def _add_common_middleware(app: FastAPI, cors_config: CorsConfig | None) -> None
     app.add_middleware(ContentTypeFixMiddleware)
 
 
-def _include_core_routers(app: FastAPI) -> None:
+def _include_core_routers(app: FastAPI, http_config: HttpConfig | None = None) -> None:
     """Include all core API routers with auth dependency.
 
     Routers are included in consistent order:
@@ -332,9 +341,11 @@ def _include_core_routers(app: FastAPI) -> None:
     5. Stateless Runs (with auth)
     6. Crons (with auth)
     7. Store (with auth)
+    8. A2A (with auth, unless ``http.disable_a2a``)
 
     Args:
         app: FastAPI application instance
+        http_config: HTTP config, consulted for the interop opt-outs
     """
     app.include_router(health_router)
     app.include_router(assistants_router)
@@ -344,6 +355,22 @@ def _include_core_routers(app: FastAPI) -> None:
     app.include_router(crons_router)
     app.include_router(store_router)
     app.include_router(event_streaming_router)
+
+    if not (http_config or {}).get("disable_a2a", False):
+        app.include_router(a2a_router)
+
+
+def _mount_mcp(app: FastAPI, http_config: HttpConfig | None) -> None:
+    """Attach the ``/mcp`` endpoint unless ``http.disable_mcp`` is set.
+
+    Registered as a raw ASGI route rather than a router: the Streamable HTTP
+    transport drives the send channel itself.
+    """
+    if (http_config or {}).get("disable_mcp", False):
+        logger.info("MCP endpoint disabled by http.disable_mcp")
+        return
+
+    app.router.routes.append(Route("/mcp", endpoint=mcp_asgi_app, methods=["GET", "POST", "DELETE"]))
 
 
 def create_app() -> FastAPI:
@@ -375,7 +402,8 @@ def create_app() -> FastAPI:
         application = user_app
         if not application.openapi_tags:
             application.openapi_tags = OPENAPI_TAGS
-        _include_core_routers(application)
+        _include_core_routers(application, http_config)
+        _mount_mcp(application, http_config)
 
         # Add root endpoint if not already defined
         if not any(route.path == "/" for route in application.routes if hasattr(route, "path")):
@@ -401,7 +429,8 @@ def create_app() -> FastAPI:
         )
 
         _add_common_middleware(application, cors_config)
-        _include_core_routers(application)
+        _include_core_routers(application, http_config)
+        _mount_mcp(application, http_config)
 
         for exc_type, handler in exception_handlers.items():
             application.exception_handler(exc_type)(handler)
