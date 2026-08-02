@@ -112,7 +112,7 @@ class TestDatabaseManager:
         mock_db_deps["saver_instance"].setup.assert_awaited_once()
 
         # Store is initialized with index=None when no store config is provided
-        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None)
+        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None, ttl=None)
         mock_db_deps["store_instance"].setup.assert_awaited_once()
 
         # 4. Verify internal state
@@ -210,7 +210,7 @@ class TestDatabaseManager:
 
         # --- ASSERTIONS ---
         # Store should be initialized with the index config
-        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=index_config)
+        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=index_config, ttl=None)
         mock_db_deps["store_instance"].setup.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -224,5 +224,34 @@ class TestDatabaseManager:
 
         # --- ASSERTIONS ---
         # Store should be initialized with index=None
-        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None)
+        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None, ttl=None)
         mock_db_deps["store_instance"].setup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_store_ttl_config_starts_the_upstream_sweeper(self, db_manager, mock_db_deps):
+        """Retention is the store's own sweeper, not something this project implements."""
+        ttl_config = {"default_ttl": 10080, "sweep_interval_minutes": 120, "refresh_on_read": True}
+        mock_db_deps["load_store_config"].return_value = {"ttl": ttl_config}
+
+        await db_manager.initialize()
+
+        mock_db_deps["store_cls"].assert_called_with(conn=mock_db_deps["pool_instance"], index=None, ttl=ttl_config)
+        mock_db_deps["store_instance"].start_ttl_sweeper.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_ttl_config_leaves_the_sweeper_off(self, db_manager, mock_db_deps):
+        mock_db_deps["load_store_config"].return_value = {}
+
+        await db_manager.initialize()
+
+        mock_db_deps["store_instance"].start_ttl_sweeper.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_close_stops_the_sweeper_it_started(self, db_manager, mock_db_deps):
+        """A sweeper left running past close() keeps the pool alive and leaks the task."""
+        mock_db_deps["load_store_config"].return_value = {"ttl": {"default_ttl": 60}}
+
+        await db_manager.initialize()
+        await db_manager.close()
+
+        mock_db_deps["store_instance"].stop_ttl_sweeper.assert_awaited_once()

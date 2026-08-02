@@ -5,7 +5,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.models.enums import (
     OnConflictBehavior,
     PruneStrategy,
@@ -13,6 +12,7 @@ from aegra_api.models.enums import (
     ThreadSelectField,
     ThreadSortBy,
 )
+from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.utils.status_compat import validate_thread_status
 
 # Cap on ``extract`` paths per search request, per the SDK docstring.

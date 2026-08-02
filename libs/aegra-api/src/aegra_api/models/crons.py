@@ -6,8 +6,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aegra_api.models.enums import All, CronSelectField, CronSortBy, Durability, SortOrder
-from aegra_api.settings import settings
 from aegra_api.models.filters import IdSet, TimeFilters, id_scope
+from aegra_api.settings import settings
 from aegra_api.utils.metadata import CRON_ID_KEY, MAX_KEYS, validate_metadata
 from aegra_api.utils.webhooks import WEBHOOK_MAX_LEN, validate_webhook_url
 

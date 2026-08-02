@@ -1256,9 +1256,18 @@ class TestThreadCountCopyPrune:
     def test_search_forwards_new_filters(self, client, service):
         service.search = AsyncMock(return_value=[])
 
-        resp = client.post("/threads/search", json={"ids": ["a", "b"], "values": {"step": 1}})
+        resp = client.post("/threads/search", json={"thread_ids": ["a", "b"], "values": {"step": 1}})
 
         assert resp.status_code == 200
         request = service.search.call_args.args[0]
-        assert request.ids == ["a", "b"]
+        assert request.thread_id == ["a", "b"]
         assert request.values == {"step": 1}
+
+    def test_search_accepts_a_single_thread_id(self, client, service):
+        """The singular alias and a bare string both land on the same list field."""
+        service.search = AsyncMock(return_value=[])
+
+        resp = client.post("/threads/search", json={"thread_id": "a"})
+
+        assert resp.status_code == 200
+        assert service.search.call_args.args[0].thread_id == ["a"]

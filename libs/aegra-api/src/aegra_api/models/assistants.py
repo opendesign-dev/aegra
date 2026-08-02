@@ -5,13 +5,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.models.enums import (
     AssistantSelectField,
     AssistantSortBy,
     OnConflictBehavior,
     SortOrder,
 )
+from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 
 
 class AssistantCreate(BaseModel):

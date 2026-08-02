@@ -252,6 +252,51 @@ Both interop endpoints are on by default, and the flag names match `langgraph.js
 
 See [custom routes guide](/guides/custom-routes) for details.
 
+## `checkpointer`
+
+Configure retention for threads and their checkpoints.
+
+```json
+{
+  "checkpointer": {
+    "ttl": {
+      "strategy": "delete",
+      "default_ttl": 43200,
+      "sweep_interval_minutes": 60,
+      "sweep_limit": 10000
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ttl.strategy` | `"delete" \| "keep_latest"` | `delete` | `delete` drops the thread with its runs and checkpoints; `keep_latest` keeps the thread and its current state, discarding only the history behind it |
+| `ttl.default_ttl` | `number` | none | Lifetime in minutes for threads carrying no `ttl` of their own (43200 = 30 days). Omit and nothing expires |
+| `ttl.sweep_interval_minutes` | `number` | `5` | How often expired threads are looked for |
+| `ttl.sweep_limit` | `integer` | `10000` | Threads reclaimed per pass, bounding how long one pass holds row locks |
+
+Expiry is measured from the thread's `updated_at`, so **the clock restarts on every run** — a
+thread stays alive as long as it is being used. A per-thread lifetime set at creation time
+(`threads.create(ttl=...)`) overrides both `default_ttl` and `strategy` for that thread.
+
+Only one pod reclaims a given batch: rows are claimed with `FOR UPDATE SKIP LOCKED`.
+
+<Warning>
+Reclamation deletes user data. Deployments that previously ran without retention keep their
+existing behaviour only while `checkpointer.ttl` is absent — adding `default_ttl` applies to
+**every existing thread** on the next sweep, judged by its last activity. Start with
+`keep_latest`, or a `default_ttl` well beyond your oldest thread, and watch the
+`Reclaimed expired threads` log line before tightening it.
+</Warning>
+
+<Note>
+Key names and defaults follow LangGraph Platform's `checkpointer.ttl` so configuration ports
+in either direction. The implementation is Aegra's own: open-source
+`AsyncPostgresSaver` exposes no TTL hook, so expiry is driven from the `thread` table.
+This differs from [`store.ttl`](#store), which delegates to the store's own sweeper.
+</Note>
+
 ## `store`
 
 Configure semantic store with vector embeddings.
@@ -277,6 +322,39 @@ Configure semantic store with vector embeddings.
 If `store` is not configured, Aegra operates in basic key-value mode.
 
 See [semantic store guide](/guides/semantic-store) for details.
+
+### Store retention (`store.ttl`)
+
+Expire store items on a schedule. The sweeper is the store's own — these keys are passed
+straight to `AsyncPostgresStore`, so they match LangGraph Platform's `store.ttl` exactly.
+
+```json
+{
+  "store": {
+    "ttl": {
+      "refresh_on_read": true,
+      "default_ttl": 43200,
+      "sweep_interval_minutes": 120
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ttl.default_ttl` | `number` | No | Item lifetime in minutes (43200 = 30 days). Omit and nothing expires |
+| `ttl.refresh_on_read` | `boolean` | No | Restart the clock on `get`/`search`, not just on write (default: `true`) |
+| `ttl.sweep_interval_minutes` | `number` | No | How often expired items are deleted |
+
+<Note>
+This covers **store items only**. Threads and their checkpoints expire under
+[`checkpointer.ttl`](#checkpointer) instead.
+</Note>
+
+<Note>
+Items written before TTL was configured are unaffected — expiry applies from the point an item
+is written or (with `refresh_on_read`) read. Clear pre-existing data explicitly.
+</Note>
 
 ## Common configurations
 

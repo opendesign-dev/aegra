@@ -12,7 +12,6 @@ from pydantic import (
     model_validator,
 )
 
-from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.models.enums import (
     All,
     BulkCancelRunsStatus,
@@ -27,6 +26,7 @@ from aegra_api.models.enums import (
     SortOrder,
     StreamMode,
 )
+from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.utils.metadata import KEY_PATTERN, MAX_KEYS, MAX_VALUE_LEN, validate_metadata
 from aegra_api.utils.status_compat import validate_run_status
 from aegra_api.utils.webhooks import WEBHOOK_MAX_LEN, validate_webhook_url

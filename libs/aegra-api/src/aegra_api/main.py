@@ -44,6 +44,7 @@ from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.lease_reaper import lease_reaper
 from aegra_api.services.mcp_server import mcp_asgi_app, mcp_lifespan
+from aegra_api.services.thread_ttl import thread_ttl_sweeper
 from aegra_api.services.webhooks import webhook_sweeper
 from aegra_api.settings import settings
 from aegra_api.utils.setup_logging import setup_logging
@@ -149,6 +150,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if settings.webhook.WEBHOOK_ENABLED:
         await webhook_sweeper.start()
 
+    # Start thread TTL sweeper (no-op unless checkpointer.ttl is configured)
+    await thread_ttl_sweeper.start()
+
     # The MCP transport needs a task group for its lifetime. Presence of the
     # route is the enable signal, so the opt-out is read in exactly one place.
     async with AsyncExitStack() as stack:
@@ -156,7 +160,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             await stack.enter_async_context(mcp_lifespan())
         yield
 
-    # Shutdown order: webhooks → cron → reaper → executor (drains jobs) → broker → Redis → DB
+    # Shutdown order: ttl → webhooks → cron → reaper → executor (drains jobs) → broker → Redis → DB
+    await thread_ttl_sweeper.stop()
     if settings.webhook.WEBHOOK_ENABLED:
         await webhook_sweeper.stop()
     if settings.cron.CRON_ENABLED:

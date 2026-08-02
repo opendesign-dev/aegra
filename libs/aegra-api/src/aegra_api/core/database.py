@@ -1,10 +1,14 @@
 """Database manager with LangGraph integration"""
 
+import asyncio
+from typing import cast
+
 import structlog
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
-from psycopg.rows import dict_row
+from psycopg import AsyncConnection
+from psycopg.rows import DictRow, dict_row
 from psycopg_pool import AsyncConnectionPool
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -12,6 +16,11 @@ from aegra_api.config import load_store_config
 from aegra_api.settings import settings
 
 logger = structlog.get_logger(__name__)
+
+# The checkpointer and store both require dict rows, which the pool delivers via
+# ``row_factory``. That is invisible to the type checker, so the pool type has to say it
+# explicitly — otherwise every ``conn=`` handoff below looks like a TupleRow mismatch.
+LangGraphPool = AsyncConnectionPool[AsyncConnection[DictRow]]
 
 
 class DatabaseManager:
@@ -21,9 +30,10 @@ class DatabaseManager:
         self.engine: AsyncEngine | None = None
 
         # Shared pool for LangGraph components (Checkpointer + Store)
-        self.lg_pool: AsyncConnectionPool | None = None
+        self.lg_pool: LangGraphPool | None = None
         self._checkpointer: AsyncPostgresSaver | None = None
         self._store: AsyncPostgresStore | None = None
+        self._ttl_sweeper: asyncio.Task[None] | None = None
         self._database_url = settings.db.database_url
 
     async def initialize(self) -> None:
@@ -53,7 +63,9 @@ class DatabaseManager:
 
         # Create a single shared pool.
         # 'open=False' is important to avoid RuntimeWarning; we open it explicitly below.
-        self.lg_pool = AsyncConnectionPool(
+        # Built as its own statement so the pool's own generic parameters resolve here; casting
+        # the expression inline would push LangGraphPool back into `check=` and mismatch it.
+        pool = AsyncConnectionPool(
             conninfo=settings.db.database_url_sync,
             min_size=settings.pool.LANGGRAPH_MIN_POOL_SIZE,
             max_size=lg_max,
@@ -61,6 +73,7 @@ class DatabaseManager:
             kwargs=lg_kwargs,
             check=AsyncConnectionPool.check_connection,
         )
+        self.lg_pool = cast("LangGraphPool", pool)
 
         # Explicitly open the pool
         await self.lg_pool.open()
@@ -76,9 +89,20 @@ class DatabaseManager:
         # Load store configuration for semantic search (if configured)
         store_config = load_store_config()
         index_config = store_config.get("index") if store_config else None
+        ttl_config = store_config.get("ttl") if store_config else None
 
-        self._store = AsyncPostgresStore(conn=self.lg_pool, index=index_config)
+        self._store = AsyncPostgresStore(conn=self.lg_pool, index=index_config, ttl=ttl_config)
         await self._store.setup()  # Ensure tables exist
+
+        if ttl_config:
+            # The store owns the sweeper; the task is held so close() can stop it.
+            self._ttl_sweeper = await self._store.start_ttl_sweeper()
+            logger.info(
+                "Store TTL sweeper started",
+                default_ttl_minutes=ttl_config.get("default_ttl"),
+                sweep_interval_minutes=ttl_config.get("sweep_interval_minutes"),
+                refresh_on_read=ttl_config.get("refresh_on_read"),
+            )
 
         if index_config:
             embed_model = index_config.get("embed", "unknown")
@@ -88,6 +112,10 @@ class DatabaseManager:
 
     async def close(self) -> None:
         """Close database connections"""
+        if self._store is not None and self._ttl_sweeper is not None:
+            await self._store.stop_ttl_sweeper()
+            self._ttl_sweeper = None
+
         # Close SQLAlchemy engine
         if self.engine:
             await self.engine.dispose()

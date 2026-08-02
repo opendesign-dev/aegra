@@ -2,9 +2,11 @@
 
 import json
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import structlog
+from langgraph.store.base import TTLConfig
+from langgraph.store.postgres.base import PostgresIndexConfig
 
 from aegra_api.settings import settings
 
@@ -37,29 +39,23 @@ class HttpConfig(TypedDict, total=False):
     """Disable the /a2a/{assistant_id} endpoint and its agent card. Enabled by default."""
 
 
-class StoreIndexConfig(TypedDict, total=False):
+class StoreIndexConfig(PostgresIndexConfig, total=False):
     """Configuration for vector embeddings in store.
 
     Enables semantic similarity search using pgvector.
     See: https://github.com/aegra/aegra/issues/104
-    """
 
-    dims: int
-    """Embedding vector dimensions (e.g., 1536 for OpenAI text-embedding-3-small)"""
-    embed: str
-    """Embedding model in format '<provider>:<model-id>'
-    Examples:
-    - openai:text-embedding-3-small (1536 dims)
-    - openai:text-embedding-3-large (3072 dims)
-    - bedrock:amazon.titan-embed-text-v2:0 (1024 dims)
-    - cohere:embed-english-v3.0 (1024 dims)
-    """
-    fields: list[str] | None
-    """JSON fields to embed. Defaults to ["$"] (entire document).
-    Examples:
-    - ["$"] - Embed entire document as one unit
-    - ["text", "summary"] - Embed specific top-level fields
-    - ["metadata.title", "content.text"] - JSON path notation
+    Extends the store's own ``PostgresIndexConfig`` rather than restating it, so this
+    dict is what `AsyncPostgresStore` accepts — including keys documented upstream but
+    not listed here (``ann_index_config``, ``distance_type``).
+
+    Keys used most often:
+
+    - ``dims``: embedding vector dimensions (1536 for OpenAI text-embedding-3-small)
+    - ``embed``: model as ``'<provider>:<model-id>'``, e.g. ``openai:text-embedding-3-small``,
+      ``bedrock:amazon.titan-embed-text-v2:0``, ``cohere:embed-english-v3.0``
+    - ``fields``: JSON fields to embed, defaulting to ``["$"]`` (whole document);
+      also accepts top-level names or JSON paths like ``["metadata.title"]``
     """
 
 
@@ -68,6 +64,43 @@ class StoreConfig(TypedDict, total=False):
 
     index: StoreIndexConfig | None
     """Vector index configuration for semantic search"""
+
+    ttl: TTLConfig | None
+    """Retention policy for store items, applied by the store's own sweeper.
+
+    Keys match LangGraph Platform's ``store.ttl`` because this is the upstream
+    ``TTLConfig`` verbatim: ``refresh_on_read``, ``default_ttl`` (minutes),
+    ``sweep_interval_minutes``. Omitted means items never expire.
+    """
+
+
+class CheckpointerTTLConfig(TypedDict, total=False):
+    """Retention policy for threads and their checkpoints.
+
+    Key names, defaults and semantics follow LangGraph Platform's ``checkpointer.ttl``.
+    Unlike ``store.ttl`` this has no upstream implementation to delegate to — the
+    open-source checkpointer ships no sweeper — so Aegra drives expiry itself.
+    """
+
+    strategy: Literal["delete", "keep_latest"]
+    """``delete`` drops the thread with its runs and checkpoints; ``keep_latest`` keeps the
+    thread and its current state, discarding only the history behind it."""
+
+    default_ttl: float | None
+    """Lifetime in minutes for threads that carry no ``ttl`` of their own. Unset means never."""
+
+    sweep_interval_minutes: float
+    """How often expired threads are looked for."""
+
+    sweep_limit: int
+    """Threads reclaimed per pass, bounding how long one pass holds row locks."""
+
+
+class CheckpointerConfig(TypedDict, total=False):
+    """Checkpointer configuration options."""
+
+    ttl: CheckpointerTTLConfig | None
+    """Retention policy; omitted leaves threads and checkpoints in place forever."""
 
 
 class AuthConfig(TypedDict, total=False):
@@ -154,6 +187,23 @@ def load_http_config() -> HttpConfig | None:
         config_path = _resolve_config_path()
         logger.info(f"Loaded HTTP config from {config_path}")
         return http_config
+
+    return None
+
+
+def load_checkpointer_ttl_config() -> CheckpointerTTLConfig | None:
+    """Load ``checkpointer.ttl`` from aegra.json or langgraph.json.
+
+    Absent config leaves retention off, which is the behaviour every existing deployment has.
+    """
+    config = load_config()
+    if config is None:
+        return None
+
+    ttl_config = (config.get("checkpointer") or {}).get("ttl")
+    if ttl_config:
+        logger.info(f"Loaded checkpointer TTL config from {_resolve_config_path()}")
+        return ttl_config
 
     return None
 

@@ -1037,10 +1037,18 @@ class TestSearchRuns:
         assert {"cron_id": "nightly"} in params.values()
 
     def test_thread_and_assistant_filters_applied(self) -> None:
+        """Id filters are sets: a bare string is accepted and widened to a one-element IN."""
         _status, sql, params = self._sql({"thread_id": "t-1", "assistant_id": "a-1"})
         assert "thread_id" in sql and "assistant_id" in sql
-        assert "t-1" in params.values()
-        assert "a-1" in params.values()
+        assert ["t-1"] in params.values()
+        assert ["a-1"] in params.values()
+
+    def test_id_filters_accept_a_list_and_the_plural_alias(self) -> None:
+        """`thread_ids` is the same filter as `thread_id`; several ids become one IN clause."""
+        _status, sql, params = self._sql({"thread_ids": ["t-1", "t-2"], "run_id": "r-9"})
+        assert "IN" in sql.upper()
+        assert ["t-1", "t-2"] in params.values()
+        assert ["r-9"] in params.values()
 
     def test_owner_predicate_present_without_permission(self) -> None:
         _status, _sql, params = self._sql({})
