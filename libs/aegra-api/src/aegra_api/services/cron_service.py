@@ -402,10 +402,14 @@ class CronService:
         stmt = select(CronORM).where(read_scope(CronORM.user_id, user, resource="crons"))
 
         if request.assistant_id is not None:
-            resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)
-            stmt = stmt.where(CronORM.assistant_id == resolved_assistant_id)
+            resolved = [self._resolve_assistant_identifier(a) for a in request.assistant_id]
+            stmt = stmt.where(CronORM.assistant_id.in_(resolved))
         if request.thread_id is not None:
-            stmt = stmt.where(CronORM.thread_id == request.thread_id)
+            stmt = stmt.where(CronORM.thread_id.in_(request.thread_id))
+        if request.cron_id is not None:
+            stmt = stmt.where(CronORM.cron_id.in_(request.cron_id))
+        for predicate in request.time_predicates(CronORM.created_at, CronORM.updated_at):
+            stmt = stmt.where(predicate)
         if request.enabled is not None:
             stmt = stmt.where(CronORM.enabled == request.enabled)
         if request.metadata:
@@ -433,10 +437,14 @@ class CronService:
         stmt = select(func.count()).select_from(CronORM).where(read_scope(CronORM.user_id, user, resource="crons"))
 
         if request.assistant_id is not None:
-            resolved_assistant_id = self._resolve_assistant_identifier(request.assistant_id)
-            stmt = stmt.where(CronORM.assistant_id == resolved_assistant_id)
+            resolved = [self._resolve_assistant_identifier(a) for a in request.assistant_id]
+            stmt = stmt.where(CronORM.assistant_id.in_(resolved))
         if request.thread_id is not None:
-            stmt = stmt.where(CronORM.thread_id == request.thread_id)
+            stmt = stmt.where(CronORM.thread_id.in_(request.thread_id))
+        if request.cron_id is not None:
+            stmt = stmt.where(CronORM.cron_id.in_(request.cron_id))
+        for predicate in request.time_predicates(CronORM.created_at, CronORM.updated_at):
+            stmt = stmt.where(predicate)
         if request.metadata:
             stmt = stmt.where(CronORM.metadata_dict.op("@>")(request.metadata))
 

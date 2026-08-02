@@ -33,6 +33,7 @@ from aegra_api.core.sse import (
 from aegra_api.models import Run, RunCreate, RunStatus, User
 from aegra_api.models.enums import StreamMode
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
+from aegra_api.models.filters import in_scope, metadata_scope
 from aegra_api.models.runs import RunCountRequest, RunListRequest, RunSearchRequest
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.run_preparation import _prepare_run
@@ -229,14 +230,13 @@ async def list_runs(
 def _run_filters(request: RunCountRequest, user: User) -> list[ColumnElement[bool]]:
     """Predicates shared by search and count, so a filter cannot apply to only one."""
     filters: list[ColumnElement[bool]] = [read_scope(RunORM.user_id, user, resource="runs")]
-    if request.thread_id:
-        filters.append(RunORM.thread_id == request.thread_id)
-    if request.assistant_id:
-        filters.append(RunORM.assistant_id == request.assistant_id)
+    filters += in_scope(RunORM.thread_id, request.thread_id)
+    filters += in_scope(RunORM.assistant_id, request.assistant_id)
+    filters += in_scope(RunORM.run_id, request.run_id)
     if request.status:
         filters.append(RunORM.status == request.status)
-    if request.metadata:
-        filters.append(RunORM.metadata_dict.op("@>")(request.metadata))
+    filters += metadata_scope(RunORM.metadata_dict, request.metadata)
+    filters += request.time_predicates(RunORM.created_at, RunORM.updated_at)
     return filters
 
 

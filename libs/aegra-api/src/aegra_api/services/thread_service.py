@@ -144,8 +144,10 @@ class ThreadService(Authenticated):
     def _filtered(self, stmt: Select[Any], request: ThreadSearchRequest, filters: dict[str, Any] | None) -> Select[Any]:
         if request.status:
             stmt = stmt.where(ThreadORM.status == request.status)
-        if request.ids:
-            stmt = stmt.where(ThreadORM.thread_id.in_(request.ids))
+        if request.thread_id is not None:
+            stmt = stmt.where(ThreadORM.thread_id.in_(request.thread_id))
+        for predicate in request.time_predicates(ThreadORM.created_at, ThreadORM.updated_at):
+            stmt = stmt.where(predicate)
 
         metadata = dict(request.metadata or {})
         handler_meta = (filters or {}).get("metadata")

@@ -282,6 +282,12 @@ class AssistantService(Authenticated):
             read_scope(AssistantORM.user_id, self.user, resource="assistants", include_system=True)
         )
 
+        if request.assistant_id is not None:
+            stmt = stmt.where(AssistantORM.assistant_id.in_(request.assistant_id))
+
+        for predicate in request.time_predicates(AssistantORM.created_at, AssistantORM.updated_at):
+            stmt = stmt.where(predicate)
+
         if request.name:
             stmt = stmt.where(AssistantORM.name.ilike(f"%{_escape_like(request.name)}%", escape="\\"))
 

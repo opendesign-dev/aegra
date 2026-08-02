@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from aegra_api.models.enums import All, CronSelectField, CronSortBy, Durability, SortOrder
 from aegra_api.settings import settings
+from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.utils.metadata import CRON_ID_KEY, MAX_KEYS, validate_metadata
 from aegra_api.utils.webhooks import WEBHOOK_MAX_LEN, validate_webhook_url
 
@@ -138,11 +139,12 @@ class CronUpdate(BaseModel):
         return self
 
 
-class CronSearchRequest(BaseModel):
+class CronSearchRequest(TimeFilters):
     """Request body for searching cron jobs."""
 
-    assistant_id: str | None = None
-    thread_id: str | None = None
+    assistant_id: IdSet = id_scope("assistant_id", "Restrict to these assistants.")
+    thread_id: IdSet = id_scope("thread_id", "Restrict to these threads.")
+    cron_id: IdSet = id_scope("cron_id", "Restrict to these schedules.")
     enabled: bool | None = None
     metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")
     limit: int = Field(10, ge=1, le=1000)
@@ -154,9 +156,10 @@ class CronSearchRequest(BaseModel):
     )
 
 
-class CronCountRequest(BaseModel):
+class CronCountRequest(TimeFilters):
     """Request body for counting cron jobs."""
 
-    assistant_id: str | None = None
-    thread_id: str | None = None
+    assistant_id: IdSet = id_scope("assistant_id", "Restrict to these assistants.")
+    thread_id: IdSet = id_scope("thread_id", "Restrict to these threads.")
+    cron_id: IdSet = id_scope("cron_id", "Restrict to these schedules.")
     metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")

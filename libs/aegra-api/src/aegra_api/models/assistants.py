@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.models.enums import (
     AssistantSelectField,
     AssistantSortBy,
@@ -81,9 +82,10 @@ class AssistantList(BaseModel):
     total: int
 
 
-class AssistantSearchRequest(BaseModel):
+class AssistantSearchRequest(TimeFilters):
     """Request model for assistant search"""
 
+    assistant_id: IdSet = id_scope("assistant_id", "Restrict to these assistants.")
     name: str | None = Field(None, description="Substring match on name.")
     description: str | None = Field(None, description="Substring match on description.")
     graph_id: str | None = Field(None, description="Exact match on graph id.")

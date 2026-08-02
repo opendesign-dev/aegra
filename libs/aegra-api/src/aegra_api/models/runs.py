@@ -12,6 +12,7 @@ from pydantic import (
     model_validator,
 )
 
+from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.models.enums import (
     All,
     BulkCancelRunsStatus,
@@ -277,11 +278,12 @@ class RunListRequest(BaseModel):
     )
 
 
-class RunCountRequest(BaseModel):
+class RunCountRequest(TimeFilters):
     """Filters shared by run search and count, so the two cannot drift."""
 
-    thread_id: str | None = Field(None, description="Restrict to one thread.")
-    assistant_id: str | None = Field(None, description="Restrict to one assistant.")
+    thread_id: IdSet = id_scope("thread_id", "Restrict to these threads.")
+    assistant_id: IdSet = id_scope("assistant_id", "Restrict to these assistants.")
+    run_id: IdSet = id_scope("run_id", "Restrict to these runs.")
     status: str | None = Field(None, description="Filter by run status.")
     metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")
 

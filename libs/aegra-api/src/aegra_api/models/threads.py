@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from aegra_api.models.filters import IdSet, TimeFilters, id_scope
 from aegra_api.models.enums import (
     OnConflictBehavior,
     PruneStrategy,
@@ -122,7 +123,7 @@ class ThreadPruneResponse(BaseModel):
     pruned_count: int = Field(..., description="Number of threads pruned.")
 
 
-class ThreadSearchRequest(BaseModel):
+class ThreadSearchRequest(TimeFilters):
     """Request model for thread search"""
 
     metadata: dict[str, Any] | None = Field(None, description="Metadata containment match.")
@@ -130,7 +131,7 @@ class ThreadSearchRequest(BaseModel):
     values: dict[str, Any] | None = Field(
         None, description="State containment match; only matches threads whose state is materialized."
     )
-    ids: list[str] | None = Field(None, min_length=1, description="Restrict to this set of thread ids.")
+    thread_id: IdSet = id_scope("thread_id", "Restrict to these threads.")
     limit: int = Field(20, le=1000, ge=1, description="Maximum rows per page.")
     offset: int = Field(0, ge=0, description="Rows to skip.")
     sort_by: ThreadSortBy | None = Field(None, description="Sort field; defaults to created_at.")

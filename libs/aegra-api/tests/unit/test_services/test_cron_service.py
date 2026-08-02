@@ -319,7 +319,27 @@ class TestCreateCron:
         mock_resolve.assert_called_once_with("test-graph", cron_service.langgraph_service.list_graphs.return_value)
         stmt = mock_session.scalars.await_args.args[0]
         compiled = stmt.compile()
-        assert compiled.params["assistant_id_1"] == "resolved-assistant-id"
+        assert compiled.params["assistant_id_1"] == ["resolved-assistant-id"]
+
+    @pytest.mark.asyncio
+    async def test_search_resolves_every_graph_id_in_a_set(
+        self,
+        cron_service: CronService,
+        mock_session: AsyncMock,
+    ) -> None:
+        scalars = Mock()
+        scalars.all.return_value = []
+        mock_session.scalars.return_value = scalars
+
+        with patch(
+            "aegra_api.services.cron_service.resolve_assistant_id",
+            side_effect=["resolved-a", "resolved-b"],
+        ) as mock_resolve:
+            await cron_service.search_crons(CronSearchRequest(assistant_ids=["graph-a", "graph-b"]), _user())
+
+        assert mock_resolve.call_count == 2
+        compiled = mock_session.scalars.await_args.args[0].compile()
+        assert compiled.params["assistant_id_1"] == ["resolved-a", "resolved-b"]
 
     @pytest.mark.asyncio
     async def test_count_resolves_graph_id_filter(
@@ -339,7 +359,7 @@ class TestCreateCron:
         mock_resolve.assert_called_once_with("test-graph", cron_service.langgraph_service.list_graphs.return_value)
         stmt = mock_session.scalar.await_args.args[0]
         compiled = stmt.compile()
-        assert compiled.params["assistant_id_1"] == "resolved-assistant-id"
+        assert compiled.params["assistant_id_1"] == ["resolved-assistant-id"]
 
 
 # ---------------------------------------------------------------------------
