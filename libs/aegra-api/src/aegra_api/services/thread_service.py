@@ -21,17 +21,18 @@ from uuid import uuid4
 import structlog
 from fastapi import Depends, HTTPException
 from langchain_core.runnables import RunnableConfig
-from sqlalchemy import Select, delete, func, select
+from sqlalchemy import Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from aegra_api.core.auth_deps import get_current_user
 from aegra_api.core.database import db_manager
+from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import ThreadStateCache as ThreadStateCacheORM
 from aegra_api.core.orm import get_session
 from aegra_api.core.query import build_order_by, paginate
-from aegra_api.core.scoping import read_scope
+from aegra_api.core.scoping import SYSTEM_IDENTITY, read_scope
 from aegra_api.models.auth import User
 from aegra_api.models.threads import (
     Superstep,
@@ -42,8 +43,13 @@ from aegra_api.models.threads import (
 )
 from aegra_api.services.authenticated import Authenticated
 from aegra_api.services.graph_factory import AccessContext
-from aegra_api.services.langgraph_service import create_thread_config, get_langgraph_service
+from aegra_api.services.langgraph_service import (
+    create_thread_config,
+    get_langgraph_service,
+    inject_user_context,
+)
 from aegra_api.services.thread_state_cache import as_pair, discard, extract, materialize, read, store
+from aegra_api.utils.run_utils import _merge_jsonb
 
 logger = structlog.getLogger(__name__)
 
@@ -54,6 +60,44 @@ _STATE_SORT_KEY = "state_updated_at"
 def graph_id_of(thread: ThreadORM) -> str | None:
     """The graph a thread is bound to, or None while it is still unbound."""
     return (thread.metadata_json or {}).get("graph_id")
+
+
+async def _assistant_config(session: AsyncSession, assistant_id: str, user: User) -> dict[str, Any]:
+    """Fallback for threads bound before ``thread.config`` existed: today's assistant config.
+
+    Not equivalent — an assistant edited since the run yields a config the checkpoint was
+    never written with — but closer than dropping the assistant's config entirely.
+    """
+    assistant = await session.scalar(
+        select(AssistantORM).where(
+            AssistantORM.assistant_id == assistant_id,
+            or_(AssistantORM.user_id == user.identity, AssistantORM.user_id == SYSTEM_IDENTITY),
+        )
+    )
+    return (assistant.config or {}) if assistant is not None else {}
+
+
+async def thread_graph_config(session: AsyncSession, thread: ThreadORM, user: User) -> dict[str, Any]:
+    """The config a thread's graph must be loaded with, on reads as much as runs.
+
+    A factory graph that branches on ``configurable`` compiles a different node set
+    without it, and LangGraph re-derives ``tasks`` / ``interrupts`` / ``next`` from the
+    loaded nodes — so a read that skips it silently reports no pending interrupt for a
+    thread that is paused on one.
+    """
+    assistant_id = (thread.metadata_json or {}).get("assistant_id")
+    if not assistant_id:
+        return create_thread_config(thread.thread_id, user)
+
+    bound = thread.config or await _assistant_config(session, str(assistant_id), user)
+    config = _merge_jsonb(bound)
+    configurable = dict(config.get("configurable") or {})
+    # Forced like create_run_config does: a stored config must not redirect the read to
+    # another thread or assistant.
+    configurable["thread_id"] = thread.thread_id
+    configurable["assistant_id"] = str(assistant_id)
+    config["configurable"] = configurable
+    return inject_user_context(user, config)
 
 
 class ThreadService(Authenticated):
@@ -206,7 +250,7 @@ class ThreadService(Authenticated):
         keys after construction, which ``total=False`` forbids — so the one cast
         lives here rather than at every graph call.
         """
-        built = create_thread_config(thread.thread_id, self.user)
+        built = await thread_graph_config(self.session, thread, self.user)
         async with get_langgraph_service().get_graph(
             graph_id, config=built, access_context=access_context, user=self.user
         ) as graph:

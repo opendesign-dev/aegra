@@ -149,6 +149,9 @@ class Thread(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata_json", JsonbSafe, server_default=text("'{}'::jsonb")
     )
+    # The config the latest run bound this thread to. Reads reload the graph with it, so a
+    # factory graph rebuilds the topology that wrote the checkpoint (SDK's Thread.config).
+    config: Mapped[dict[str, Any]] = mapped_column(JsonbSafe, server_default=text("'{}'::jsonb"))
     # Per-thread retention policy: {"strategy": "delete", "ttl": <minutes>}.
     ttl: Mapped[dict[str, Any] | None] = mapped_column(JsonbSafe, nullable=True)
     user_id: Mapped[str] = mapped_column(Text, nullable=False)

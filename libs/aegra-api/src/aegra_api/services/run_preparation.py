@@ -153,6 +153,7 @@ async def update_thread_metadata(
     *,
     user_id: str | None = None,
     input_data: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
     create_missing: bool = True,
 ) -> None:
     """Update thread metadata with assistant and graph information (dialect agnostic).
@@ -161,6 +162,8 @@ async def update_thread_metadata(
     how ``if_not_exists="reject"`` turns into a 404.
     When *input_data* is provided and the thread has no name yet, the first
     human message content is used as ``thread_name``.
+    *config* is the assistant+request merge this run will execute with; it is stored so
+    state reads can reload the graph the way the run built it.
     Does NOT commit — the caller controls the transaction boundary.
     """
     # Read-modify-write to avoid DB-specific JSON concat operators
@@ -186,6 +189,7 @@ async def update_thread_metadata(
             thread_id=thread_id,
             status="idle",
             metadata_json=metadata,
+            config=config or {},
             user_id=user_id,
         )
         session.add(thread_orm)
@@ -201,9 +205,12 @@ async def update_thread_metadata(
     # Only set thread_name if empty and we have a name from the input
     if thread_name and not md.get("thread_name"):
         md["thread_name"] = thread_name
-    await session.execute(
-        update(ThreadORM).where(ThreadORM.thread_id == thread_id).values(metadata_json=md, updated_at=datetime.now(UTC))
-    )
+    # Rebound like assistant_id/graph_id above: the latest run's config is the one a read
+    # must replay, so an omitted config is left alone rather than blanked.
+    values: dict[str, Any] = {"metadata_json": md, "updated_at": datetime.now(UTC)}
+    if config is not None:
+        values["config"] = config
+    await session.execute(update(ThreadORM).where(ThreadORM.thread_id == thread_id).values(**values))
 
 
 async def _prepare_run(
@@ -282,6 +289,7 @@ async def _prepare_run(
         assistant.graph_id,
         user_id=user.identity,
         input_data=request.input,
+        config=config,
         create_missing=request.if_not_exists != "reject",
     )
     await set_thread_status(session, thread_id, "busy")

@@ -52,7 +52,8 @@ class TestGetThreadStateAtCheckpoint:
         with (
             patch("aegra_api.api.threads.get_langgraph_service") as mock_service,
             patch(
-                "aegra_api.api.threads.create_thread_config",
+                "aegra_api.api.threads.thread_graph_config",
+                new_callable=AsyncMock,
                 return_value=config,
             ),
             patch(
@@ -96,7 +97,8 @@ class TestGetThreadStateAtCheckpoint:
         with (
             patch("aegra_api.api.threads.get_langgraph_service") as mock_service,
             patch(
-                "aegra_api.api.threads.create_thread_config",
+                "aegra_api.api.threads.thread_graph_config",
+                new_callable=AsyncMock,
                 return_value=config,
             ),
             patch(
@@ -139,7 +141,8 @@ class TestGetThreadStateAtCheckpoint:
         with (
             patch("aegra_api.api.threads.get_langgraph_service") as mock_service,
             patch(
-                "aegra_api.api.threads.create_thread_config",
+                "aegra_api.api.threads.thread_graph_config",
+                new_callable=AsyncMock,
                 return_value=config,
             ),
             patch(

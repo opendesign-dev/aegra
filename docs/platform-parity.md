@@ -1,8 +1,8 @@
 # LangSmith Platform 数据面对齐现状
 
-> 分析对象：`feature/langraph-sdk`，aegra-api 0.18.2
+> 分析对象：`feature/langraph-sdk`，aegra-api 0.19.0
 > 对齐目标：LangSmith Deployment / Agent Server 数据面 API + 互操作端点（MCP / A2A）
-> 更新日期：2026-08-01（本次新增第十二节：MCP 与 A2A 端点组）
+> 更新日期：2026-08-05（本次补 `Thread.config`：状态读取按 thread 绑定的 config 加载图）
 
 ## 一、依据与方法
 
@@ -81,7 +81,7 @@ SDK 契约共 **51 个唯一 `(method, path)`**。A2A 与 MCP 是另外两个端
 
 | SDK 方法 | 端点 | 状态 | 备注 |
 |:--|:--|:-:|:--|
-| `get()` | `GET /threads/{id}` | ✅ | 响应含 `values`、`interrupts`；支持 `include=ttl` |
+| `get()` | `GET /threads/{id}` | ✅ | 响应含 `values`、`interrupts`、`config`；支持 `include=ttl` |
 | `create()` | `POST /threads` | ✅ | 支持 `supersteps`、`ttl`；`graph_id` 经 `metadata` 传入 |
 | `update()` | `PATCH /threads/{id}` | ✅ | 支持 `ttl` |
 | `delete()` | `DELETE /threads/{id}` | ✅ | |
@@ -291,6 +291,18 @@ patch：纯追加，无 schema 迁移，既有端点行为一字未变。
 | `http` 配置新增 `disable_mcp` / `disable_a2a` | 追加字段，与 `langgraph.json` 同名同义 | 无 |
 
 两个端点都走既有的 `@auth.authenticate`，未配置认证的部署其可见性与既有 REST 端点完全一致 —— 不会因为开了互操作端点而多暴露任何数据。详见第十二节。
+
+## 六之五、升级注意（0.18.2 → 0.19.0）
+
+minor：带 schema 迁移 `c7f2a9b4e610`（`thread.config`），响应为追加字段。
+
+| 变更 | 影响 | 迁移动作 |
+|:--|:--|:--|
+| `Thread` 新增 `config` | 追加字段，补上 SDK `Thread.config`（`ThreadSelectField` 早已列出 `config`，此前 `select: ["config"]` 取不到值） | 无 |
+| 状态读取按 `thread.config` 加载图 | `GET /threads/{id}/state`、`/state/{cp}`、`/history` 现在用 run 当初绑定的 config 调图工厂。静态图无变化；**按 `configurable` 改拓扑的工厂图**此前在读路径上会编出另一套节点集，导致 `tasks`/`interrupts`/`next` 失真（停在中断上的 thread 报告无中断） | 无 |
+| 迁移前建立的 thread `config` 为 `{}` | 回落到该 assistant 的**当前** config；assistant 改过配置的老 thread 仍可能与 checkpoint 不一致，下次 run 会写正确的值 | 无 |
+
+`context` 不在此列：读路径拿的是 `_ReadRuntime`，没有 `context` 字段，所以按 `context` 改拓扑的工厂图在读路径上仍会失真。改拓扑请一律走 `configurable`（见 [reference/configuration.mdx](reference/configuration.mdx) 的 factory 一节）。
 
 ## 七、错误响应契约
 

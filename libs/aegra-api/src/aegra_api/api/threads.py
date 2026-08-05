@@ -38,9 +38,9 @@ from aegra_api.models.enums import ThreadStreamMode
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
 from aegra_api.models.threads import ThreadPruneRequest, ThreadPruneResponse
 from aegra_api.services import thread_state_cache
-from aegra_api.services.langgraph_service import create_thread_config, get_langgraph_service
+from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.streaming_service import streaming_service
-from aegra_api.services.thread_service import ThreadService, get_thread_service
+from aegra_api.services.thread_service import ThreadService, get_thread_service, thread_graph_config
 from aegra_api.services.thread_state_service import ThreadStateService
 from aegra_api.services.thread_streaming import stream_thread
 from aegra_api.utils.run_utils import strip_pinned_config_keys
@@ -125,6 +125,7 @@ def _serialize_thread(
             "updated_at": u_at,
             "values": values,
             "interrupts": interrupts or {},
+            "config": _coerce_dict(getattr(thread_orm, "config", None), {}),
         }
     )
 
@@ -245,7 +246,7 @@ async def get_thread_state(
             )
 
         langgraph_service = get_langgraph_service()
-        config: dict[str, Any] = create_thread_config(thread_id, user)
+        config: dict[str, Any] = await thread_graph_config(session, thread, user)
         if checkpoint_ns:
             config["configurable"]["checkpoint_ns"] = checkpoint_ns
 
@@ -341,7 +342,7 @@ async def update_thread_state(
             )
 
         langgraph_service = get_langgraph_service()
-        config: dict[str, Any] = create_thread_config(thread_id, user)
+        config: dict[str, Any] = await thread_graph_config(session, thread, user)
 
         if request.checkpoint_id:
             config["configurable"]["checkpoint_id"] = request.checkpoint_id
@@ -465,7 +466,7 @@ async def get_thread_state_at_checkpoint(
 
         langgraph_service = get_langgraph_service()
 
-        config: dict[str, Any] = create_thread_config(thread_id, user)
+        config: dict[str, Any] = await thread_graph_config(session, thread, user)
         config["configurable"]["checkpoint_id"] = checkpoint_id
         if checkpoint_ns:
             config["configurable"]["checkpoint_ns"] = checkpoint_ns
@@ -581,7 +582,7 @@ async def get_thread_history_post(
 
         langgraph_service = get_langgraph_service()
 
-        config: dict[str, Any] = create_thread_config(thread_id, user)
+        config: dict[str, Any] = await thread_graph_config(session, thread, user)
         if checkpoint:
             cfg_cp = strip_pinned_config_keys(checkpoint)
             if checkpoint_ns is not None:

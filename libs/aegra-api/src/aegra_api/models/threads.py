@@ -90,6 +90,10 @@ class Thread(BaseModel):
     interrupts: dict[str, list[dict[str, Any]]] = Field(
         default_factory=dict, description="Pending interrupts grouped by task id."
     )
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Config the latest run bound this thread to; state reads reload the graph with it.",
+    )
 
     @field_validator("status", mode="before")
     @classmethod

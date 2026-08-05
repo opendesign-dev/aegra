@@ -106,10 +106,12 @@ class DummyThread:
         status: str = "idle",
         metadata: dict[str, Any] | None = None,
         user_id: str = "test-user",
+        config: dict[str, Any] | None = None,
     ):
         self.thread_id = thread_id
         self.status = status
         self.metadata = metadata or {"owner": user_id}
+        self.config = config or {}
         self.user_id = user_id
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)

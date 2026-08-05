@@ -5,9 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.dialects import postgresql
 
 from aegra_api.services import run_preparation as mod
-from aegra_api.services.run_preparation import _validate_resume_command
+from aegra_api.services.run_preparation import _validate_resume_command, update_thread_metadata
 
 
 @pytest.fixture(autouse=True)
@@ -76,3 +77,43 @@ class TestValidateResumeCommand:
         session = _session_returning(_thread("idle"))
         await _validate_resume_command(session, "t1", None)
         session.scalar.assert_not_awaited()
+
+
+def _update_params(session: AsyncMock) -> dict[str, object]:
+    stmt = session.execute.call_args.args[0]
+    return dict(stmt.compile(dialect=postgresql.dialect()).params)
+
+
+class TestThreadConfigBinding:
+    """The thread stores the config its latest run merged, so state reads can replay it."""
+
+    async def test_created_thread_stores_the_run_config(self) -> None:
+        session = _session_returning(None)
+        session.add = MagicMock()
+
+        await update_thread_metadata(
+            session,
+            "t1",
+            "asst-1",
+            "graph-1",
+            user_id="user-1",
+            config={"configurable": {"interrupt_on": {"ask": True}}},
+        )
+
+        assert session.add.call_args.args[0].config == {"configurable": {"interrupt_on": {"ask": True}}}
+
+    async def test_existing_thread_is_rebound_to_the_run_config(self) -> None:
+        session = _session_returning(SimpleNamespace(metadata_json={"thread_name": "keep"}))
+
+        await update_thread_metadata(
+            session, "t1", "asst-1", "graph-1", config={"configurable": {"permission": {"ask": "ask"}}}
+        )
+
+        assert _update_params(session)["config"] == {"configurable": {"permission": {"ask": "ask"}}}
+
+    async def test_omitted_config_leaves_the_stored_one_alone(self) -> None:
+        session = _session_returning(SimpleNamespace(metadata_json={}))
+
+        await update_thread_metadata(session, "t1", "asst-1", "graph-1")
+
+        assert "config" not in _update_params(session)

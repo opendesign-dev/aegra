@@ -182,6 +182,12 @@ async def graph(runtime: ServerRuntime[MyContext]):
 
 Use `runtime.execution_runtime` to check whether the factory is being called for actual execution (returns the execution runtime with `.context`) or for introspection like schema extraction (returns `None`).
 
+<Warning>
+**Topology must be reproducible from `config`, not from context.** Reading a thread's state (`GET /threads/{id}/state`, `/history`) re-invokes the factory, and LangGraph re-derives `tasks`, `interrupts` and `next` from the node set of the graph it just built. A read that compiles a different topology than the run reports no pending interrupt for a thread that is paused on one.
+
+Aegra loads a thread's graph with the config the run bound it to (`thread.config`), so structural decisions that branch on `config["configurable"]` reproduce correctly on reads. Context does **not** survive a read — `runtime.execution_runtime` is `None` there — so a factory that adds or removes nodes based on `context` alone will misreport state. Branch on `configurable` for anything that changes topology, and keep context for values nodes read at execution time.
+</Warning>
+
 **When to use which:**
 
 | Need | Use | Works with |
