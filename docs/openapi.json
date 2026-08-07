@@ -3,7 +3,7 @@
   "info": {
     "title": "Aegra",
     "description": "Production-ready Agent Protocol server",
-    "version": "0.18.2"
+    "version": "0.19.0"
   },
   "paths": {
     "/info": {
@@ -4322,6 +4322,43 @@
       },
       "AssistantSearchRequest": {
         "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on creation time, e.g. `{'gte': ..., 'lt': ...}`."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on last-modified time."
+          },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Id",
+            "description": "Restrict to these assistants."
+          },
           "name": {
             "anyOf": [
               {
@@ -4671,27 +4708,72 @@
       },
       "CronCountRequest": {
         "properties": {
-          "assistant_id": {
+          "created_at": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/TimeRange"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Assistant Id"
+            "description": "Bound on creation time, e.g. `{'gte': ..., 'lt': ...}`."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on last-modified time."
+          },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Id",
+            "description": "Restrict to these assistants."
           },
           "thread_id": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Thread Id"
+            "title": "Thread Id",
+            "description": "Restrict to these threads."
+          },
+          "cron_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cron Id",
+            "description": "Restrict to these schedules."
           },
           "metadata": {
             "anyOf": [
@@ -5097,27 +5179,72 @@
       },
       "CronSearchRequest": {
         "properties": {
-          "assistant_id": {
+          "created_at": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/TimeRange"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Assistant Id"
+            "description": "Bound on creation time, e.g. `{'gte': ..., 'lt': ...}`."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on last-modified time."
+          },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Id",
+            "description": "Restrict to these assistants."
           },
           "thread_id": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Thread Id"
+            "title": "Thread Id",
+            "description": "Restrict to these threads."
+          },
+          "cron_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cron Id",
+            "description": "Restrict to these schedules."
           },
           "enabled": {
             "anyOf": [
@@ -5829,29 +5956,72 @@
       },
       "RunCountRequest": {
         "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on creation time, e.g. `{'gte': ..., 'lt': ...}`."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on last-modified time."
+          },
           "thread_id": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Thread Id",
-            "description": "Restrict to one thread."
+            "description": "Restrict to these threads."
           },
           "assistant_id": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Assistant Id",
-            "description": "Restrict to one assistant."
+            "description": "Restrict to these assistants."
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id",
+            "description": "Restrict to these runs."
           },
           "status": {
             "anyOf": [
@@ -6259,29 +6429,72 @@
       },
       "RunSearchRequest": {
         "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on creation time, e.g. `{'gte': ..., 'lt': ...}`."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on last-modified time."
+          },
           "thread_id": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Thread Id",
-            "description": "Restrict to one thread."
+            "description": "Restrict to these threads."
           },
           "assistant_id": {
             "anyOf": [
               {
-                "type": "string"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Assistant Id",
-            "description": "Restrict to one assistant."
+            "description": "Restrict to these assistants."
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id",
+            "description": "Restrict to these runs."
           },
           "status": {
             "anyOf": [
@@ -6947,6 +7160,12 @@
             "type": "object",
             "title": "Interrupts",
             "description": "Pending interrupts grouped by task id."
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config",
+            "description": "Config the latest run bound this thread to; state reads reload the graph with it."
           }
         },
         "type": "object",
@@ -7286,6 +7505,28 @@
       },
       "ThreadSearchRequest": {
         "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on creation time, e.g. `{'gte': ..., 'lt': ...}`."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TimeRange"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bound on last-modified time."
+          },
           "metadata": {
             "anyOf": [
               {
@@ -7324,21 +7565,20 @@
             "title": "Values",
             "description": "State containment match; only matches threads whose state is materialized."
           },
-          "ids": {
+          "thread_id": {
             "anyOf": [
               {
                 "items": {
                   "type": "string"
                 },
-                "type": "array",
-                "minItems": 1
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Ids",
-            "description": "Restrict to this set of thread ids."
+            "title": "Thread Id",
+            "description": "Restrict to these threads."
           },
           "limit": {
             "type": "integer",
@@ -7699,6 +7939,65 @@
         "type": "object",
         "title": "ThreadUpdate",
         "description": "Request model for updating threads"
+      },
+      "TimeRange": {
+        "properties": {
+          "gte": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gte",
+            "description": "At or after this instant."
+          },
+          "gt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gt",
+            "description": "Strictly after this instant."
+          },
+          "lte": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lte",
+            "description": "At or before this instant."
+          },
+          "lt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lt",
+            "description": "Strictly before this instant."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TimeRange"
       },
       "ValidationError": {
         "properties": {

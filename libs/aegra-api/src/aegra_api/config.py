@@ -64,6 +64,8 @@ class StoreConfig(TypedDict, total=False):
 
     index: StoreIndexConfig | None
     """Vector index configuration for semantic search"""
+    scopes: dict[str, list[str]]
+    """Map of namespace prefix -> list of User attributes used for configurable store scoping."""
 
     ttl: TTLConfig | None
     """Retention policy for store items, applied by the store's own sweeper.
