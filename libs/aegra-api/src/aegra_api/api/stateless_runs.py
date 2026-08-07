@@ -17,6 +17,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse
+from sse_starlette.sse import Content as SSEContent
+from starlette.responses import Content
 
 from aegra_api.api.runs import (
     create_and_stream_run,
@@ -170,7 +172,7 @@ async def stateless_wait_for_run(
     # actually subscribes to the broker.
     original_iterator = response.body_iterator
 
-    async def _wrapped_iterator() -> AsyncIterator[bytes]:
+    async def _wrapped_iterator() -> AsyncIterator[Content]:
         completed = False
         try:
             async for chunk in original_iterator:
@@ -239,7 +241,7 @@ async def stateless_stream_run(
     inner_close_handler = response.client_close_handler_callable
     run_id = _extract_run_id_from_headers(response.headers)
 
-    async def _wrapped_iterator() -> AsyncIterator[bytes]:
+    async def _wrapped_iterator() -> AsyncIterator[SSEContent]:
         completed = False
         try:
             async for chunk in original_iterator:

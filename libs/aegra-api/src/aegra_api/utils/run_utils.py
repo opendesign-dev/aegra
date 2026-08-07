@@ -1,8 +1,12 @@
 import copy
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 import structlog
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, Send
+
+from aegra_api.models.enums import ALL_NODES
 
 logger = structlog.getLogger(__name__)
 
@@ -10,10 +14,27 @@ logger = structlog.getLogger(__name__)
 # keys on thread_id alone), so the server pins these instead of trusting them.
 SERVER_PINNED_CONFIG_KEYS: frozenset[str] = frozenset({"thread_id", "run_id"})
 
+INTERRUPT_KEYS: tuple[str, str] = ("interrupt_before", "interrupt_after")
+
 
 def strip_pinned_config_keys(client_config: dict[str, Any]) -> dict[str, Any]:
     """Drop server-authoritative identity keys from a client-supplied config dict."""
     return {k: v for k, v in client_config.items() if k not in SERVER_PINNED_CONFIG_KEYS}
+
+
+def extract_interrupt_kwargs(config: Mapping[str, Any]) -> tuple[RunnableConfig, dict[str, Any]]:
+    """Split interrupt nodes off the config; LangGraph takes them as kwargs, not config keys.
+
+    ``[ALL_NODES]`` has to arrive unwrapped or LangGraph reads it as a node named ``*``.
+    Both stream producers (v1 and v2) go through here so the two stay in step.
+    """
+    run_config = dict(config)
+    interrupt_kwargs: dict[str, Any] = {}
+    for key in INTERRUPT_KEYS:
+        value = run_config.pop(key, None)
+        if value is not None:
+            interrupt_kwargs[key] = ALL_NODES if value == [ALL_NODES] else value
+    return cast("RunnableConfig", run_config), interrupt_kwargs
 
 
 def map_command_to_langgraph(cmd: dict[str, Any]) -> Command:

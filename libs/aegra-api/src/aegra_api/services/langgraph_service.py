@@ -12,13 +12,14 @@ import copy
 import importlib.util
 import json
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from uuid import uuid5
 
 import structlog
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph
 from langgraph.pregel import Pregel
 from langgraph_sdk.auth.types import BaseUser
@@ -307,7 +308,7 @@ class LangGraphService:
         self,
         graph_id: str,
         *,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, Any] | None = None,
         access_context: AccessContext = "threads.create_run",
         user: User | BaseUser | None = None,
         context: dict[str, Any] | None = None,
@@ -370,7 +371,7 @@ class LangGraphService:
 
         if factory:
             # Factory path — invoke per-request with ServerRuntime
-            run_config = config or {"configurable": {}}
+            run_config = cast("dict[str, Any]", config) if config else {"configurable": {}}
             coerced_context = coerce_context(context, graph_id)
             server_runtime = build_server_runtime(
                 access_context=access_context,
@@ -658,7 +659,7 @@ def get_langgraph_service() -> LangGraphService:
     return _langgraph_service
 
 
-def inject_user_context(user: Any | None, base_config: dict[str, Any] | None = None) -> dict[str, Any]:
+def inject_user_context(user: Any | None, base_config: dict[str, Any] | None = None) -> RunnableConfig:
     """Inject user context into LangGraph configuration for user isolation.
 
     Passes ALL user fields (including custom auth handler fields like
@@ -683,12 +684,12 @@ def inject_user_context(user: Any | None, base_config: dict[str, Any] | None = N
 
         config["configurable"]["langgraph_auth_user"] = user
 
-    return config
+    return cast("RunnableConfig", config)
 
 
 def create_thread_config(
     thread_id: str, user: User | BaseUser | None, *, additional_config: dict[str, Any] | None = None
-) -> dict[str, Any]:
+) -> RunnableConfig:
     """Create LangGraph configuration for a specific thread with user context"""
     base_config = {"configurable": {"thread_id": thread_id}}
 
@@ -706,7 +707,7 @@ def create_run_config(
     assistant_id: str | None = None,
     additional_config: dict[str, Any] | None = None,
     checkpoint: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+) -> RunnableConfig:
     """Create LangGraph configuration for a specific run with full context.
 
     Additive for client keys, except the identity triple (thread_id, run_id,

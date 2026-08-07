@@ -86,11 +86,10 @@ async def require_auth(request: Request) -> User:
 
     # Set request.scope for backward compatibility
     # (Some code might still read request.scope["user"] or request.user)
+    # Starlette's request.user is a read-only property backed by this scope key,
+    # so setting the scope is what makes request.user resolve.
     request.scope["user"] = user
     request.scope["auth"] = credentials
-    # Also set request.user for Starlette compatibility
-    if not hasattr(request, "user"):
-        request.user = user
 
     # Convert to User model
     return _to_user_model(user)

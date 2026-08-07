@@ -389,10 +389,11 @@ def create_app() -> FastAPI:
 
     # Try to load custom app if configured
     user_app = None
-    if http_config and http_config.get("app"):
+    app_spec = http_config.get("app") if http_config else None
+    if app_spec:
         try:
             config_dir = get_config_dir()
-            user_app = load_custom_app(http_config["app"], base_dir=config_dir)
+            user_app = load_custom_app(app_spec, base_dir=config_dir)
             logger.info("Custom app loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load custom app: {e}", exc_info=True)
@@ -411,7 +412,7 @@ def create_app() -> FastAPI:
         _mount_mcp(application, http_config)
 
         # Add root endpoint if not already defined
-        if not any(route.path == "/" for route in application.routes if hasattr(route, "path")):
+        if not any(getattr(route, "path", None) == "/" for route in application.routes):
             application.get("/")(root_handler)
 
         application = merge_lifespans(application, lifespan)

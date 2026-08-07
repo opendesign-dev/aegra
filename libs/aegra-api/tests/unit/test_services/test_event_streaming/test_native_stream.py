@@ -103,3 +103,38 @@ class TestStreamNativeV3Events:
         graph = _FakeGraph([_event("messages", [{"no_event": 1}, {}])])
         out = [pair async for pair in stream_native_v3_events(graph=graph, input_data={}, config={})]
         assert out == []
+
+    async def test_forwards_interrupts_as_kwargs(self) -> None:
+        """Interrupts ride in on the config but LangGraph only honors them as kwargs."""
+        graph = _FakeGraph([_event("values", {"a": 1})])
+        config = {"configurable": {"run_id": "r1"}, "interrupt_before": ["agent"], "interrupt_after": ["tools"]}
+
+        async for _pair in stream_native_v3_events(graph=graph, input_data={}, config=config):
+            pass
+
+        assert graph.calls[0]["interrupt_before"] == ["agent"]
+        assert graph.calls[0]["interrupt_after"] == ["tools"]
+        # Stripped from the config, which has no such keys.
+        assert "interrupt_before" not in graph.calls[0]["config"]
+        assert "interrupt_after" not in graph.calls[0]["config"]
+        assert graph.calls[0]["config"]["configurable"] == {"run_id": "r1"}
+
+    async def test_unwraps_all_nodes_interrupt_sentinel(self) -> None:
+        """["*"] would read as a node literally named "*"."""
+        graph = _FakeGraph([_event("values", {"a": 1})])
+        config = {"interrupt_before": ["*"], "interrupt_after": ["*"]}
+
+        async for _pair in stream_native_v3_events(graph=graph, input_data={}, config=config):
+            pass
+
+        assert graph.calls[0]["interrupt_before"] == "*"
+        assert graph.calls[0]["interrupt_after"] == "*"
+
+    async def test_omits_interrupt_kwargs_when_config_has_none(self) -> None:
+        graph = _FakeGraph([_event("values", {"a": 1})])
+
+        async for _pair in stream_native_v3_events(graph=graph, input_data={}, config={"configurable": {}}):
+            pass
+
+        assert "interrupt_before" not in graph.calls[0]
+        assert "interrupt_after" not in graph.calls[0]

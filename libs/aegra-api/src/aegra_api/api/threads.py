@@ -246,9 +246,9 @@ async def get_thread_state(
             )
 
         langgraph_service = get_langgraph_service()
-        config: dict[str, Any] = await thread_graph_config(session, thread, user)
+        config = await thread_graph_config(session, thread, user)
         if checkpoint_ns:
-            config["configurable"]["checkpoint_ns"] = checkpoint_ns
+            config.setdefault("configurable", {})["checkpoint_ns"] = checkpoint_ns
 
         try:
             async with langgraph_service.get_graph(
@@ -342,14 +342,15 @@ async def update_thread_state(
             )
 
         langgraph_service = get_langgraph_service()
-        config: dict[str, Any] = await thread_graph_config(session, thread, user)
+        config = await thread_graph_config(session, thread, user)
+        configurable = config.setdefault("configurable", {})
 
         if request.checkpoint_id:
-            config["configurable"]["checkpoint_id"] = request.checkpoint_id
+            configurable["checkpoint_id"] = request.checkpoint_id
         if request.checkpoint:
-            config["configurable"].update(strip_pinned_config_keys(request.checkpoint))
+            configurable.update(strip_pinned_config_keys(request.checkpoint))
         if request.checkpoint_ns:
-            config["configurable"]["checkpoint_ns"] = request.checkpoint_ns
+            configurable["checkpoint_ns"] = request.checkpoint_ns
 
         try:
             async with langgraph_service.get_graph(
@@ -466,10 +467,11 @@ async def get_thread_state_at_checkpoint(
 
         langgraph_service = get_langgraph_service()
 
-        config: dict[str, Any] = await thread_graph_config(session, thread, user)
-        config["configurable"]["checkpoint_id"] = checkpoint_id
+        config = await thread_graph_config(session, thread, user)
+        configurable = config.setdefault("configurable", {})
+        configurable["checkpoint_id"] = checkpoint_id
         if checkpoint_ns:
-            config["configurable"]["checkpoint_ns"] = checkpoint_ns
+            configurable["checkpoint_ns"] = checkpoint_ns
 
         try:
             async with langgraph_service.get_graph(
@@ -582,14 +584,15 @@ async def get_thread_history_post(
 
         langgraph_service = get_langgraph_service()
 
-        config: dict[str, Any] = await thread_graph_config(session, thread, user)
+        config = await thread_graph_config(session, thread, user)
+        configurable = config.setdefault("configurable", {})
         if checkpoint:
             cfg_cp = strip_pinned_config_keys(checkpoint)
             if checkpoint_ns is not None:
                 cfg_cp.setdefault("checkpoint_ns", checkpoint_ns)
-            config["configurable"].update(cfg_cp)
+            configurable.update(cfg_cp)
         elif checkpoint_ns is not None:
-            config["configurable"]["checkpoint_ns"] = checkpoint_ns
+            configurable["checkpoint_ns"] = checkpoint_ns
 
         # Convert `before` to a RunnableConfig for aget_state_history.
         # The SDK sends `before` as either a checkpoint ID string, a raw
@@ -618,6 +621,7 @@ async def get_thread_history_post(
         ) as agent:
             # Some LangGraph versions support subgraphs flag; pass if available
             try:
+                # The pinned version has no such parameter — it lands in the except below.
                 async for snapshot in agent.aget_state_history(config, subgraphs=subgraphs, **kwargs):
                     state_snapshots.append(snapshot)
             except TypeError:

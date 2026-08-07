@@ -5,7 +5,7 @@ handling message accumulation, event processing, and multiple stream modes.
 """
 
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import aclosing
 from typing import Any, cast
 
@@ -20,7 +20,6 @@ from langchain_core.messages import (
     convert_to_messages,
     message_chunk_to_message,
 )
-from langchain_core.runnables import RunnableConfig
 from langgraph.errors import (
     EmptyChannelError,
     EmptyInputError,
@@ -31,7 +30,7 @@ from langgraph.pregel.debug import CheckpointPayload, TaskResultPayload
 from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorLegacy
 
-from aegra_api.utils.run_utils import _filter_context_by_schema
+from aegra_api.utils.run_utils import _filter_context_by_schema, extract_interrupt_kwargs
 
 logger = structlog.getLogger(__name__)
 
@@ -57,23 +56,6 @@ def _to_message_chunk(msg: BaseMessage) -> BaseMessage:
 
 # Type alias for stream output
 AnyStream = AsyncIterator[tuple[str, Any]]
-_INTERRUPT_KEYS = ("interrupt_before", "interrupt_after")
-
-
-def _normalize_interrupt_value(value: Any) -> Any:
-    if value == ["*"]:
-        return "*"
-    return value
-
-
-def _extract_interrupt_kwargs(config: RunnableConfig) -> tuple[RunnableConfig, dict[str, Any]]:
-    run_config = dict(config)
-    interrupt_kwargs = {}
-    for key in _INTERRUPT_KEYS:
-        value = run_config.pop(key, None)
-        if value is not None:
-            interrupt_kwargs[key] = _normalize_interrupt_value(value)
-    return cast("RunnableConfig", run_config), interrupt_kwargs
 
 
 def _normalize_checkpoint_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -96,7 +78,7 @@ def _normalize_checkpoint_task(task: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_checkpoint_payload(
     payload: CheckpointPayload | None,
-) -> dict[str, Any] | None:
+) -> CheckpointPayload | None:
     """Normalize debug checkpoint payload structure.
 
     Ensures checkpoint payloads have consistent task formatting.
@@ -104,19 +86,23 @@ def _normalize_checkpoint_payload(
     if not payload:
         return None
 
-    # Process all tasks in the checkpoint
-    normalized_tasks = [_normalize_checkpoint_task(t) for t in payload["tasks"]]
+    # CheckpointTask is a TypedDict, i.e. a dict at runtime; _normalize_checkpoint_task
+    # reshapes it in place (adds "checkpoint", drops "state") so it no longer matches.
+    normalized_tasks = [_normalize_checkpoint_task(cast("dict[str, Any]", t)) for t in payload["tasks"]]
 
-    return {
-        **payload,
-        "tasks": normalized_tasks,
-    }
+    return cast(
+        "CheckpointPayload",
+        {
+            **payload,
+            "tasks": normalized_tasks,
+        },
+    )
 
 
 async def stream_graph_events(
     graph: Any,
     input_data: Any,
-    config: RunnableConfig,
+    config: Mapping[str, Any],
     *,
     stream_mode: list[str],
     context: dict[str, Any] | None = None,
@@ -135,7 +121,7 @@ async def stream_graph_events(
     Args:
         graph: The graph instance to execute
         input_data: Input data for graph execution
-        config: RunnableConfig for execution
+        config: Run config; interrupt_before/after ride along here and are split off as kwargs
         stream_mode: List of stream modes (e.g., ["messages", "values", "debug"])
         context: Optional context dictionary
         subgraphs: Whether to include subgraph namespaces in event types
@@ -148,7 +134,7 @@ async def stream_graph_events(
         Tuples of (mode, payload) where mode is the stream mode and payload is the event data
     """
     run_id = str(config.get("configurable", {}).get("run_id", uuid.uuid4()))
-    config, interrupt_kwargs = _extract_interrupt_kwargs(config)
+    run_config, graph_kwargs = extract_interrupt_kwargs(config)
 
     # Prepare stream modes
     stream_modes_set: set[str] = set(stream_mode) - {"events"}
@@ -157,7 +143,7 @@ async def stream_graph_events(
 
     # Check if graph is a remote (JavaScript) implementation
     try:
-        from langgraph_api.js.base import BaseRemotePregel
+        from langgraph_api.js.base import BaseRemotePregel  # pyright: ignore[reportMissingImports]
 
         is_js_graph = isinstance(graph, BaseRemotePregel)
     except ImportError:
@@ -184,19 +170,21 @@ async def stream_graph_events(
         except Exception as e:
             await logger.adebug(f"Failed to get context schema for filtering: {e}", exc_info=e)
 
-    # Initialize streaming state
-    messages: dict[str, BaseMessageChunk] = {}
+    # Accumulator keyed by message id, which the wire format allows to be absent.
+    # Values are chunks mid-stream but whole messages for non-streaming LLMs.
+    messages: dict[str | None, Any] = {}
 
     # Choose streaming method based on mode and graph type
     use_astream_events = "events" in stream_mode or is_js_graph
 
     # Omitted rather than passed as None so LangGraph applies its own default.
-    durability_kwarg = {"durability": durability} if durability else {}
+    if durability:
+        graph_kwargs["durability"] = durability
 
     # Yield metadata event
     yield (
         "metadata",
-        {"run_id": run_id, "attempt": config.get("metadata", {}).get("run_attempt", 1)},
+        {"run_id": run_id, "attempt": run_config.get("metadata", {}).get("run_attempt", 1)},
     )
 
     # Stream execution using appropriate method
@@ -204,13 +192,12 @@ async def stream_graph_events(
         async with aclosing(
             graph.astream_events(
                 input_data,
-                config,
+                run_config,
                 context=context,
                 version="v2",
                 stream_mode=list(stream_modes_set),
                 subgraphs=subgraphs,
-                **durability_kwarg,
-                **interrupt_kwargs,
+                **graph_kwargs,
             )
         ) as stream:
             async for event in stream:
@@ -238,6 +225,8 @@ async def stream_graph_events(
                     if chunk_data is None:
                         continue
 
+                    # Shape varies by stream mode: (ns, mode, chunk), (mode, chunk), or a bare value.
+                    chunk: Any
                     if subgraphs:
                         if isinstance(chunk_data, (tuple, list)) and len(chunk_data) == 3:
                             ns, mode, chunk = chunk_data
@@ -292,13 +281,12 @@ async def stream_graph_events(
         async with aclosing(
             graph.astream(
                 input_data,
-                config,
+                run_config,
                 context=context,
                 stream_mode=list(stream_modes_set),
                 output_keys=output_keys,
                 subgraphs=subgraphs,
-                **durability_kwarg,
-                **interrupt_kwargs,
+                **graph_kwargs,
             )
         ) as stream:
             async for event in stream:
@@ -342,7 +330,7 @@ def _process_stream_event(
     namespace: str | None,
     subgraphs: bool,
     stream_mode: list[str],
-    messages: dict[str, BaseMessageChunk],
+    messages: dict[str | None, Any],
     only_interrupt_updates: bool,
     on_checkpoint: Callable[[CheckpointPayload | None], None],
     on_task_result: Callable[[TaskResultPayload], None],

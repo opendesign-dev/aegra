@@ -34,14 +34,15 @@ _DEFAULT_SERVE_HOST = "0.0.0.0"  # noqa: S104  # nosec B104 - intentional for Do
 _DEFAULT_PORT = 2026
 
 
-def _resolve_server_option(
+# Constrained so the return type follows `default` rather than widening to str | int.
+def _resolve_server_option[T: (str, int)](
     ctx: click.Context,
     param_name: str,
-    cli_value: str | int,
+    cli_value: T,
     *,
     env_var: str,
-    default: str | int,
-) -> str | int:
+    default: T,
+) -> T:
     """Resolve a server option with precedence: CLI flag > env var > default.
 
     Args:

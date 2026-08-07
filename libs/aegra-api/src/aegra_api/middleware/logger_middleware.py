@@ -15,7 +15,6 @@ access_logger = structlog.stdlib.get_logger("app.access_logs")
 
 class AccessInfo(TypedDict, total=False):
     status_code: int
-    start_time: float
 
 
 class StructLogMiddleware:
@@ -40,8 +39,8 @@ class StructLogMiddleware:
                 info["status_code"] = message.get("status", 500)
             await send(message)
 
+        start_time = time.perf_counter_ns()
         try:
-            info["start_time"] = time.perf_counter_ns()
             await self.app(scope, receive, inner_send)
         except Exception as e:
             # Log the exception here, but re-raise so application-level
@@ -54,7 +53,7 @@ class StructLogMiddleware:
             )
             raise
         finally:
-            process_time = time.perf_counter_ns() - info["start_time"]
+            process_time = time.perf_counter_ns() - start_time
             status_code = info.get("status_code", 500)
             path: str = http_scope["path"]
 

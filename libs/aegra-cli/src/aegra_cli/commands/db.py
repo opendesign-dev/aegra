@@ -197,9 +197,9 @@ def current() -> None:
     from alembic import command
 
     cfg = get_alembic_config()
-    # Capture alembic output to stdout
+    # Replacing this method is alembic's way to capture command output.
     output = StringIO()
-    cfg.print_stdout = output.write
+    cfg.print_stdout = output.write  # pyright: ignore[reportAttributeAccessIssue]
 
     def run() -> None:
         command.current(cfg)
@@ -246,8 +246,9 @@ def history(verbose: bool) -> None:
     from alembic import command
 
     cfg = get_alembic_config()
+    # Replacing this method is alembic's way to capture command output.
     output = StringIO()
-    cfg.print_stdout = output.write
+    cfg.print_stdout = output.write  # pyright: ignore[reportAttributeAccessIssue]
 
     def run() -> None:
         command.history(cfg, verbose=verbose)

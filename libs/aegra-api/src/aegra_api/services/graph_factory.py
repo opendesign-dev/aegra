@@ -19,7 +19,7 @@ import inspect
 import typing
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any, Literal, get_args, get_origin
+from typing import Any, Literal, cast, get_args, get_origin
 
 import structlog
 from langgraph.graph import StateGraph
@@ -341,17 +341,22 @@ def build_server_runtime(
         auth_ctx = get_auth_ctx()
         user = auth_ctx.user if auth_ctx else None
 
+    # Our User covers what factories read without nominally implementing the BaseUser
+    # protocol, and the read paths genuinely have no store despite the SDK requiring one.
+    runtime_user = cast("BaseUser | None", user)
+    runtime_store = cast("BaseStore", store)
+
     if is_for_execution(access_context):
         return _ExecutionRuntime(
             access_context=access_context,
-            user=user,
-            store=store,
+            user=runtime_user,
+            store=runtime_store,
             context=context,
         )
     return _ReadRuntime(
         access_context=access_context,
-        user=user,
-        store=store,
+        user=runtime_user,
+        store=runtime_store,
     )
 
 

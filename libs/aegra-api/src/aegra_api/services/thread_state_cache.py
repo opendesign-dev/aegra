@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from fastapi.encoders import jsonable_encoder
+from langchain_core.runnables import RunnableConfig
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -103,10 +104,10 @@ async def store(
         logger.warning("Thread state materialization failed", thread_id=thread_id, error=str(exc))
 
 
-async def refresh(thread_id: str, graph: Any, config: dict[str, Any]) -> None:
+async def refresh(thread_id: str, graph: Any, config: Mapping[str, Any]) -> None:
     """Read a loaded graph's latest state and cache it. Best-effort, see ``store``."""
     try:
-        snapshot = await graph.aget_state(config)
+        snapshot = await graph.aget_state(cast("RunnableConfig", config))
     except Exception as exc:
         logger.warning("Thread state read failed", thread_id=thread_id, error=str(exc))
         return

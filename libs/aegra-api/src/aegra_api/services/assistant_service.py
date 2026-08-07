@@ -20,7 +20,9 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import Depends, HTTPException
-from langchain_core.runnables.utils import create_model
+
+# langchain's cached variant, which it never re-exports publicly.
+from langchain_core.runnables.utils import create_model  # pyright: ignore[reportPrivateImportUsage]
 from pydantic import TypeAdapter
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -183,7 +185,8 @@ class AssistantService(Authenticated):
         except Exception as e:
             raise HTTPException(400, f"Failed to load graph: {str(e)}") from e
 
-        config = request.config
+        # Both are Optional on the wire — an explicit null would otherwise blow up below.
+        config = request.config or {}
         context = request.context
 
         if config.get("configurable") and context:

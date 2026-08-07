@@ -10,7 +10,7 @@ import importlib
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from langgraph_sdk import Auth
@@ -236,13 +236,13 @@ class LangGraphAuthBackend(AuthenticationBackend):
             logger.debug("No auth file configured, defaulting to noop (anonymous) authentication")
             # Return anonymous user when no auth is configured.
             # WARNING: all callers share this identity; no tenant isolation is enforced.
-            user_data: Auth.types.MinimalUserDict = {
+            anonymous: Auth.types.MinimalUserDict = {
                 "identity": "anonymous",
                 "display_name": "Anonymous User",
                 "is_authenticated": True,
             }
             credentials = AuthCredentials([])
-            user = LangGraphUser(user_data)
+            user = LangGraphUser(anonymous)
             return credentials, user
 
         if self.auth_instance._authenticate_handler is None:
@@ -272,7 +272,8 @@ class LangGraphAuthBackend(AuthenticationBackend):
 
             # Create Starlette-compatible user and credentials
             credentials = AuthCredentials(permissions)
-            user = LangGraphUser(user_data)
+            # Guarded above: a dict carrying "identity" is a MinimalUserDict.
+            user = LangGraphUser(cast("Auth.types.MinimalUserDict", user_data))
 
             logger.debug(f"Successfully authenticated user: {user.identity}")
             return credentials, user

@@ -5,15 +5,12 @@ Claim under test:
   organization. Members of the same org share those items; members of a
   different org (or no org) never reach them.
 
-⚠️ MANUAL TESTS - These are skipped by default. Run with: pytest -m manual_auth
-
 Requires a running Aegra server with auth enabled (the jwt_mock_auth_example
 config) and store.scopes {"orgs": ["org_id"]} configured (see aegra.auth.json).
 See README.md for setup. The mock auth maps a token's team segment to org_id:
 mock-jwt-<user>-<role>-<org>. A token without a team segment has no org.
 
-Run:
-    pytest tests/e2e/manual_auth_tests/test_store_org_isolation_e2e.py -v -m manual_auth
+Run with: make e2e-auth  or  pytest -m auth_only
 """
 
 import uuid
@@ -39,7 +36,7 @@ def auth_headers(user_id: str, *, role: str = "user", org: str | None = "org1") 
 
 
 @pytest.mark.e2e
-@pytest.mark.manual_auth
+@pytest.mark.auth_only
 class TestOrgStoreSharing:
     """Items written under the "orgs" prefix are shared across members of that org."""
 
@@ -93,7 +90,7 @@ class TestOrgStoreSharing:
 
 
 @pytest.mark.e2e
-@pytest.mark.manual_auth
+@pytest.mark.auth_only
 class TestOrgStoreIsolation:
     """An org's items are unreachable from a different org or from no org at all."""
 

@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any, get_args
 
 from sse_starlette import EventSourceResponse, ServerSentEvent
+from sse_starlette.sse import Content as SSEContent
 
 from aegra_api.core.serializers import GeneralSerializer
 from aegra_api.models.enums import StreamMode
@@ -102,7 +103,7 @@ async def sse_to_bytes(inner: AsyncGenerator[str, None]) -> AsyncGenerator[bytes
 
 
 def make_sse_response(
-    body: AsyncIterator[bytes],
+    body: AsyncIterator[SSEContent],
     *,
     headers: Mapping[str, str],
     close_handler: Callable[[MutableMapping[str, Any]], Awaitable[None]] | None = None,

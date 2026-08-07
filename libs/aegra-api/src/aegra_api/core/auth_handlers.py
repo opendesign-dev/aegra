@@ -5,11 +5,12 @@ allowing users to define fine-grained access control rules using @auth.on.*
 decorators in their auth.py files.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import HTTPException
 from langgraph_sdk import Auth
 from langgraph_sdk.auth.types import AuthContext as LangGraphAuthContext
+from langgraph_sdk.auth.types import BaseUser
 
 from aegra_api.core.auth_middleware import get_auth_instance
 from aegra_api.models.auth import User
@@ -18,9 +19,9 @@ from aegra_api.models.auth import User
 class AuthContextWrapper:
     """Wrapper to convert Aegra User model to AuthContext.
 
-    AuthContext expects a BaseUser-compatible object. Our User model
-    implements the BaseUser protocol (identity, permissions, display_name, __getitem__),
-    so we can use it directly after ensuring compatibility.
+    AuthContext expects a BaseUser-compatible object. Our User model carries what
+    handlers read (identity, permissions, display_name) but is not a nominal
+    BaseUser — it has no ``__getitem__``/``__contains__`` and display_name is optional.
     """
 
     def __init__(
@@ -44,15 +45,11 @@ class AuthContextWrapper:
     def to_langgraph_context(self) -> LangGraphAuthContext:
         """Convert to LangGraph AuthContext.
 
-        Our User model implements the BaseUser protocol (identity, permissions,
-        display_name, __getitem__, __contains__, __iter__), so it's compatible
-        with LangGraph's AuthContext.
-
         Returns:
             AuthContext instance compatible with @auth.on handlers
         """
         return LangGraphAuthContext(
-            user=self.user,  # Our User model implements BaseUser protocol
+            user=cast("BaseUser", self.user),
             resource=self.resource,  # type: ignore
             action=self.action,  # type: ignore
             permissions=self.permissions,

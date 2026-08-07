@@ -259,14 +259,18 @@ def _interrupt_nodes(value: str | list[str] | None) -> str | list[str] | None:
 
 def _build_run_config(job: RunJob) -> dict[str, Any]:
     """Assemble the LangGraph run config from a RunJob."""
-    config = create_run_config(
-        job.identity.run_id,
-        job.identity.thread_id,
-        job.user,
-        assistant_id=job.identity.assistant_id,
-        additional_config=job.execution.config,
-        checkpoint=job.execution.checkpoint,
-    )
+    # Back to a plain dict: interrupt nodes ride along as extra keys, which
+    # RunnableConfig has no slot for. extract_interrupt_kwargs splits them off.
+    config: dict[str, Any] = {
+        **create_run_config(
+            job.identity.run_id,
+            job.identity.thread_id,
+            job.user,
+            assistant_id=job.identity.assistant_id,
+            additional_config=job.execution.config,
+            checkpoint=job.execution.checkpoint,
+        )
+    }
     for field in ("interrupt_before", "interrupt_after"):
         nodes = _interrupt_nodes(getattr(job.behavior, field))
         if nodes is not None:

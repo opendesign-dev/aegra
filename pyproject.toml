@@ -17,6 +17,15 @@ dev = [
     "pre-commit>=4.0.1",
 ]
 
+[tool.pyright]
+# Editor-only settings; CI type checking is `ty` (see the type-check make target).
+venvPath = "."
+venv = ".venv"
+# Pylance reads a field's default only from Field(default=X), not the positional
+# Field(X, ...) this codebase uses, so it calls every model construction
+# under-supplied. Disabled wholesale rather than editing 156 field declarations.
+reportCallIssue = "none"
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"

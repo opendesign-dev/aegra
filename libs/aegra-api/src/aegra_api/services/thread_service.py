@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import structlog
@@ -77,7 +77,7 @@ async def _assistant_config(session: AsyncSession, assistant_id: str, user: User
     return (assistant.config or {}) if assistant is not None else {}
 
 
-async def thread_graph_config(session: AsyncSession, thread: ThreadORM, user: User) -> dict[str, Any]:
+async def thread_graph_config(session: AsyncSession, thread: ThreadORM, user: User) -> RunnableConfig:
     """The config a thread's graph must be loaded with, on reads as much as runs.
 
     A factory graph that branches on ``configurable`` compiles a different node set
@@ -244,17 +244,11 @@ class ThreadService(Authenticated):
 
         Callers still resolve ``graph_id`` themselves because each has a different
         answer for an unbound thread: 404-ish silence, a 400, or a skip.
-
-        This is where Aegra's config dicts meet LangGraph's ``RunnableConfig``.
-        The builders cannot return that TypedDict — callers inject ``configurable``
-        keys after construction, which ``total=False`` forbids — so the one cast
-        lives here rather than at every graph call.
         """
-        built = await thread_graph_config(self.session, thread, self.user)
+        config = await thread_graph_config(self.session, thread, self.user)
         async with get_langgraph_service().get_graph(
-            graph_id, config=built, access_context=access_context, user=self.user
+            graph_id, config=config, access_context=access_context, user=self.user
         ) as graph:
-            config = cast(RunnableConfig, built)
             yield graph.with_config(config), config
 
     async def _snapshot(self, thread: ThreadORM) -> Any:

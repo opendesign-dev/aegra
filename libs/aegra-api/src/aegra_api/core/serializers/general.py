@@ -2,7 +2,7 @@
 
 import dataclasses
 import inspect
-from typing import Any
+from typing import Any, cast
 
 from aegra_api.core.serializers.base import SerializationError, Serializer
 
@@ -45,8 +45,8 @@ class GeneralSerializer(Serializer):
             return {field.name: self._serialize_object(getattr(obj, field.name)) for field in dataclasses.fields(obj)}
 
         # Handle NamedTuples (like PregelTask) - they have _asdict() method
-        elif hasattr(obj, "_asdict") and callable(obj._asdict):
-            return {k: self._serialize_object(v) for k, v in obj._asdict().items()}
+        elif callable(asdict := getattr(obj, "_asdict", None)):
+            return {k: self._serialize_object(v) for k, v in cast("dict[str, Any]", asdict()).items()}
 
         # Handle sets and frozensets
         elif isinstance(obj, (set, frozenset)):
